@@ -60,28 +60,26 @@ function createMainWindow() {
     path.join(__dirname, "../renderer/shell.html"),
   );
 
+  const contentViewPrefs = {
+    preload: path.join(__dirname, "../preload/preload.js"),
+    contextIsolation: true,
+    nodeIntegration: false,
+  };
+
   // --- Server view (if mode includes server) ---
   if (settings.hasServer) {
-    serverView = new WebContentsView({
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
+    serverView = new WebContentsView({ webPreferences: contentViewPrefs });
     serverView.webContents.loadURL(settings.serverUrl);
     setupViewSecurity(serverView, "serverUrl");
+    setupFailHandler(serverView, settings.serverUrl);
   }
 
   // --- Console view (if mode includes console) ---
   if (settings.hasConsole) {
-    consoleView = new WebContentsView({
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-      },
-    });
+    consoleView = new WebContentsView({ webPreferences: contentViewPrefs });
     consoleView.webContents.loadURL(settings.consoleUrl);
     setupViewSecurity(consoleView, "consoleUrl");
+    setupFailHandler(consoleView, settings.consoleUrl);
   }
 
   // Add the correct initial content view
@@ -145,6 +143,16 @@ function setupViewSecurity(view, settingKey) {
       shell.openExternal(url);
     }
     return { action: "deny" };
+  });
+}
+
+function setupFailHandler(view, originalUrl) {
+  view.webContents.on("did-fail-load", (_event, _code, _desc, validatedURL) => {
+    // Don't intercept error page loads
+    if (validatedURL.startsWith("file://")) return;
+    const errorPage = path.join(__dirname, "../renderer/error.html");
+    const url = encodeURIComponent(originalUrl);
+    view.webContents.loadFile(errorPage, { query: `url=${url}` });
   });
 }
 

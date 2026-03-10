@@ -1,54 +1,8 @@
+@import './tokens.css';
+
 /* ==========================================================================
    Turnstone Desktop — Shell Chrome (Custom Title Bar)
-   Extends the Instrument Panel design system
    ========================================================================== */
-
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-  --bg: #0b0f19;
-  --bg-surface: #111827;
-  --bg-highlight: #1c2333;
-  --bg-elevated: #1f2a3d;
-  --fg: #d1d5e4;
-  --fg-dim: #8a93ad;
-  --fg-bright: #e8ecf4;
-  --accent: #e5a042;
-  --accent-dim: rgba(229, 160, 66, 0.15);
-  --accent-glow: rgba(229, 160, 66, 0.08);
-  --green: #34d399;
-  --red: #f87171;
-  --yellow: #fbbf24;
-  --green-glow: rgba(52, 211, 153, 0.25);
-  --red-glow: rgba(248, 113, 113, 0.25);
-  --yellow-glow: rgba(251, 191, 36, 0.25);
-  --border: rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.1);
-  --radius-sm: 3px;
-  --font-mono: 'IBM Plex Mono', 'SF Mono', 'Cascadia Code', monospace;
-  --font-display: 'Outfit', 'Segoe UI', system-ui, sans-serif;
-}
-
-[data-theme="light"] {
-  --bg: #f3f4f6;
-  --bg-surface: #ffffff;
-  --bg-highlight: #e9ecf0;
-  --bg-elevated: #f9fafb;
-  --fg: #1e293b;
-  --fg-dim: #576275;
-  --fg-bright: #0f172a;
-  --accent: #8c5e1b;
-  --accent-dim: rgba(140, 94, 27, 0.1);
-  --accent-glow: rgba(140, 94, 27, 0.05);
-  --green: #047857;
-  --red: #dc2626;
-  --yellow: #b45309;
-  --green-glow: rgba(4, 120, 87, 0.25);
-  --red-glow: rgba(220, 38, 38, 0.25);
-  --yellow-glow: rgba(180, 83, 9, 0.25);
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.12);
-}
 
 html, body {
   height: 100%;

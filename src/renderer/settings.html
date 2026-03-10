@@ -8,41 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
   <title>Settings</title>
+  <link rel="stylesheet" href="tokens.css">
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --bg: #0b0f19;
-      --bg-surface: #111827;
-      --bg-highlight: #1c2333;
-      --fg: #d1d5e4;
-      --fg-dim: #8a93ad;
-      --fg-bright: #e8ecf4;
-      --accent: #e5a042;
-      --accent-dim: rgba(229, 160, 66, 0.15);
-      --red: #f87171;
-      --border: rgba(255, 255, 255, 0.06);
-      --border-strong: rgba(255, 255, 255, 0.1);
-      --radius: 6px;
-      --radius-sm: 3px;
-      --font-mono: 'IBM Plex Mono', 'SF Mono', 'Cascadia Code', monospace;
-      --font-display: 'Outfit', 'Segoe UI', system-ui, sans-serif;
-    }
-
-    [data-theme="light"] {
-      --bg: #f3f4f6;
-      --bg-surface: #ffffff;
-      --bg-highlight: #e9ecf0;
-      --fg: #1e293b;
-      --fg-dim: #576275;
-      --fg-bright: #0f172a;
-      --accent: #8c5e1b;
-      --accent-dim: rgba(140, 94, 27, 0.1);
-      --red: #dc2626;
-      --border: rgba(0, 0, 0, 0.08);
-      --border-strong: rgba(0, 0, 0, 0.12);
-    }
-
     html, body {
       height: 100%;
       background: var(--bg);

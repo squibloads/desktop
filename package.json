@@ -1,12 +1,13 @@
 {
   "name": "turnstone-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Desktop client for the Turnstone AI orchestration platform",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron-forge start",
     "package": "electron-forge package",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.0",
@@ -16,7 +17,8 @@
     "@electron-forge/maker-zip": "^7.6.0",
     "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
     "@reforged/maker-appimage": "^5.2.0",
-    "electron": "^40.8.0"
+    "electron": "^40.8.0",
+    "vitest": "^4.0.18"
   },
   "dependencies": {
     "electron-store": "^10.1.0"

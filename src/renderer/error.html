@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="tokens.css">
+  <title>Connection Error</title>
+  <style>
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-image:
+        radial-gradient(ellipse at 50% 30%, rgba(248, 113, 113, 0.04) 0%, transparent 50%);
+    }
+
+    .error-box {
+      text-align: center;
+      max-width: 400px;
+      padding: 32px;
+    }
+
+    .error-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+    }
+
+    .error-icon svg {
+      color: var(--red);
+    }
+
+    h1 {
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--fg-bright);
+      margin-bottom: 8px;
+    }
+
+    .error-detail {
+      font-size: 12px;
+      color: var(--fg-dim);
+      margin-bottom: 24px;
+      word-break: break-all;
+    }
+
+    .error-url {
+      display: inline-block;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 4px 10px;
+      font-size: 11px;
+      color: var(--fg-dim);
+      margin-top: 8px;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+    }
+
+    button {
+      padding: 9px 20px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font: inherit;
+      font-family: var(--font-display);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      transition: filter 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #0b0f19;
+    }
+
+    .btn-primary:hover { filter: brightness(1.1); }
+
+    .btn-secondary {
+      background: var(--bg-highlight);
+      color: var(--fg-dim);
+      border: 1px solid var(--border-strong);
+    }
+
+    .btn-secondary:hover { color: var(--fg-bright); }
+
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    .hint {
+      font-family: var(--font-display);
+      font-size: 11px;
+      color: var(--fg-dim);
+      margin-top: 20px;
+      opacity: 0.6;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      button { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="error-box">
+    <div class="error-icon">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <circle cx="10" cy="10" r="9" stroke="currentColor" stroke-width="1.5"/>
+        <line x1="10" y1="6" x2="10" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="10" cy="14" r="1" fill="currentColor"/>
+      </svg>
+    </div>
+    <h1>Unable to connect</h1>
+    <div class="error-detail">
+      The server is not reachable. Check that Turnstone is running.
+      <br>
+      <span class="error-url" id="error-url"></span>
+    </div>
+    <div class="btn-row">
+      <button class="btn-secondary" id="btn-settings">Settings</button>
+      <button class="btn-primary" id="btn-retry">Retry</button>
+    </div>
+    <div class="hint">Will reconnect automatically when the server comes back.</div>
+  </div>
+  <script>
+    // Read the failed URL from the query string
+    const params = new URLSearchParams(window.location.search);
+    const failedUrl = params.get('url') || '';
+    document.getElementById('error-url').textContent = failedUrl;
+
+    document.getElementById('btn-retry').addEventListener('click', () => {
+      if (failedUrl) window.location.href = failedUrl;
+    });
+
+    document.getElementById('btn-settings').addEventListener('click', () => {
+      window.electronAPI.openSettings();
+    });
+
+    // Theme
+    function applyTheme() {
+      const preferLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.dataset.theme = preferLight ? 'light' : '';
+    }
+    applyTheme();
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
+  </script>
+</body>
+</html>

@@ -12,11 +12,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Tab switching
   switchTab: (tab) => ipcRenderer.send("turnstone:switch-tab", tab),
 
-  // Health updates (main -> renderer)
+  // Health updates (main -> renderer) — returns cleanup function
   onHealthUpdate: (callback) => {
-    ipcRenderer.on("turnstone:health-update", (_event, status) =>
-      callback(status),
-    );
+    const handler = (_event, status) => callback(status);
+    ipcRenderer.on("turnstone:health-update", handler);
+    return () => ipcRenderer.removeListener("turnstone:health-update", handler);
   },
 
   // Open settings dialog

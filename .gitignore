@@ -22,6 +22,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local docs
+PROGRESS.md
+
 # Electron build artifacts
 *.dmg
 *.exe

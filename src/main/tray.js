@@ -1,6 +1,12 @@
 const { Tray, Menu, nativeImage } = require("electron");
 const path = require("path");
 
+const ICONS_DIR = path.join(__dirname, "../icons");
+
+function loadIcon(name) {
+  return nativeImage.createFromPath(path.join(ICONS_DIR, `tray-${name}.png`));
+}
+
 class TurnStoneTray {
   constructor(actions) {
     this.actions = actions;
@@ -10,8 +16,7 @@ class TurnStoneTray {
   }
 
   create() {
-    // Create a simple 16x16 tray icon programmatically (colored circle)
-    this.tray = new Tray(this._createIcon("#8a93ad"));
+    this.tray = new Tray(loadIcon("gray"));
     this.tray.setToolTip("Turnstone");
     this._rebuildMenu();
     this.tray.on("click", this.actions.showWindow);
@@ -22,7 +27,6 @@ class TurnStoneTray {
     this.consoleStatus = console_;
     this._rebuildMenu();
 
-    // Determine icon color from active statuses only
     const active = [];
     if (server !== "disabled") active.push(server);
     if (console_ !== "disabled") active.push(console_);
@@ -31,11 +35,11 @@ class TurnStoneTray {
     const someOk = active.some((s) => s === "ok");
 
     if (allOk) {
-      this.tray.setImage(this._createIcon("#34d399"));
+      this.tray.setImage(loadIcon("green"));
     } else if (someOk) {
-      this.tray.setImage(this._createIcon("#fbbf24"));
+      this.tray.setImage(loadIcon("yellow"));
     } else {
-      this.tray.setImage(this._createIcon("#f87171"));
+      this.tray.setImage(loadIcon("red"));
     }
   }
 
@@ -70,48 +74,6 @@ class TurnStoneTray {
     );
 
     this.tray.setContextMenu(Menu.buildFromTemplate(items));
-  }
-
-  _createIcon(color) {
-    // Generate a 16x16 PNG with a colored circle
-    const size = 16;
-    const canvas = Buffer.alloc(size * size * 4);
-
-    const cx = size / 2,
-      cy = size / 2,
-      r = 6;
-    const [cr, cg, cb] = this._hexToRgb(color);
-
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        const dist = Math.sqrt((x - cx + 0.5) ** 2 + (y - cy + 0.5) ** 2);
-        const idx = (y * size + x) * 4;
-
-        if (dist <= r) {
-          const alpha = dist > r - 1 ? Math.max(0, r - dist) : 1;
-          canvas[idx] = cr;
-          canvas[idx + 1] = cg;
-          canvas[idx + 2] = cb;
-          canvas[idx + 3] = Math.round(alpha * 255);
-        } else {
-          canvas[idx] = 0;
-          canvas[idx + 1] = 0;
-          canvas[idx + 2] = 0;
-          canvas[idx + 3] = 0;
-        }
-      }
-    }
-
-    return nativeImage.createFromBitmap(canvas, { width: size, height: size });
-  }
-
-  _hexToRgb(hex) {
-    const h = hex.replace("#", "");
-    return [
-      parseInt(h.substring(0, 2), 16),
-      parseInt(h.substring(2, 4), 16),
-      parseInt(h.substring(4, 6), 16),
-    ];
   }
 
   destroy() {
