@@ -2,7 +2,6 @@ module.exports = {
   packagerConfig: {
     name: "Turnstone",
     executableName: "turnstone-desktop",
-    icon: "./src/icons/icon",
     asar: true,
     appBundleId: "com.turnstone.desktop",
     appCategoryType: "public.app-category.developer-tools",
@@ -27,13 +26,12 @@ module.exports = {
     // Windows — single Setup.exe (auto-installs to %LOCALAPPDATA%, no admin)
     {
       name: "@electron-forge/maker-squirrel",
-      config: { name: "turnstone-desktop" },
+      config: { name: "turnstone-desktop", authors: "Turnstone Labs" },
     },
     // Linux — AppImage (single file, chmod +x and run)
     {
-      name: "electron-forge-maker-appimage",
+      name: "@reforged/maker-appimage",
       platforms: ["linux"],
-      config: {},
     },
     // Linux — .deb package for Debian/Ubuntu
     {
