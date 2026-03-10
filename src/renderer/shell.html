@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="shell.css">
+  <title>Turnstone</title>
+</head>
+<body>
+  <div id="title-bar">
+    <div id="drag-spacer"></div>
+
+    <span id="beta-badge">BETA</span>
+
+    <!-- Tabs (shown in "both" mode) -->
+    <div id="tabs" role="tablist">
+      <button class="tab active" data-tab="server" role="tab"
+              aria-selected="true" tabindex="0">
+        <span class="tab-label">Server</span>
+      </button>
+      <button class="tab" data-tab="console" role="tab"
+              aria-selected="false" tabindex="-1">
+        <span class="tab-label">Console</span>
+      </button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div id="health-indicators">
+      <div class="health-group" id="server-health-group">
+        <span class="health-dot" id="server-health" role="status"
+              aria-live="polite" aria-label="Server: unknown"></span>
+        <span class="health-label"><abbr title="Server">SRV</abbr></span>
+      </div>
+      <div class="health-group" id="console-health-group">
+        <span class="health-dot" id="console-health" role="status"
+              aria-live="polite" aria-label="Console: unknown"></span>
+        <span class="health-label"><abbr title="Console">CON</abbr></span>
+      </div>
+    </div>
+
+    <!-- Window controls (Win/Linux only — hidden on macOS) -->
+    <div id="window-controls" class="hidden">
+      <button class="win-ctrl" id="btn-minimize" aria-label="Minimize" title="Minimize">
+        <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
+      </button>
+      <button class="win-ctrl" id="btn-maximize" aria-label="Maximize" title="Maximize">
+        <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+      </button>
+      <button class="win-ctrl win-ctrl-close" id="btn-close" aria-label="Close" title="Close">
+        <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+    </div>
+  </div>
+  <script src="shell.js"></script>
+</body>
+</html>

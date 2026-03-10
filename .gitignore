@@ -1,0 +1,33 @@
+node_modules/
+out/
+dist/
+.webpack/
+.vite/
+
+# Environment and secrets
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Electron build artifacts
+*.dmg
+*.exe
+*.deb
+*.rpm
+*.AppImage
+*.snap
+*.nupkg
+RELEASES

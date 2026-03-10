@@ -1,0 +1,319 @@
+/* ==========================================================================
+   Turnstone Desktop — Shell Chrome (Custom Title Bar)
+   Extends the Instrument Panel design system
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0b0f19;
+  --bg-surface: #111827;
+  --bg-highlight: #1c2333;
+  --bg-elevated: #1f2a3d;
+  --fg: #d1d5e4;
+  --fg-dim: #8a93ad;
+  --fg-bright: #e8ecf4;
+  --accent: #e5a042;
+  --accent-dim: rgba(229, 160, 66, 0.15);
+  --accent-glow: rgba(229, 160, 66, 0.08);
+  --green: #34d399;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --green-glow: rgba(52, 211, 153, 0.25);
+  --red-glow: rgba(248, 113, 113, 0.25);
+  --yellow-glow: rgba(251, 191, 36, 0.25);
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.1);
+  --radius-sm: 3px;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', 'Cascadia Code', monospace;
+  --font-display: 'Outfit', 'Segoe UI', system-ui, sans-serif;
+}
+
+[data-theme="light"] {
+  --bg: #f3f4f6;
+  --bg-surface: #ffffff;
+  --bg-highlight: #e9ecf0;
+  --bg-elevated: #f9fafb;
+  --fg: #1e293b;
+  --fg-dim: #576275;
+  --fg-bright: #0f172a;
+  --accent: #8c5e1b;
+  --accent-dim: rgba(140, 94, 27, 0.1);
+  --accent-glow: rgba(140, 94, 27, 0.05);
+  --green: #047857;
+  --red: #dc2626;
+  --yellow: #b45309;
+  --green-glow: rgba(4, 120, 87, 0.25);
+  --red-glow: rgba(220, 38, 38, 0.25);
+  --yellow-glow: rgba(180, 83, 9, 0.25);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.12);
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg-surface);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+.hidden { display: none !important; }
+
+/* ==========================================================================
+   Title bar — custom chrome replacing native decoration
+   ========================================================================== */
+
+#title-bar {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-strong);
+  padding: 0 0 0 12px;
+  position: relative;
+  -webkit-app-region: drag;
+}
+
+#title-bar::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
+}
+
+/* macOS traffic light spacer — width set via JS */
+#drag-spacer {
+  flex-shrink: 0;
+  width: 0;
+}
+
+#beta-badge {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  background: var(--accent-glow);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  margin-right: 8px;
+  -webkit-app-region: no-drag;
+}
+
+/* ==========================================================================
+   Tabs (shown in "both" mode)
+   ========================================================================== */
+
+#tabs {
+  display: flex;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.tab {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 12px;
+  height: 36px;
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.tab:hover {
+  color: var(--fg-bright);
+  background: var(--bg-highlight);
+}
+
+.tab.active {
+  color: var(--accent);
+}
+
+.tab.active:hover {
+  background: none;
+}
+
+.tab::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.tab.active::after {
+  opacity: 1;
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.spacer {
+  flex: 1;
+  -webkit-app-region: drag;
+}
+
+/* ==========================================================================
+   Health indicators
+   ========================================================================== */
+
+#health-indicators {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding-right: 12px;
+  -webkit-app-region: no-drag;
+}
+
+.health-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.health-label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.health-label abbr {
+  text-decoration: none;
+}
+
+.health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  opacity: 0.3;
+  transition: background 0.4s ease, box-shadow 0.4s ease, opacity 0.4s ease;
+}
+
+.health-dot.connected {
+  background: var(--green);
+  border-radius: 50%;
+  opacity: 1;
+  box-shadow: 0 0 6px var(--green-glow), 0 0 2px var(--green-glow);
+  animation: led-pulse 2.5s ease-in-out infinite;
+}
+
+.health-dot.degraded {
+  background: var(--yellow);
+  border-radius: 1px;
+  transform: rotate(45deg);
+  opacity: 1;
+  box-shadow: 0 0 6px var(--yellow-glow);
+  animation: led-pulse 1.8s ease-in-out infinite;
+}
+
+.health-dot.disconnected {
+  background: var(--red);
+  border-radius: 0;
+  opacity: 0.7;
+  box-shadow: 0 0 4px var(--red-glow);
+}
+
+.health-dot.error {
+  background: var(--red);
+  border-radius: 0;
+  opacity: 1;
+  box-shadow: 0 0 6px var(--red-glow);
+}
+
+@keyframes led-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ==========================================================================
+   Window controls (Win/Linux) — VS Code style
+   ========================================================================== */
+
+#window-controls {
+  display: flex;
+  align-items: stretch;
+  height: 36px;
+  -webkit-app-region: no-drag;
+}
+
+.win-ctrl {
+  width: 46px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.win-ctrl:hover {
+  background: var(--bg-highlight);
+  color: var(--fg-bright);
+}
+
+.win-ctrl:active {
+  background: var(--bg-elevated);
+}
+
+.win-ctrl-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.win-ctrl-close:active {
+  background: #b22a1a;
+}
+
+.win-ctrl:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.win-ctrl svg {
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Reduced motion
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .health-dot.connected,
+  .health-dot.degraded {
+    animation: none;
+    opacity: 1;
+  }
+  .tab, .tab::after, .health-dot, .win-ctrl {
+    transition: none;
+  }
+}
