@@ -145,27 +145,6 @@
     </div>
     <div class="hint">Will reconnect automatically when the server comes back.</div>
   </div>
-  <script>
-    // Read the failed URL from the query string
-    const params = new URLSearchParams(window.location.search);
-    const failedUrl = params.get('url') || '';
-    document.getElementById('error-url').textContent = failedUrl;
-
-    document.getElementById('btn-retry').addEventListener('click', () => {
-      if (failedUrl) window.location.href = failedUrl;
-    });
-
-    document.getElementById('btn-settings').addEventListener('click', () => {
-      window.electronAPI.openSettings();
-    });
-
-    // Theme
-    function applyTheme() {
-      const preferLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-      document.documentElement.dataset.theme = preferLight ? 'light' : '';
-    }
-    applyTheme();
-    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
-  </script>
+  <script src="error.js"></script>
 </body>
 </html>
