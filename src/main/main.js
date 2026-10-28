@@ -99,9 +99,11 @@ function createMainWindow() {
   mainWindow.on("resize", layoutViews);
   layoutViews();
 
-  // Show when ready
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
+  // Show once the shell has painted. Not "ready-to-show": that fires only when
+  // the window's own webContents renders, and this window never loads a page
+  // of its own (all content lives in child WebContentsViews), so it never came.
+  shellView.webContents.once("did-finish-load", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
   });
 
   // Save window bounds (debounced)
