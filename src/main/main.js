@@ -11,6 +11,7 @@ const { HealthPoller } = require("./health.js");
 const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
 const { NotificationManager } = require("./notifications.js");
+const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 
 let settings = null;
 let mainWindow = null;
@@ -147,13 +148,16 @@ function setupViewSecurity(view, settingKey) {
 }
 
 function setupFailHandler(view, originalUrl) {
-  view.webContents.on("did-fail-load", (_event, _code, _desc, validatedURL) => {
-    // Don't intercept error page loads
-    if (validatedURL.startsWith("file://")) return;
-    const errorPage = path.join(__dirname, "../renderer/error.html");
-    const url = encodeURIComponent(originalUrl);
-    view.webContents.loadFile(errorPage, { query: `url=${url}` });
-  });
+  view.webContents.on(
+    "did-fail-load",
+    (_event, code, _desc, validatedURL, isMainFrame) => {
+      if (!shouldShowErrorPage(code, isMainFrame, validatedURL)) return;
+      const errorPage = path.join(__dirname, "../renderer/error.html");
+      view.webContents.loadFile(errorPage, {
+        query: errorPageQuery(originalUrl),
+      });
+    },
+  );
 }
 
 // ─── View Layout ─────────────────────────────────────────────────────────
