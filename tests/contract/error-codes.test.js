@@ -31,37 +31,111 @@ const NOT_SHOWN_CELLS = {
   POD_STOP_FAILED: "Not shown. Written to the log only.",
 };
 
-// Returns { CODE: text } for every entry in USER_MESSAGES.
-function userMessages(source) {
-  const block = /const USER_MESSAGES = \{\n([\s\S]*?)\n\};/.exec(source);
-  if (!block) return {};
-  return Object.fromEntries([...block[1].matchAll(/([A-Z_]+):\s*"([^"]*)"/g)].map((m) => [m[1], m[2]]));
+// A code written as a string literal, in either quote style.
+const LITERAL_CODE = /^(["'])([A-Z][A-Z0-9_]*)\1$/;
+
+// Returns the top-level argument texts of the call whose "(" is at index `open`. Commas inside
+// quotes or brackets do not split arguments, and a trailing comma adds no argument.
+function callArgs(source, open) {
+  const args = [];
+  let depth = 0;
+  let quote = null;
+  let current = "";
+  for (let i = open + 1; i < source.length; i++) {
+    const ch = source[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\") {
+        current += source[i + 1] ?? "";
+        i++;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if ("([{".includes(ch)) depth++;
+    if (")]}".includes(ch)) {
+      if (depth === 0) {
+        if (current.trim() !== "") args.push(current.trim());
+        return args;
+      }
+      depth--;
+    }
+    if (ch === "," && depth === 0) {
+      args.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  return args;
 }
 
-// Codes passed directly to `new LocalRuntimeError(`, allowing the code on the next line.
+// The first argument of every `new LocalRuntimeError(` call, in source order. Works across lines.
+function constructorFirstArgs(source) {
+  return [...source.matchAll(/new LocalRuntimeError\(/g)].map(
+    (m) => callArgs(source, m.index + m[0].length - 1)[0] ?? "",
+  );
+}
+
+// The second argument (the failCode) of every `this._podman(` call, in source order.
+// The method's own definition has no `this.` and is not matched.
+function podmanFailCodeArgs(source) {
+  return [...source.matchAll(/this\._podman\(/g)].map(
+    (m) => callArgs(source, m.index + m[0].length - 1)[1] ?? "",
+  );
+}
+
+// The code an argument names as a string literal, or null when it is a variable or an expression.
+function literalCode(arg) {
+  const m = LITERAL_CODE.exec(arg);
+  return m ? m[2] : null;
+}
+
+// Codes passed directly to `new LocalRuntimeError(`, in either quote style.
 function constructedCodes(source) {
-  return [...source.matchAll(/new LocalRuntimeError\(\s*"([A-Z_]+)"/g)].map((m) => m[1]);
+  return constructorFirstArgs(source).map(literalCode).filter((code) => code !== null);
 }
 
 // Codes passed as the failCode argument of this._podman(...), the form the runner
-// uses to wrap a podman failure. Only the call sites are matched, so the method's
-// own definition and the ENOENT comparison are not read as codes.
+// uses to wrap a podman failure.
 function podmanFailCodes(source) {
-  return [...source.matchAll(/this\._podman\([\s\S]*?"([A-Z][A-Z_]+)"\s*,?\s*\)/g)].map((m) => m[1]);
+  return podmanFailCodeArgs(source).map(literalCode).filter((code) => code !== null);
 }
 
-// Codes main.js handles: the ones it compares against and the one it shows itself.
+// Codes main.js handles: the ones it compares against and the one it shows itself, in either quote style.
 function mainHandledCodes(source) {
   return [
-    ...[...source.matchAll(/err\.code === "([A-Z_]+)"/g)].map((m) => m[1]),
-    ...[...source.matchAll(/showLocalError\(view,\s*"([A-Z_]+)"/g)].map((m) => m[1]),
+    ...[...source.matchAll(/err\.code === ["']([A-Z][A-Z0-9_]*)["']/g)].map((m) => m[1]),
+    ...[...source.matchAll(/showLocalError\(view,\s*["']([A-Z][A-Z0-9_]*)["']/g)].map((m) => m[1]),
   ];
 }
 
 // The message main.js shows for UNEXPECTED, which is not in USER_MESSAGES.
 function mainUnexpectedMessage(source) {
-  const m = /showLocalError\(view,\s*"UNEXPECTED",\s*"([^"]*)"/.exec(source);
-  return m ? m[1] : null;
+  const m = /showLocalError\(view,\s*["']UNEXPECTED["'],\s*(["'])(.*?)\1/.exec(source);
+  return m ? m[2] : null;
+}
+
+// Each { key, text } entry of USER_MESSAGES, in source order. Duplicates are kept so that a
+// caller can see them; an object literal would keep only the last one. Keys may be bare or quoted.
+function userMessageEntries(source) {
+  const block = /const USER_MESSAGES = \{\n([\s\S]*?)\n\};/.exec(source);
+  if (!block) return [];
+  return [...block[1].matchAll(/["']?\b([A-Z][A-Z0-9_]*)["']?:\s*(["'])((?:(?!\2)[^\n])*)\2/g)].map((m) => ({
+    key: m[1],
+    text: m[3],
+  }));
+}
+
+// Returns { CODE: text } for every entry in USER_MESSAGES.
+function userMessages(source) {
+  return Object.fromEntries(userMessageEntries(source).map((e) => [e.key, e.text]));
 }
 
 // Returns one { code, message } per row of the "Local mode errors" table.
@@ -150,6 +224,25 @@ describe("Local mode error codes", () => {
     });
   });
 
+  // Failure: a code is thrown with a variable instead of a literal, so the USER_MESSAGES and README checks never see it and the refactor passes silently.
+  it("has no non-literal code at any call site, except the one forwarder in _wrap", () => {
+    const ctor = constructorFirstArgs(localRuntime);
+    const forwarded = ctor.filter((arg) => arg === "failCode");
+    const variableCtor = ctor.filter((arg) => arg !== "failCode" && literalCode(arg) === null);
+    const variablePodman = podmanFailCodeArgs(localRuntime).filter((arg) => literalCode(arg) === null);
+
+    expect(variableCtor).toEqual([]);
+    expect(variablePodman).toEqual([]);
+    expect(forwarded).toEqual(["failCode"]);
+  });
+
+  // Failure: USER_MESSAGES has the same key twice, and the later entry silently replaces the earlier, so one text is never shown.
+  it("USER_MESSAGES has no duplicate keys", () => {
+    const keys = userMessageEntries(localRuntime).map((e) => e.key);
+
+    expect(keys).toEqual([...new Set(keys)]);
+  });
+
   // Failure: the table parser silently misses a row, so every table check above passes against a README with a row removed.
   it("detector control: the table parser reports a removed row as missing", () => {
     const withoutHealth = readme.replace(/^\| `HEALTH_TIMEOUT` \|.*\n/m, "");
@@ -175,5 +268,47 @@ describe("Local mode error codes", () => {
     const sample = 'throw new LocalRuntimeError(\n          "HEALTH_TIMEOUT",\n          `x`,\n        );';
 
     expect(constructedCodes(sample)).toEqual(["HEALTH_TIMEOUT"]);
+  });
+
+  // Failure: a code written with single quotes is missed by every extractor, so a single-quoted code is never checked at all.
+  it("detector control: single-quoted codes are read at every call form", () => {
+    const sample = [
+      "throw new LocalRuntimeError('HEALTH_TIMEOUT', 'x');",
+      "await this._podman(['pod', 'start'], 'POD_START_FAILED');",
+      "if (err.code === 'START_CANCELLED') return;",
+      "showLocalError(view, 'NODE_TIMEOUT', 'm');",
+    ].join("\n");
+
+    expect(constructedCodes(sample)).toEqual(["HEALTH_TIMEOUT"]);
+    expect(podmanFailCodes(sample)).toEqual(["POD_START_FAILED"]);
+    expect(mainHandledCodes(sample)).toEqual(["START_CANCELLED", "NODE_TIMEOUT"]);
+  });
+
+  // Failure: a variable code is passed to either call form and the non-literal check counts nothing, so the refactor passes silently.
+  it("detector control: a variable code is counted at both call forms", () => {
+    const sample = [
+      'throw new LocalRuntimeError(code, "x");',
+      "await this._podman(args, failCode);",
+      "throw new LocalRuntimeError('HEALTH_TIMEOUT', 'x');",
+    ].join("\n");
+
+    expect(constructorFirstArgs(sample).filter((arg) => literalCode(arg) === null)).toEqual(["code"]);
+    expect(podmanFailCodeArgs(sample).filter((arg) => literalCode(arg) === null)).toEqual(["failCode"]);
+  });
+
+  // Failure: a duplicate USER_MESSAGES key with identical text is not reported, because the object literal keeps one entry and the text still matches.
+  it("detector control: a duplicate USER_MESSAGES key is reported even with identical text", () => {
+    const sample = [
+      "const USER_MESSAGES = {",
+      '  POD_MISSING: "The pod is missing.",',
+      '  POD_MISSING: "The pod is missing.",',
+      "  HEALTH_TIMEOUT:",
+      "    'Timed out.',",
+      "};",
+    ].join("\n");
+    const keys = userMessageEntries(sample).map((e) => e.key);
+
+    expect(keys).toEqual(["POD_MISSING", "POD_MISSING", "HEALTH_TIMEOUT"]);
+    expect(keys).not.toEqual([...new Set(keys)]);
   });
 });
