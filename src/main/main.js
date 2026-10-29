@@ -13,7 +13,7 @@ const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
 const { NotificationManager } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
-const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
+const { shouldShowErrorPage, errorPageQuery, recoveryAction } = require("./load-failure.js");
 
 let settings = null;
 let mainWindow = null;
@@ -76,7 +76,7 @@ function createMainWindow() {
     serverView = new WebContentsView({ webPreferences: contentViewPrefs });
     serverView.webContents.loadURL(settings.serverUrl);
     setupViewSecurity(serverView, "serverUrl");
-    setupFailHandler(serverView, settings.serverUrl);
+    setupFailHandler(serverView, () => settings.serverUrl);
   }
 
   // --- Console view (if mode includes console) ---
@@ -87,7 +87,7 @@ function createMainWindow() {
     if (settings.isLocal) showLocalLoading(consoleView);
     else consoleView.webContents.loadURL(settings.consoleUrl);
     setupViewSecurity(consoleView, "consoleUrl");
-    setupFailHandler(consoleView, settings.consoleUrl);
+    setupFailHandler(consoleView, () => settings.consoleUrl);
   }
 
   // Add the correct initial content view
@@ -160,17 +160,53 @@ function setupViewSecurity(view, settingKey) {
   });
 }
 
-function setupFailHandler(view, originalUrl) {
+// getUrl is read at failure time so the error page and its Retry follow a
+// serverUrl/consoleUrl change made in Settings after the window was built.
+function setupFailHandler(view, getUrl) {
   view.webContents.on(
     "did-fail-load",
     (_event, code, _desc, validatedURL, isMainFrame) => {
       if (!shouldShowErrorPage(code, isMainFrame, validatedURL)) return;
       const errorPage = path.join(__dirname, "../renderer/error.html");
       view.webContents.loadFile(errorPage, {
-        query: errorPageQuery(originalUrl),
+        query: errorPageQuery(getUrl()),
       });
     },
   );
+}
+
+// A reload repeats the current page, which after a failure is our error page;
+// recoveryAction decides when the original URL has to be loaded instead.
+function recoverView(view, getUrl) {
+  const wc = view.webContents;
+  if (wc.isDestroyed()) return;
+  // The health poller keeps running while the quit-time pod stop finishes;
+  // a recovery then must not re-run a start that cancels or races the stop.
+  if (quitting) return;
+  const localConsole = settings.isLocal && view === consoleView;
+  // A local start owns the console view while it runs: loading the console
+  // now would replace the loading page with one whose node is not up.
+  if (localConsole && localRuntime && localRuntime.starting) return;
+  // Local mode: a reload of a console the health poller sees as down just
+  // fails again (the pod is stopped), so go through the local start instead.
+  const consoleDown = localConsole && healthPoller && healthPoller.status.console !== "ok";
+  if (recoveryAction(wc.getURL()) === "reload" && !consoleDown) {
+    wc.reload();
+  } else if (localConsole) {
+    // Our own local error/loading page is showing: re-run the local start
+    // (idempotent, so it also waits for the node) rather than load the URL
+    // directly and strand the local Retry.
+    showLocalLoading(view);
+    startLocalRuntime();
+  } else {
+    wc.loadURL(getUrl()).catch(() => {});
+  }
+}
+
+function urlGetterFor(view) {
+  return view === serverView
+    ? () => settings.serverUrl
+    : () => settings.consoleUrl;
 }
 
 // ─── Local Runtime ───────────────────────────────────────────────────────
@@ -222,6 +258,8 @@ function loadLocalConsole(view) {
 
 async function startLocalRuntime() {
   if (!settings.isLocal) return;
+  // Quitting: the pod is being stopped; a fresh start would fight it.
+  if (quitting) return;
   if (!localRuntime) localRuntime = new LocalRuntime({ onProgress: sendLocalProgress });
   const view = consoleView;
   try {
@@ -367,7 +405,7 @@ function rebuildWindow() {
     switchTab,
     reloadActiveView: () => {
       const view = getActiveView();
-      if (view) view.webContents.reload();
+      if (view) recoverView(view, urlGetterFor(view));
     },
     toggleDevTools: () => {
       const view = getActiveView();
@@ -517,14 +555,14 @@ function setupHealthPoller() {
 
     // Auto-reload views on recovery
     if (prev.server !== "ok" && status.server === "ok" && serverView) {
-      serverView.webContents.reload();
+      recoverView(serverView, () => settings.serverUrl);
     }
     if (prev.console !== "ok" && status.console === "ok" && consoleView) {
       // A local start owns the console view while it runs: reloading now
       // would replace the loading page with a console whose node is not up.
       const localStarting =
         settings.isLocal && localRuntime && localRuntime.starting;
-      if (!localStarting) consoleView.webContents.reload();
+      if (!localStarting) recoverView(consoleView, () => settings.consoleUrl);
     }
   });
 
@@ -558,7 +596,7 @@ app.whenReady().then(async () => {
     switchTab,
     reloadActiveView: () => {
       const view = getActiveView();
-      if (view) view.webContents.reload();
+      if (view) recoverView(view, urlGetterFor(view));
     },
     toggleDevTools: () => {
       const view = getActiveView();

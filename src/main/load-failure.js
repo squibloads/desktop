@@ -19,4 +19,19 @@ function errorPageQuery(originalUrl) {
   return { url: originalUrl };
 }
 
-module.exports = { shouldShowErrorPage, errorPageQuery };
+/**
+ * Pick how to recover a view after its backend comes back. A reload repeats
+ * whatever the view is showing, so when that is our own error or loading
+ * page the reload re-shows the page and never reaches the server; the
+ * original URL has to be loaded instead. An empty URL means nothing useful
+ * is loaded, so it takes the same path.
+ */
+function recoveryAction(currentUrl) {
+  if (typeof currentUrl !== "string" || currentUrl === "") return "load-original";
+  // Allow-list: only a live http(s) page is worth reloading. Our own file://
+  // pages, about:blank, data: and chrome-error: all need the URL loaded.
+  if (/^https?:\/\//i.test(currentUrl)) return "reload";
+  return "load-original";
+}
+
+module.exports = { shouldShowErrorPage, errorPageQuery, recoveryAction };
