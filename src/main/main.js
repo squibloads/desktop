@@ -393,6 +393,12 @@ function openSettings() {
 // ─── Rebuild Window ──────────────────────────────────────────────────────
 
 function rebuildWindow() {
+  // Stop the old notifications before the window is rebuilt. If the rebuild
+  // throws, the new mode is already saved, and the old manager must not keep
+  // alerting under it.
+  if (notifications) notifications.stop();
+  notifications = null;
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.close();
   }
@@ -423,10 +429,7 @@ function rebuildWindow() {
   if (healthPoller) healthPoller.stop();
   setupHealthPoller();
 
-  // Restart notifications
-  if (notifications) notifications.stop();
-  // A stopped manager must not stay here: the save handler restarts whatever this holds.
-  notifications = null;
+  // Start notifications for the new mode
   if (settings.hasServer) {
     notifications = new NotificationManager(settings);
     notifications.start();

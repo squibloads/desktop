@@ -69,14 +69,18 @@ describe("main.js wiring", () => {
     expect(hits.length).toBe(2);
   });
 
-  // Failure: a stopped notification manager stays in its variable, so the save handler restarts it and reconnects to the old server.
-  it("clears the notification manager before the window is rebuilt builds a new one", () => {
+  // Failure: the old mode keeps alerting when the rebuild throws half way, because its notifications were stopped last.
+  it("stops the notification manager before the window is closed and rebuilt", () => {
     const fn = main.indexOf("function rebuildWindow() {");
+    const stop = main.indexOf("notifications.stop();", fn);
     const clear = main.indexOf("notifications = null;", fn);
+    const close = main.indexOf("mainWindow.close();", fn);
     const build = main.indexOf("notifications = new NotificationManager(settings);", fn);
 
     expect(fn).toBeGreaterThan(-1);
-    expect(clear).toBeGreaterThan(fn);
-    expect(build).toBeGreaterThan(clear);
+    expect(stop).toBeGreaterThan(fn);
+    expect(clear).toBeGreaterThan(stop);
+    expect(close).toBeGreaterThan(clear);
+    expect(build).toBeGreaterThan(close);
   });
 });
