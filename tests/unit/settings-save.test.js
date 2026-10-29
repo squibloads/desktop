@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-const { planSettingsSave, isValidUrl } = require("../../src/main/settings-save.js");
+const { planSettingsSave, isValidUrl, writeSavePlan } = require("../../src/main/settings-save.js");
 
 const SERVER_URL = "http://127.0.0.1:8080";
 const CONSOLE_URL = "http://127.0.0.1:8090";
@@ -303,5 +303,34 @@ describe("planSettingsSave empty mode", () => {
       consoleUrl: CONSOLE_URL,
     });
     expect(result.apply.mode).toBe("both");
+  });
+});
+
+describe("writeSavePlan", () => {
+  // Failure: a console URL that fails to save leaves the mode switched, so the window keeps the old mode while the store says the new one.
+  it("keeps the saved mode when an earlier write throws", () => {
+    const store = { mode: "both", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" };
+    Object.defineProperty(store, "consoleUrl", {
+      get: () => CONSOLE_URL,
+      set: () => {
+        throw new Error("disk full");
+      },
+    });
+
+    expect(() => writeSavePlan(store, { mode: "console", consoleUrl: NEW_CONSOLE_URL })).toThrow("disk full");
+    expect(store.mode).toEqual("both");
+  });
+
+  // Failure: a save drops one of the fields the plan carries, so the stored settings differ from what the user saved.
+  it("writes every field the plan carries", () => {
+    const store = { mode: "both", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" };
+    writeSavePlan(store, { mode: "server", serverUrl: NEW_SERVER_URL, quitBehavior: "keep" });
+
+    expect(store).toEqual({
+      mode: "server",
+      serverUrl: NEW_SERVER_URL,
+      consoleUrl: CONSOLE_URL,
+      quitBehavior: "keep",
+    });
   });
 });

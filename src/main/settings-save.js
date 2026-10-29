@@ -73,4 +73,16 @@ function planSettingsSave(current, incoming) {
   };
 }
 
-module.exports = { planSettingsSave, isValidUrl };
+/**
+ * Writes a planned save to the store. The mode is written last: if an earlier
+ * write throws, the stored mode is still the old one, so the window and the
+ * notifications built from it still match what is saved.
+ */
+function writeSavePlan(store, apply) {
+  if (apply.quitBehavior !== undefined) store.quitBehavior = apply.quitBehavior;
+  if (apply.serverUrl !== undefined) store.serverUrl = apply.serverUrl;
+  if (apply.consoleUrl !== undefined) store.consoleUrl = apply.consoleUrl;
+  store.mode = apply.mode;
+}
+
+module.exports = { planSettingsSave, isValidUrl, writeSavePlan };

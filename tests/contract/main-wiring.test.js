@@ -25,6 +25,8 @@ const shapes = [
   ["layout active tab", "    activeTab,"],
   // Failure: switching on the requested tab instead of the planned one.
   ["tab switch plan", 'if (plan.tab === "server")'],
+  // Failure: the mode is written before the URLs, so a URL write that throws leaves a mode switch with no rebuild.
+  ["save write order", "writeSavePlan(settings, plan.apply);"],
 ];
 
 describe("main.js wiring", () => {

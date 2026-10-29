@@ -16,7 +16,7 @@ const { NotificationManager } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
 const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 const { planRecovery } = require("./recovery.js");
-const { planSettingsSave } = require("./settings-save.js");
+const { planSettingsSave, writeSavePlan } = require("./settings-save.js");
 const { shouldStopPodOnQuit } = require("./quit-policy.js");
 const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
 const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
@@ -451,11 +451,7 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
   );
   if (plan.error) return { error: plan.error };
 
-  const { apply } = plan;
-  if (apply.quitBehavior !== undefined) settings.quitBehavior = apply.quitBehavior;
-  settings.mode = apply.mode;
-  if (apply.serverUrl !== undefined) settings.serverUrl = apply.serverUrl;
-  if (apply.consoleUrl !== undefined) settings.consoleUrl = apply.consoleUrl;
+  writeSavePlan(settings, plan.apply);
 
   if (plan.modeChanged) {
     // Mode change requires full window rebuild
