@@ -12,6 +12,7 @@ const readme = read("README.md");
 const settingsStore = read("src/main/settings-store.js");
 const localRuntime = read("src/main/local-runtime.js");
 const healthJs = read("src/main/health.js");
+const runtimeConfig = read("src/main/runtime-config.js");
 
 // The first capture group of `pattern` in `text`. A missing match fails with `what` named,
 // so a refactor that moves or rewords the text is reported by name, not as a TypeError.
@@ -91,13 +92,15 @@ describe("README settings reference matches the code", () => {
 
   // Failure: the README gives one Local Console address and the app uses another, so the Console opens on the wrong port.
   it("the Local Console address equals LOCAL_CONSOLE_URL and the local health default", () => {
-    const constant = capture(/const LOCAL_CONSOLE_URL = "([^"]*)"/, settingsStore, "LOCAL_CONSOLE_URL");
-    const healthDefault = capture(/healthUrl = "([^"]*)"/, localRuntime, "healthUrl default");
+    const constant = capture(/const DEFAULT_LOCAL_CONSOLE_URL = "([^"]*)"/, runtimeConfig, "DEFAULT_LOCAL_CONSOLE_URL");
+    const healthWiring = /\bhealthUrl = localConsoleUrl\(\)/.test(localRuntime);
+    const consoleWiring = /return this\.isLocal \? localConsoleUrl\(\) : /.test(settingsStore);
     const readmeAddresses = [...readme.matchAll(/https?:\/\/127\.0\.0\.1:\d+/g)].map((m) => m[0]);
     const mismatched = readmeAddresses.filter((address) => address !== "http://127.0.0.1:8090");
 
     expect(constant).toEqual("http://127.0.0.1:8090");
-    expect(healthDefault).toEqual("http://127.0.0.1:8090");
+    expect(healthWiring).toBe(true);
+    expect(consoleWiring).toBe(true);
     // The README names the Local address in several places; each one must match, and at least one must exist.
     const mentionsAddress = readmeAddresses.length > 0;
     expect(mentionsAddress).toBe(true);
@@ -242,5 +245,14 @@ describe("README timing claims match the code", () => {
       { mode: "Server Only", notifications: "Yes" },
       { mode: "Local", notifications: "No" },
     ]);
+  });
+
+  // Failure: the console-address patterns used above match nothing on a sample, so a rename in runtime-config.js or the wiring goes unnoticed.
+  it("detector control: the console-address extractors read a known sample", () => {
+    const wiringSample = 'const DEFAULT_LOCAL_CONSOLE_URL = "http://127.0.0.1:8090";\n    healthUrl = localConsoleUrl(),\n    return this.isLocal ? localConsoleUrl() : this.store.get("consoleUrl");';
+
+    expect(capture(/const DEFAULT_LOCAL_CONSOLE_URL = "([^"]*)"/, wiringSample, "constant sample")).toEqual("http://127.0.0.1:8090");
+    expect(/\bhealthUrl = localConsoleUrl\(\)/.test(wiringSample)).toBe(true);
+    expect(/return this\.isLocal \? localConsoleUrl\(\) : /.test(wiringSample)).toBe(true);
   });
 });

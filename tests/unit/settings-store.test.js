@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 const { SettingsStore } = require("../../src/main/settings-store.js");
 
@@ -115,6 +115,8 @@ describe("SettingsStore local mode", () => {
   }
 
   it("is console-only against the local pod, ignoring saved URLs", () => {
+    // Failure: a developer shell that exports the override makes this default-address check fail for the wrong reason.
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "");
     const s = createLocal();
     expect(s.hasConsole).toBe(true);
     expect(s.hasServer).toBe(false);
@@ -162,5 +164,41 @@ describe("SettingsStore quitBehavior validation", () => {
   it("throws on an unreadable value instead of inventing one", () => {
     expect(() => make("bogus").quitBehavior).toThrow(/invalid quitBehavior/);
     expect(() => make(undefined).quitBehavior).toThrow(/invalid quitBehavior/);
+  });
+});
+
+describe("SettingsStore local console override", () => {
+  function local(mode = "local") {
+    const data = { mode, quitBehavior: "stop", serverUrl: "http://x:1", consoleUrl: "http://y:2" };
+    return new SettingsStore({
+      get: (k) => data[k],
+      set: (k, v) => {
+        data[k] = v;
+      },
+    });
+  }
+
+  // Failure: with the override unset, local mode stops opening the README's console address 127.0.0.1:8090.
+  it("keeps 127.0.0.1:8090 in local mode when the override is unset", () => {
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "");
+    expect(local().consoleUrl).toBe("http://127.0.0.1:8090");
+  });
+
+  // Failure: the getter ignores the override, so the smoke tier opens the default console instead of its fake.
+  it("uses the override in local mode, reduced to its origin", () => {
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "http://localhost:9191/x");
+    expect(local().consoleUrl).toBe("http://localhost:9191");
+  });
+
+  // Failure: the override leaks into other modes, so a user's saved remote Console URL is replaced by the local address.
+  it("ignores the override outside local mode", () => {
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "http://localhost:9191");
+    expect(local("both").consoleUrl).toBe("http://y:2");
+  });
+
+  // Failure: a malformed override is silently replaced by the default, so a bad smoke-test value is never reported.
+  it("throws naming the variable on read in local mode when the override is malformed", () => {
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "http://example.com:9191");
+    expect(() => local().consoleUrl).toThrow(/TURNSTONE_LOCAL_CONSOLE_URL/);
   });
 });

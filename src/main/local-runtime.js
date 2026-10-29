@@ -1,4 +1,5 @@
 const { execFile } = require("child_process");
+const { podmanCommand, localConsoleUrl } = require("./runtime-config.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
@@ -40,9 +41,11 @@ function podArgs(args) {
 /** Real podman runner. ENOENT is kept on the error so a missing binary is distinguishable. */
 function runPodman(args) {
   return new Promise((resolve, reject) => {
+    // Read per call, so an override set after load still applies; a malformed one rejects here.
+    const cmd = podmanCommand();
     execFile(
-      "podman",
-      args,
+      cmd.file,
+      [...cmd.prefixArgs, ...args],
       { windowsHide: true, timeout: 120000 },
       (err, stdout, stderr) => {
         if (err) {
@@ -97,7 +100,7 @@ class LocalRuntime {
     run = runPodman,
     fetchHealth = fetchHealthJson,
     sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-    healthUrl = "http://127.0.0.1:8090",
+    healthUrl = localConsoleUrl(),
     healthTimeoutMs = 120000,
     nodeTimeoutMs = 180000,
     healthIntervalMs = 1000,

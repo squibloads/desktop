@@ -188,6 +188,8 @@ Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to chang
 Tests live in `tests/unit` (one module under `src/main`), `tests/contract` (checks on static files and the test layout), and
 `tests/renderer` (each renderer page in jsdom). The rules for writing tests are in `tests/helpers/README.md`.
 
+**For developers: smoke-test overrides.** Two environment variables exist for the opt-in Electron smoke tests and are off by default. `TURNSTONE_PODMAN` replaces the `podman` command with a JSON array of strings: the executable first, then any arguments that go before the Podman arguments, for example `["C:\\node.exe","C:\\fake-podman.js"]`. `TURNSTONE_LOCAL_CONSOLE_URL` replaces the Local Console address with an `http://` URL on `127.0.0.1`, `localhost` or `[::1]`, for example `http://localhost:9191`; a URL with credentials or any other host is rejected. A malformed value is an error that names the variable, never a silent fallback.
+
 ## Building
 
 ```bash
