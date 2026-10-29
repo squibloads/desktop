@@ -67,7 +67,7 @@ jobs:
   # Electron smoke tier. Locally it is opt-in (npm run test:e2e). Here it runs under Xvfb and must
   # fail, not skip, when the Electron binary is missing: see tests/helpers/e2e-setup.js.
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -84,10 +84,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # ubuntu-latest ships xvfb-run, so the install runs only when it is missing. The libraries are
+      # ubuntu-24.04 ships xvfb-run, so the install runs only when it is missing. The libraries are
       # what Electron needs on Ubuntu 24.04 (the t64 package names).
       - name: Install Xvfb and Electron libraries
         run: |
+          sudo apt-get update
           command -v xvfb-run || sudo apt-get install -y --no-install-recommends xvfb
           sudo apt-get install -y --no-install-recommends libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0
 

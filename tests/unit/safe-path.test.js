@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkPodmanOverride, pathWithoutPodman } from "../helpers/safe-path.js";
+import { checkPodmanOverride, checkSeededSettings, pathWithoutPodman } from "../helpers/safe-path.js";
 
 // Every case passes its own separator, so the expected strings are the same on Windows and POSIX
 // hosts; a Windows temp path contains a colon, so the POSIX separator cannot be assumed.
@@ -100,5 +100,38 @@ describe("checkPodmanOverride", () => {
   // Failure: the override starts with podman itself, so the fake is bypassed.
   it("refuses an array whose first element is not the node binary", () => {
     expect(checkPodmanOverride(JSON.stringify(["podman", "machine", "list"]), EXEC)).not.toBeNull();
+  });
+});
+
+describe("checkSeededSettings", () => {
+  // Failure: a launch with no mode falls back to Both and polls localhost:8080 and :8090, where a real Turnstone may be running.
+  it("refuses settings with no mode", () => {
+    expect(checkSeededSettings({})).toBe("settings.serverUrl must be an explicit loopback URL when the mode is both");
+  });
+
+  // Failure: Local mode is redirected to the fake console by TURNSTONE_LOCAL_CONSOLE_URL, so it needs no saved URL.
+  it("accepts Local mode", () => {
+    expect(checkSeededSettings({ mode: "local" })).toBe(null);
+  });
+
+  // Failure: console mode without a consoleUrl polls the default localhost:8090.
+  it("refuses console mode without a URL", () => {
+    expect(checkSeededSettings({ mode: "console" })).toBe("settings.consoleUrl must be an explicit loopback URL when the mode is console");
+  });
+
+  // Failure: a saved URL on the real default port reaches a live service.
+  it("refuses the default ports", () => {
+    expect(checkSeededSettings({ mode: "console", consoleUrl: "http://127.0.0.1:8090" })).toBe("settings.consoleUrl must not use port 8090, where a real Turnstone may be listening");
+  });
+
+  // Failure: a non-loopback or portless URL reaches the network or a default port.
+  it("refuses a non-loopback host and a missing port", () => {
+    expect(checkSeededSettings({ mode: "console", consoleUrl: "http://example.com:9000" })).toBe("settings.consoleUrl must be a loopback URL with an explicit port when the mode is console");
+    expect(checkSeededSettings({ mode: "console", consoleUrl: "http://127.0.0.1" })).toBe("settings.consoleUrl must be a loopback URL with an explicit port when the mode is console");
+  });
+
+  // Failure: a valid loopback URL on a free port is wrongly refused, so the retry scenario cannot run.
+  it("accepts an explicit loopback URL on a free port", () => {
+    expect(checkSeededSettings({ mode: "console", consoleUrl: "http://127.0.0.1:41234" })).toBe(null);
   });
 });

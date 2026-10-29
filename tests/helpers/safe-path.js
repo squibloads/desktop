@@ -55,3 +55,31 @@ export function checkPodmanOverride(raw, execPath) {
   }
   return null;
 }
+
+// Returns null when the seeded settings can only reach loopback addresses with an explicit port,
+// otherwise the reason they cannot. Only Local mode is redirected by TURNSTONE_LOCAL_CONSOLE_URL; any
+// other mode (or no mode, which defaults to Both) uses the saved URLs, and their defaults are
+// localhost:8080 and localhost:8090 where a real Turnstone may be running on a developer box.
+export function checkSeededSettings(settings) {
+  if (settings.mode === "local") return null;
+  const mode = settings.mode ?? "both";
+  const needed = [];
+  if (mode === "server" || mode === "both") needed.push("serverUrl");
+  if (mode === "console" || mode === "both") needed.push("consoleUrl");
+  for (const key of needed) {
+    let url;
+    try {
+      url = new URL(settings[key]);
+    } catch {
+      return `settings.${key} must be an explicit loopback URL when the mode is ${mode}`;
+    }
+    const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
+    if (!loopback || url.port === "") {
+      return `settings.${key} must be a loopback URL with an explicit port when the mode is ${mode}`;
+    }
+    if (url.port === "8080" || url.port === "8090") {
+      return `settings.${key} must not use port ${url.port}, where a real Turnstone may be listening`;
+    }
+  }
+  return null;
+}

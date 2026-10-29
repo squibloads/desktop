@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { vi } from "vitest";
-import { checkPodmanOverride, pathWithoutPodman } from "./safe-path.js";
+import { checkPodmanOverride, checkSeededSettings, pathWithoutPodman } from "./safe-path.js";
 
 // path.resolve drops the trailing separator: a trailing backslash escapes the closing quote in
 // Electron's Windows argv parsing and glues the next argument onto the app path.
@@ -149,6 +149,8 @@ export function registerConsole(fake) {
 }
 
 export async function launchApp({ settings = {}, podmanState = {}, env = {}, consolePort } = {}) {
+  const settingsProblem = checkSeededSettings(settings);
+  if (settingsProblem) throw new Error(`launchApp refused: ${settingsProblem}`);
   // Resolved before the temp dir exists, so a failed port reservation leaves nothing behind.
   const consoleUrl = `http://127.0.0.1:${consolePort ?? (await reservedClosedPort())}`;
   const userDataDir = mkdtempSync(join(tmpdir(), "turnstone-e2e-"));
