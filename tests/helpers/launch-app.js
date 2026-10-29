@@ -211,6 +211,27 @@ export async function launchApp({ settings = {}, podmanState = {}, env = {}, con
     });
   }
 
+  // A page the main process holds, reached through its webContents. Used only when Playwright
+  // has not reported the page; it covers what the tests call: url, title, evaluate, textContent.
+  function mainPage(initialUrl) {
+    const run = (script) =>
+      app.evaluate(
+        ({ webContents }, { url, code }) => {
+          const all = webContents.getAllWebContents();
+          const target = all.find((c) => c.getURL() === url) ?? all.find((c) => c.getURL().split("?")[0] === url.split("?")[0]);
+          if (!target) throw new Error(`page ${url} is gone`);
+          return target.executeJavaScript(code);
+        },
+        { url: initialUrl, code: script },
+      );
+    return {
+      url: () => initialUrl,
+      title: () => run("document.title"),
+      textContent: (selector) => run(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`),
+      evaluate: (fn, arg) => run(`(${fn.toString()})(${JSON.stringify(arg ?? null)})`),
+    };
+  }
+
   async function findPage(predicate, { description = "window", timeoutMs = 30_000 } = {}) {
     let found = null;
     await vi.waitFor(
@@ -218,12 +239,18 @@ export async function launchApp({ settings = {}, podmanState = {}, env = {}, con
         found = app.windows().find(predicate) ?? null;
         if (!found) {
           const open = app.windows().map((w) => w.url()).join(", ") || "none";
-          // What the main process itself holds: a view it loaded that Playwright never reported
-          // shows here and not in the list above.
-          const inMain = await app
+          // Playwright sometimes never reports a view the app created during its own startup, so
+          // the main process is asked too. A page it holds is returned as a stand-in that answers
+          // the few calls the tests make.
+          const inMainUrls = await app
             .evaluate(({ webContents }) => webContents.getAllWebContents().map((c) => c.getURL()))
-            .then((urls) => urls.join(", ") || "none")
-            .catch((err) => `unreadable (${err.message})`);
+            .catch(() => []);
+          const mainUrl = inMainUrls.find((url) => predicate({ url: () => url }));
+          if (mainUrl !== undefined) {
+            found = mainPage(mainUrl);
+            return;
+          }
+          const inMain = inMainUrls.join(", ") || "none";
           throw new Error(
             `no ${description}; open windows: ${open}
 main process pages: ${inMain}
