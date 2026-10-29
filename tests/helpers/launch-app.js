@@ -202,6 +202,14 @@ export async function launchApp({ settings = {}, podmanState = {}, env = {}, con
 
   let finalLog = null;
   let closed = false;
+  // The app's own output, kept for the failure message: a view that never loads is otherwise a
+  // bare timeout, and the cause is usually one line the main process printed.
+  let appOutput = "";
+  for (const stream of [app.process().stdout, app.process().stderr]) {
+    stream?.on("data", (chunk) => {
+      appOutput = (appOutput + chunk).slice(-4000);
+    });
+  }
 
   async function findPage(predicate, { description = "window", timeoutMs = 30_000 } = {}) {
     let found = null;
@@ -210,7 +218,12 @@ export async function launchApp({ settings = {}, podmanState = {}, env = {}, con
         found = app.windows().find(predicate) ?? null;
         if (!found) {
           const open = app.windows().map((w) => w.url()).join(", ") || "none";
-          throw new Error(`no ${description}; open windows: ${open}`);
+          throw new Error(
+            `no ${description}; open windows: ${open}
+podman calls: ${JSON.stringify(readLines(logPath))}
+app output:
+${appOutput || "(none)"}`,
+          );
         }
       },
       { timeout: timeoutMs, interval: 200 },
