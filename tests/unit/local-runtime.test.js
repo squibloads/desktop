@@ -1,4 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { installSteppedClock } from "../helpers/fake-clock.js";
 
 const { LocalRuntime, LocalRuntimeError } = require("../../src/main/local-runtime.js");
@@ -627,5 +630,49 @@ describe("LocalRuntime node wait when the console drops", () => {
     expect(err.detail).toContain("stopped answering");
     // One console poll (ok, nodes=0), then four node polls.
     expect(fetchHealth).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe("LocalRuntime console address", () => {
+  // Failure: with the override unset, the health poll targets another address than the README's 127.0.0.1:8090, so startup waits on a console nobody runs.
+  it("defaults healthUrl to the README address when the override is unset", () => {
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "");
+    const rt = new LocalRuntime({ run: vi.fn(), fetchHealth: vi.fn() });
+    expect(rt.healthUrl).toBe("http://127.0.0.1:8090");
+  });
+
+  // Failure: the override is read but not used as the default, so the health poll still targets 8090 and the smoke tier waits on the wrong console.
+  it("uses TURNSTONE_LOCAL_CONSOLE_URL as the default healthUrl", () => {
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "http://127.0.0.1:9191/");
+    const rt = new LocalRuntime({ run: vi.fn(), fetchHealth: vi.fn() });
+    expect(rt.healthUrl).toBe("http://127.0.0.1:9191");
+  });
+
+  // Failure: a malformed override is ignored at construction, so the health poll runs against the default address instead of reporting the bad setting.
+  it("throws naming the variable when the override is malformed", () => {
+    vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "http://example.com:8090");
+    expect(() => new LocalRuntime({ run: vi.fn(), fetchHealth: vi.fn() })).toThrow(/TURNSTONE_LOCAL_CONSOLE_URL/);
+  });
+});
+
+describe("runPodman argv under the TURNSTONE_PODMAN override", () => {
+  let dir;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "turnstone-podman-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Failure: the override's leading arguments are dropped or put after the podman arguments, so the smoke tier's fake podman receives the wrong argv and every smoke check reads the wrong result.
+  it("runs the override executable with its leading arguments before the podman arguments", async () => {
+    const script = join(dir, "fake-podman.js");
+    writeFileSync(script, "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+    vi.stubEnv("TURNSTONE_PODMAN", JSON.stringify([process.execPath, script, "--marker"]));
+    const rt = new LocalRuntime({ fetchHealth: vi.fn(), sleep: async () => {} });
+
+    const out = await rt.run(["machine", "list"]);
+
+    expect(JSON.parse(out)).toEqual(["--marker", "machine", "list"]);
   });
 });

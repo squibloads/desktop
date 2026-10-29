@@ -19,6 +19,7 @@ const PURE_MODULES = [
   "settings-save.js",
   "settings-window.js",
   "notifications.js",
+  "runtime-config.js",
 ];
 
 // A line starting at column 0 with a require or import of "electron". Indented

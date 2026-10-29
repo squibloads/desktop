@@ -1,4 +1,4 @@
-const LOCAL_CONSOLE_URL = "http://127.0.0.1:8090";
+const { localConsoleUrl } = require("./runtime-config.js");
 
 const schema = {
   mode: { type: "string", default: "both" }, // 'server', 'console', 'both', 'local'
@@ -46,7 +46,7 @@ class SettingsStore {
 
   // Local mode always talks to the pod's published port, whatever was saved.
   get consoleUrl() {
-    return this.isLocal ? LOCAL_CONSOLE_URL : this.store.get("consoleUrl");
+    return this.isLocal ? localConsoleUrl() : this.store.get("consoleUrl");
   }
   set consoleUrl(v) {
     this.store.set("consoleUrl", v);
