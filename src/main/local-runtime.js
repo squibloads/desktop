@@ -41,7 +41,7 @@ function podArgs(args) {
 /** Real podman runner. ENOENT is kept on the error so a missing binary is distinguishable. */
 function runPodman(args) {
   return new Promise((resolve, reject) => {
-    // Read per call, so an override set after load still applies; a malformed one rejects here.
+    // Read per call; a malformed override rejects here (the app also checks it once at start).
     const cmd = podmanCommand();
     execFile(
       cmd.file,
