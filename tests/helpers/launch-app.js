@@ -214,12 +214,19 @@ export async function launchApp({ settings = {}, podmanState = {}, env = {}, con
   async function findPage(predicate, { description = "window", timeoutMs = 30_000 } = {}) {
     let found = null;
     await vi.waitFor(
-      () => {
+      async () => {
         found = app.windows().find(predicate) ?? null;
         if (!found) {
           const open = app.windows().map((w) => w.url()).join(", ") || "none";
+          // What the main process itself holds: a view it loaded that Playwright never reported
+          // shows here and not in the list above.
+          const inMain = await app
+            .evaluate(({ webContents }) => webContents.getAllWebContents().map((c) => c.getURL()))
+            .then((urls) => urls.join(", ") || "none")
+            .catch((err) => `unreadable (${err.message})`);
           throw new Error(
             `no ${description}; open windows: ${open}
+main process pages: ${inMain}
 podman calls: ${JSON.stringify(readLines(logPath))}
 app output:
 ${appOutput || "(none)"}`,
