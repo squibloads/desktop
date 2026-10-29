@@ -122,11 +122,11 @@ async function waitForGone(child) {
   throw new Error(`app process ${child.pid} still running ${KILL_WAIT_MS} ms after the kill`);
 }
 
-async function quitWithGuard(app) {
+async function quitWithGuard(app, describeState = () => "") {
   let guard;
   const hung = new Promise((_, reject) => {
     guard = setTimeout(
-      () => reject(new Error(`app did not exit within ${QUIT_GUARD_MS} ms`)),
+      () => reject(new Error(`app did not exit within ${QUIT_GUARD_MS} ms${describeState()}`)),
       QUIT_GUARD_MS,
     );
   });
@@ -270,7 +270,10 @@ ${appOutput || "(none)"}`,
     closed = true;
     live.delete(handle);
     try {
-      await quitWithGuard(app);
+      await quitWithGuard(app, () => `
+podman calls: ${JSON.stringify(readLines(logPath))}
+app output:
+${appOutput || "(none)"}`);
     } finally {
       // Read after the quit, so a stop the quit issued is in the log, then remove the directory.
       finalLog ??= readLines(logPath);
