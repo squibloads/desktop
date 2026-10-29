@@ -81,8 +81,10 @@ function createMainWindow() {
   // --- Console view (if mode includes console) ---
   if (settings.hasConsole) {
     consoleView = new WebContentsView({ webPreferences: contentViewPrefs });
-    // Local mode loads only once the pod is healthy (startLocalRuntime).
-    if (!settings.isLocal) consoleView.webContents.loadURL(settings.consoleUrl);
+    // Local mode shows the loading page until the pod and its node are up
+    // (startLocalRuntime), so the view is never blank while starting.
+    if (settings.isLocal) showLocalLoading(consoleView);
+    else consoleView.webContents.loadURL(settings.consoleUrl);
     setupViewSecurity(consoleView, "consoleUrl");
     setupFailHandler(consoleView, settings.consoleUrl);
   }
@@ -167,32 +169,76 @@ function setupFailHandler(view, originalUrl) {
 
 // ─── Local Runtime ───────────────────────────────────────────────────────
 
+const LOCAL_LOADING_PAGE = path.join(__dirname, "../renderer/local-loading.html");
+
+function showLocalLoading(view) {
+  if (!view || view.webContents.isDestroyed()) return;
+  const wc = view.webContents;
+  // Stages sent before the page attached are lost; replay the current one
+  // once this load finishes. A superseded load never fires it.
+  // Stay registered across unrelated loads until the loading page itself
+  // finishes (or the start is over), so a stray load cannot eat the replay.
+  const replay = () => {
+    if (wc.isDestroyed() || !localRuntime || !localRuntime.starting) {
+      if (!wc.isDestroyed()) wc.removeListener("did-finish-load", replay);
+      return;
+    }
+    if (!wc.getURL().endsWith("local-loading.html")) return;
+    wc.removeListener("did-finish-load", replay);
+    if (localRuntime.stage) wc.send("turnstone:local-progress", localRuntime.stage);
+  };
+  wc.on("did-finish-load", replay);
+  // A navigation superseded by a newer one rejects; that is not an error.
+  wc.loadFile(LOCAL_LOADING_PAGE).catch(() => {});
+}
+
+function showLocalError(view, code, message, detail) {
+  if (!view || view.webContents.isDestroyed()) return;
+  view.webContents
+    .loadFile(path.join(__dirname, "../renderer/local-error.html"), {
+      query: { code, message, detail: String(detail || "").slice(0, 500) },
+    })
+    .catch(() => {});
+}
+
+// Reads consoleView at call time, so a window rebuilt mid-start gets the stages.
+function sendLocalProgress(stage) {
+  if (consoleView && !consoleView.webContents.isDestroyed()) {
+    consoleView.webContents.send("turnstone:local-progress", stage);
+  }
+}
+
+function loadLocalConsole(view) {
+  if (view && !view.webContents.isDestroyed()) {
+    view.webContents.loadURL(settings.consoleUrl).catch(() => {});
+  }
+}
+
 async function startLocalRuntime() {
   if (!settings.isLocal) return;
-  if (!localRuntime) localRuntime = new LocalRuntime();
+  if (!localRuntime) localRuntime = new LocalRuntime({ onProgress: sendLocalProgress });
   const view = consoleView;
   try {
     await localRuntime.start();
-    if (view && !view.webContents.isDestroyed()) {
-      view.webContents.loadURL(settings.consoleUrl);
-    }
+    loadLocalConsole(view);
   } catch (err) {
     // Quit cancelled the start on purpose; there is nothing to show.
     if (err.code === "START_CANCELLED") return;
-    // Only runtime errors carry a user message; anything else is a bug.
-    if (!err.userMessage) throw err;
-    if (view && !view.webContents.isDestroyed()) {
-      view.webContents.loadFile(
-        path.join(__dirname, "../renderer/local-error.html"),
-        {
-          query: {
-            code: err.code,
-            message: err.userMessage,
-            detail: String(err.detail || "").slice(0, 500),
-          },
-        },
-      );
+    // The console answered; only the node is late. Open the console anyway
+    // rather than strand the user on an error page for a node that may
+    // register moments later.
+    if (err.code === "NODE_TIMEOUT") {
+      console.warn(`${err.userMessage} (${err.detail})`);
+      loadLocalConsole(view);
+      return;
     }
+    if (!err.userMessage) {
+      // Not a runtime error: a bug. Show it instead of spinning forever.
+      console.error("local start failed unexpectedly:", err);
+      showLocalError(view, "UNEXPECTED", "Local startup failed unexpectedly.", err && err.message);
+      return;
+    }
+    showLocalError(view, err.code, err.userMessage, err.detail);
   }
 }
 
@@ -409,6 +455,10 @@ ipcMain.on("turnstone:switch-tab", (_event, tab) => {
 ipcMain.on("turnstone:retry-local", (event) => {
   if (!consoleView || consoleView.webContents.isDestroyed()) return;
   if (event.sender !== consoleView.webContents) return;
+  // A start already in flight owns the loading page; reloading it would
+  // blank the stage list until the next stage.
+  if (localRuntime && localRuntime.starting) return;
+  showLocalLoading(consoleView);
   startLocalRuntime();
 });
 
@@ -464,7 +514,11 @@ function setupHealthPoller() {
       serverView.webContents.reload();
     }
     if (prev.console !== "ok" && status.console === "ok" && consoleView) {
-      consoleView.webContents.reload();
+      // A local start owns the console view while it runs: reloading now
+      // would replace the loading page with a console whose node is not up.
+      const localStarting =
+        settings.isLocal && localRuntime && localRuntime.starting;
+      if (!localStarting) consoleView.webContents.reload();
     }
   });
 
