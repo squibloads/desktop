@@ -149,6 +149,46 @@ describe("planSettingsSave valid saves", () => {
   });
 });
 
+// A URL the mode does not use is neither written nor a change. Comparing it anyway restarted
+// notifications and reloaded views on a save that only edited a hidden field.
+describe("planSettingsSave URLs the mode does not use", () => {
+  // Failure: an edited server field saved in console mode reconnects notifications to a server the mode does not show.
+  it("does not restart notifications in console mode when only the server field changed", () => {
+    const result = planSettingsSave(
+      { mode: "console", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" },
+      { mode: "console", serverUrl: NEW_SERVER_URL, consoleUrl: CONSOLE_URL },
+    );
+    expect(result.restartNotifications).toBe(false);
+  });
+
+  // Failure: an edited server field saved in local mode reconnects notifications to the remote server saved earlier.
+  it("does not restart notifications in local mode when only the server field changed", () => {
+    const result = planSettingsSave(
+      { mode: "local", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" },
+      { mode: "local", serverUrl: NEW_SERVER_URL },
+    );
+    expect(result.restartNotifications).toBe(false);
+  });
+
+  // Failure: an edited console field saved in server mode reloads the console view to an address the mode does not show.
+  it("does not reload the console view in server mode when only the console field changed", () => {
+    const result = planSettingsSave(
+      { mode: "server", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" },
+      { mode: "server", serverUrl: SERVER_URL, consoleUrl: NEW_CONSOLE_URL },
+    );
+    expect(result.reloadConsole).toBe(false);
+  });
+
+  // Failure: gating on the mode also drops the restart for a real server change, so alerts keep coming from the old server.
+  it("still restarts notifications in server mode when the server URL changes", () => {
+    const result = planSettingsSave(
+      { mode: "server", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" },
+      { mode: "server", serverUrl: NEW_SERVER_URL },
+    );
+    expect(result.restartNotifications).toBe(true);
+  });
+});
+
 describe("planSettingsSave refused saves", () => {
   // Failure: an unknown mode string is written to the store and the next launch shows a blank window.
   it("refuses an unknown mode before checking any URL", () => {

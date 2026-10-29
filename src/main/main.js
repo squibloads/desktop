@@ -425,6 +425,8 @@ function rebuildWindow() {
 
   // Restart notifications
   if (notifications) notifications.stop();
+  // A stopped manager must not stay here: the save handler restarts whatever this holds.
+  notifications = null;
   if (settings.hasServer) {
     notifications = new NotificationManager(settings);
     notifications.start();

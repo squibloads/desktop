@@ -55,8 +55,10 @@ function planSettingsSave(current, incoming) {
   if (incoming.quitBehavior !== undefined) apply.quitBehavior = incoming.quitBehavior;
 
   const modeChanged = mode !== current.mode;
-  const serverChanged = incoming.serverUrl !== current.serverUrl;
-  const consoleChanged = incoming.consoleUrl !== current.consoleUrl;
+  // A URL the mode does not use is not written, so editing it changes nothing the
+  // window shows. Counting it would reconnect notifications on a hidden-field edit.
+  const serverChanged = needsServer && incoming.serverUrl !== current.serverUrl;
+  const consoleChanged = needsConsole && incoming.consoleUrl !== current.consoleUrl;
   // Local mode has no console reload: its console always follows the pod's port.
   const sameMode = !modeChanged;
 
