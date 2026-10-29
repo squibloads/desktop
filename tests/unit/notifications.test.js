@@ -470,9 +470,23 @@ describe("NotificationManager connection lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
     connections[0].push(ATTENTION);
     manager.stop();
+    // The save handler restarts right after a stop, so a check on running alone would pass here.
+    manager.start();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(fake.constructed).toEqual([]);
+  });
+
+  // Failure: the manager dials a URL fixed when it was built, so a URL edit that restarts it still reaches the old server.
+  it("dials the server URL the settings hold when it connects", async () => {
+    const { fetchMock } = stubStreamingFetch();
+    const settings = { serverUrl: "http://old.example" };
+    manager = new NotificationManager(settings, { Notification: fake.Notification });
+
+    settings.serverUrl = "http://new.example";
+    manager.start();
+
+    expect(fetchMock.mock.calls[0][0]).toEqual("http://new.example/v1/api/events/global");
   });
 
   // Failure: stop() leaves the retry timer armed, so it fires later and reopens a connection the user turned off.
