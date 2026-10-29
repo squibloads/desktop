@@ -8,6 +8,9 @@
 function isNavigationAllowed(allowedUrl, targetUrl) {
   try {
     const allowed = new URL(allowedUrl);
+    // Opaque origins (file:, data:, a scheme-less host:port) all read "null" and
+    // would match each other, so only an http(s) setting can allow anything.
+    if (allowed.protocol !== "http:" && allowed.protocol !== "https:") return false;
     const target = new URL(targetUrl);
     return target.origin === allowed.origin;
   } catch {

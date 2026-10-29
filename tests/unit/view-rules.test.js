@@ -58,10 +58,13 @@ describe("isNavigationAllowed", () => {
     expect(isNavigationAllowed("https://example.com/", "file:///C:/Users/x/page.html")).toBe(false);
   });
 
-  // Failure: two local file links are treated as different sites and a page cannot move between its own local files.
-  // Today's code compares the opaque origin "null" for both, so this is allowed. Settings only hold http(s) URLs, so this path is not reachable from the UI.
-  it("treats two file URLs as the same opaque origin (today's behaviour)", () => {
-    expect(isNavigationAllowed("file:///C:/a.html", "file:///C:/b.html")).toBe(true);
+  // Failure: a non-http(s) setting (file:, data:, or "localhost:3000" which parses as a scheme) has the opaque origin "null" and would allow every other opaque target.
+  it.each([
+    ["file:///C:/a.html", "file:///C:/b.html"],
+    ["data:text/html,a", "data:text/html,b"],
+    ["localhost:3000", "localhost:4000"],
+  ])("refuses when the allowed URL %s is not http(s)", (allowed, target) => {
+    expect(isNavigationAllowed(allowed, target)).toBe(false);
   });
 });
 
