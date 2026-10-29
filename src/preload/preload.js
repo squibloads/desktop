@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("turnstone:health-update", handler);
   },
 
+  // Local mode: re-run the start sequence after a failure
+  retryLocal: () => ipcRenderer.send("turnstone:retry-local"),
+
   // Open settings dialog
   openSettings: () => ipcRenderer.send("turnstone:open-settings"),
 

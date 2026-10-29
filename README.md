@@ -45,3 +45,11 @@ git push origin v0.1.0
 ## License
 
 [BUSL-1.1](https://github.com/turnstonelabs/turnstone/blob/main/LICENSE)
+
+## Local mode
+
+Local mode runs Turnstone on this PC in a Podman pod and opens its console at `http://127.0.0.1:8090`. On launch the app starts the `turnstone` Podman machine if it is stopped, starts the `turnstone` pod, and waits for `/health` before loading the console.
+
+**When the app quits** (Settings): *Stop Turnstone* runs `podman pod stop turnstone`; *Keep Turnstone running* leaves the pod up so the next launch is instant.
+
+Failures show their own message: Podman not installed, machine missing or unable to start, pod missing or unable to start, health timeout. The pod is only ever stopped and started, never restarted.

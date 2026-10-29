@@ -21,10 +21,13 @@ function updateFieldVisibility() {
   const mode = getMode();
   document
     .getElementById("server-group")
-    .classList.toggle("hidden", mode === "console");
+    .classList.toggle("hidden", mode === "console" || mode === "local");
   document
     .getElementById("console-group")
-    .classList.toggle("hidden", mode === "server");
+    .classList.toggle("hidden", mode === "server" || mode === "local");
+  document
+    .getElementById("local-group")
+    .classList.toggle("hidden", mode !== "local");
 }
 
 document.querySelectorAll('input[name="mode"]').forEach((radio) => {
@@ -36,6 +39,7 @@ document.querySelectorAll('input[name="mode"]').forEach((radio) => {
 window.electronAPI.getSettings().then((settings) => {
   document.getElementById("server-url").value = settings.serverUrl;
   document.getElementById("console-url").value = settings.consoleUrl;
+  document.getElementById("quit-behavior").value = settings.quitBehavior;
 
   const modeRadio = document.getElementById(
     "mode-" + (settings.mode || "both"),
@@ -114,6 +118,7 @@ saveBtn.addEventListener("click", async () => {
       mode,
       serverUrl,
       consoleUrl,
+      quitBehavior: document.getElementById("quit-behavior").value,
     });
     if (result && result.error) {
       saveBtn.disabled = false;

@@ -176,6 +176,20 @@
       visibility: visible;
     }
 
+    select {
+      width: 100%;
+      padding: 9px 10px;
+      background: var(--bg-highlight);
+      color: var(--fg-bright);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      font: inherit;
+      font-size: 13px;
+    }
+    select:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-dim); }
+    .hint { color: var(--fg-dim); font-size: 11px; margin: 6px 0 12px; line-height: 1.4; }
+    .hint a { color: var(--accent); }
+
     .btn-row {
       display: flex;
       gap: 10px;
@@ -231,6 +245,17 @@
       <label for="mode-both">Both</label>
       <input type="radio" name="mode" id="mode-console" value="console">
       <label for="mode-console">Console Only</label>
+      <input type="radio" name="mode" id="mode-local" value="local">
+      <label for="mode-local">Local</label>
+    </div>
+
+    <div class="url-group hidden" id="local-group">
+      <label for="quit-behavior">When the app quits</label>
+      <select id="quit-behavior" aria-describedby="quit-behavior-help">
+        <option value="stop">Stop Turnstone</option>
+        <option value="keep">Keep Turnstone running</option>
+      </select>
+      <div class="hint" id="quit-behavior-help">Local mode runs Turnstone in a Podman pod on this PC. Stopping frees its memory; keeping it running makes the next launch instant. <a href="https://github.com/squibloads/desktop#local-mode" target="_blank" rel="noopener">Learn more</a></div>
     </div>
 
     <div class="url-group" id="server-group">

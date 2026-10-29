@@ -11,6 +11,7 @@ const { HealthPoller } = require("./health.js");
 const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
 const { NotificationManager } = require("./notifications.js");
+const { LocalRuntime } = require("./local-runtime.js");
 
 let settings = null;
 let mainWindow = null;
@@ -22,6 +23,8 @@ let activeTab = "server";
 let healthPoller = null;
 let tray = null;
 let notifications = null;
+let localRuntime = null;
+let quitting = false;
 
 // ─── Window Creation ─────────────────────────────────────────────────────
 
@@ -77,7 +80,8 @@ function createMainWindow() {
   // --- Console view (if mode includes console) ---
   if (settings.hasConsole) {
     consoleView = new WebContentsView({ webPreferences: contentViewPrefs });
-    consoleView.webContents.loadURL(settings.consoleUrl);
+    // Local mode loads only once the pod is healthy (startLocalRuntime).
+    if (!settings.isLocal) consoleView.webContents.loadURL(settings.consoleUrl);
     setupViewSecurity(consoleView, "consoleUrl");
     setupFailHandler(consoleView, settings.consoleUrl);
   }
@@ -278,6 +282,7 @@ function rebuildWindow() {
   else if (settings.mode === "console") activeTab = "console";
 
   createMainWindow();
+  startLocalRuntime();
 
   // Restart health poller (mode may have changed which URLs to poll)
   if (healthPoller) healthPoller.stop();
@@ -301,6 +306,9 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
   const mode = newSettings.mode || "both";
   const needsServer = mode === "server" || mode === "both";
   const needsConsole = mode === "console" || mode === "both";
+  if (!["server", "console", "both", "local"].includes(mode)) {
+    return { error: "Invalid mode" };
+  }
 
   // Validate only the URLs needed for this mode
   if (needsServer && !isValidUrl(newSettings.serverUrl)) {
@@ -308,6 +316,13 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
   }
   if (needsConsole && !isValidUrl(newSettings.consoleUrl)) {
     return { error: "Invalid Console URL — must be http:// or https://" };
+  }
+
+  if (newSettings.quitBehavior !== undefined) {
+    if (newSettings.quitBehavior !== "stop" && newSettings.quitBehavior !== "keep") {
+      return { error: "Invalid quit behaviour" };
+    }
+    settings.quitBehavior = newSettings.quitBehavior;
   }
 
   const modeChanged = mode !== settings.mode;
@@ -326,7 +341,7 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
     if (serverChanged && serverView) {
       serverView.webContents.loadURL(settings.serverUrl);
     }
-    if (consoleChanged && consoleView) {
+    if (consoleChanged && consoleView && !settings.isLocal) {
       consoleView.webContents.loadURL(settings.consoleUrl);
     }
     if (healthPoller) healthPoller.poll();
@@ -341,6 +356,10 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
 
 ipcMain.on("turnstone:switch-tab", (_event, tab) => {
   switchTab(tab);
+});
+
+ipcMain.on("turnstone:retry-local", () => {
+  startLocalRuntime();
 });
 
 ipcMain.on("turnstone:open-settings", () => {
@@ -425,6 +444,7 @@ app.whenReady().then(async () => {
   });
 
   createMainWindow();
+  startLocalRuntime();
   setupHealthPoller();
   settings.hasLaunched = true;
 
@@ -467,7 +487,17 @@ app.on("activate", async () => {
   }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  // Local mode: stop the pod before exiting unless the user chose to keep it.
+  if (settings && settings.isLocal && settings.quitBehavior === "stop" && localRuntime && !quitting) {
+    event.preventDefault();
+    quitting = true;
+    localRuntime
+      .stop()
+      .catch((err) => console.error("pod stop failed:", err.message))
+      .finally(() => app.quit());
+    return;
+  }
   if (healthPoller) healthPoller.stop();
   if (notifications) notifications.stop();
   if (tray) tray.destroy();
