@@ -61,13 +61,13 @@ Local mode runs Turnstone in a Podman pod on this PC and opens its Console at `h
 1. **Starting the Podman machine.** If the `turnstone` machine is not running, the app starts it.
 2. **Starting Turnstone.** If the pod is not running, the app starts it. A pod that is already running is left alone.
 3. **Waiting for the console.** The app checks `/health` once a second for up to 2 minutes, until it reports `ok`.
-4. **Waiting for the node to come online (this can take about a minute).** The app checks once a second until a node is registered, for up to 3 minutes. If none has registered after 3 minutes, the Console opens anyway, provided the Console is still healthy. If the Console has stopped answering, you get the `HEALTH_TIMEOUT` error page instead.
+4. **Waiting for the node to come online (this can take about a minute).** The app checks once a second until a node is registered, for up to 3 minutes. If none has registered after 3 minutes, the Console opens anyway, provided the Console is still healthy. If the Console stopped answering, or answers with anything other than a healthy status, during the wait, you get the `HEALTH_TIMEOUT` error page instead.
 
-The app only stops and starts the pod.
+The app starts the Podman machine when it is stopped and starts or stops the existing pod. It never stops the machine.
 
 **What happens on quit.** The Settings field *When the app quits* controls this:
 
-- **Stop Turnstone** (the default): the app runs `podman pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. A failed stop is ignored.
+- **Stop Turnstone** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. A failed stop is ignored.
 - **Keep Turnstone running**: the pod is left running. The next launch does not start the machine or the pod if they are already running.
 
 The app never stops the Podman machine. If you switch away from Local mode during a session, Stop Turnstone still stops the pod on quit.
@@ -100,7 +100,7 @@ The app checks each service every 5 seconds. When a service changes from not OK 
 ### System tray
 
 - **Icon colour:** green when every active service is Connected, yellow when some are, red when none are. Grey until the first check.
-- **Click the icon** to show the window.
+- **Click the icon** to show the window. On Linux, which gesture activates the icon depends on the desktop environment; if clicking does nothing, use the tray menu.
 - **Menu:** a read-only status line for each active service (for example `Server: Connected`). Local and Console Only show only Console, and Server Only shows only Server. Then **Show Window**, **Settings...**, and **Quit**. **Quit** exits the app and applies the *When the app quits* setting.
 - On **Windows and Linux**, closing the window quits the app. On **macOS**, the app keeps running after the window closes. On macOS, use the Dock icon, not the tray, to reopen a closed window.
 
