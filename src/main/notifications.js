@@ -8,15 +8,18 @@ class NotificationManager {
     this.retryTimer = null;
     this.retryDelay = 1000;
     this.running = false;
-    // Bumped by stop(). A loop started under an older value exits rather than
-    // reading or reconnecting, so nothing it set up outlives the stop.
+    // Bumped by stop(). A loop started under an older value does nothing: stop()
+    // has already aborted its connection, and it writes no shared state.
     this.generation = 0;
   }
 
   start() {
     // One loop at a time: stop() cancels a pending retry and aborts an open
-    // stream, so a second start() cannot leave the first loop connected.
+    // stream, so a second start() cannot leave the first loop connected. A new
+    // start is a fresh connection, so it also drops the backoff the old loop
+    // built up; otherwise a corrected URL waits out the old delay.
     this.stop();
+    this.retryDelay = 1000;
     this.running = true;
     this._connect(this.generation);
   }
@@ -32,7 +35,7 @@ class NotificationManager {
     }
   }
 
-  async _connect(generation = this.generation) {
+  async _connect(generation) {
     if (!this.running || generation !== this.generation) return;
 
     const controller = new AbortController();
@@ -45,6 +48,8 @@ class NotificationManager {
           signal: controller.signal,
         },
       );
+      // A stale answer must not touch the backoff the live loop is using.
+      if (generation !== this.generation) return;
 
       if (!resp.ok || !resp.body) {
         throw new Error(`HTTP ${resp.status}`);

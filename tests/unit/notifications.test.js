@@ -67,6 +67,9 @@ function controlledStream(signal) {
     push(text) {
       if (open) streamController.enqueue(new TextEncoder().encode(text));
     },
+    close() {
+      streamController.close();
+    },
   };
 }
 
@@ -98,7 +101,7 @@ describe("NotificationManager SSE parser", () => {
 
     manager = createManager();
     manager.running = true;
-    await manager._connect();
+    await manager._connect(manager.generation);
 
     expect(notifySpy.mock.calls).toEqual([["Attention Needed", "my-ws requires your input"]]);
   });
@@ -110,7 +113,7 @@ describe("NotificationManager SSE parser", () => {
 
     manager = createManager();
     manager.running = true;
-    await manager._connect();
+    await manager._connect(manager.generation);
 
     expect(notifySpy.mock.calls).toEqual([["Error", "broken encountered an error"]]);
   });
@@ -118,12 +121,14 @@ describe("NotificationManager SSE parser", () => {
   // Failure: routine running or idle transitions notify the user and bury real alerts.
   it("ignores running/idle states", async () => {
     const sse = `event: ws_state\ndata: {"state":"running","name":"ws1"}\n\nevent: ws_state\ndata: {"state":"idle","name":"ws2"}\n\n`;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse(sse)));
+    const fetchMock = vi.fn().mockResolvedValue(makeSSEResponse(sse));
+    vi.stubGlobal("fetch", fetchMock);
 
     manager = createManager();
     manager.running = true;
-    await manager._connect();
+    await manager._connect(manager.generation);
 
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(notifySpy.mock.calls).toEqual([]);
   });
 
@@ -134,7 +139,7 @@ describe("NotificationManager SSE parser", () => {
 
     manager = createManager();
     manager.running = true;
-    await manager._connect();
+    await manager._connect(manager.generation);
 
     expect(notifySpy.mock.calls).toEqual([["Attention Needed", "ws requires your input"]]);
   });
@@ -142,12 +147,14 @@ describe("NotificationManager SSE parser", () => {
   // Failure: a corrupt SSE frame throws out of the read loop and kills the stream.
   it("ignores malformed JSON", async () => {
     const sse = `event: ws_state\ndata: not-json\n\n`;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse(sse)));
+    const fetchMock = vi.fn().mockResolvedValue(makeSSEResponse(sse));
+    vi.stubGlobal("fetch", fetchMock);
 
     manager = createManager();
     manager.running = true;
-    await manager._connect();
+    await manager._connect(manager.generation);
 
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(notifySpy.mock.calls).toEqual([]);
   });
 
@@ -158,7 +165,7 @@ describe("NotificationManager SSE parser", () => {
 
     manager = createManager();
     manager.running = true;
-    await manager._connect();
+    await manager._connect(manager.generation);
 
     expect(notifySpy.mock.calls).toEqual([["Attention Needed", "abc123 requires your input"]]);
   });
@@ -166,12 +173,14 @@ describe("NotificationManager SSE parser", () => {
   // Failure: heartbeat or connected events are treated as workstream state and notify.
   it("ignores unrelated event types", async () => {
     const sse = `event: heartbeat\ndata: {}\n\nevent: connected\ndata: {"model":"test"}\n\n`;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse(sse)));
+    const fetchMock = vi.fn().mockResolvedValue(makeSSEResponse(sse));
+    vi.stubGlobal("fetch", fetchMock);
 
     manager = createManager();
     manager.running = true;
-    await manager._connect();
+    await manager._connect(manager.generation);
 
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(notifySpy.mock.calls).toEqual([]);
   });
 });
@@ -434,6 +443,7 @@ describe("NotificationManager connection lifecycle", () => {
     manager.start();
     await vi.advanceTimersByTimeAsync(1000);
     manager.stop();
+    expect(connections.length).toEqual(1);
     for (const conn of connections) conn.push(ATTENTION);
     await vi.advanceTimersByTimeAsync(0);
 
@@ -463,5 +473,88 @@ describe("NotificationManager connection lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(fake.constructed).toEqual([]);
+  });
+
+  // Failure: stop() leaves the retry timer armed, so it fires later and reopens a connection the user turned off.
+  it("cancels a pending retry timer when stop() runs", async () => {
+    stubStreamingFetch({ failFirst: true });
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    manager.stop();
+
+    expect(vi.getTimerCount()).toEqual(0);
+  });
+
+  // Failure: a stream from before a restart that ends on its own queues a retry, so the old loop comes back beside the new one.
+  it("schedules no retry when a stale stream ends after a restart", async () => {
+    const { connections } = stubStreamingFetch();
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    connections[0].close();
+    manager.stop();
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(vi.getTimerCount()).toEqual(0);
+  });
+
+  // Failure: a connect left over from before a stop opens a connection that stop() can no longer reach.
+  it("opens nothing for a connect started under an earlier generation", async () => {
+    const { fetchMock } = stubStreamingFetch();
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    const stale = manager.generation;
+    manager.stop();
+    manager.start();
+    const before = fetchMock.mock.calls.length;
+    await manager._connect(stale);
+
+    expect(fetchMock.mock.calls.length).toEqual(before);
+  });
+
+  // Failure: a restart after a long outage waits out the old 30 s backoff before it tries again.
+  it("retries one second after a restart, not after the backoff the old loop built up", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
+    vi.stubGlobal("fetch", fetchMock);
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(15000);
+    manager.stop();
+    manager.start();
+    const afterRestart = fetchMock.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fetchMock.mock.calls.length - afterRestart).toEqual(1);
+  });
+
+  // Failure: a connect from before a restart that answers late resets the backoff the live loop is using, so its next retry comes too soon.
+  it("leaves the live backoff alone when a stale connect answers late", async () => {
+    let answerFirst;
+    const late = new Promise((resolve) => {
+      answerFirst = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(late)
+      .mockRejectedValueOnce(new Error("connect refused"));
+    vi.stubGlobal("fetch", fetchMock);
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    manager.stop();
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(manager.retryDelay).toEqual(2000);
+
+    answerFirst(makeSSEResponse(""));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(manager.retryDelay).toEqual(2000);
   });
 });
