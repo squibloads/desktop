@@ -181,6 +181,7 @@ npm run test:unit       # tests/unit only
 npm run test:contract   # tests/contract only
 npm run test:renderer   # tests/renderer only (jsdom)
 npm run test:shuffle    # files and tests in random order; prints the seed
+npm run test:e2e        # Electron smoke tier: opens real app windows; needs the Electron binary (opt-in)
 ```
 
 Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to change the worker count (default: half the logical cores). To replay a shuffled run, set `VITEST_SHUFFLE=1` and `VITEST_SEED=<printed seed>` in your shell, then run `npx vitest run`. The seed fixes the file order, independent of worker timing; projects run in parallel, so their files can interleave differently. `VITEST_MAX_WORKERS=1` gives an exact replay. Setting `VITEST_SEED` without `VITEST_SHUFFLE=1` is an error, not a silent no-op.

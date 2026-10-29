@@ -6,11 +6,11 @@
 //
 // Every project runs in Node. The renderer tier builds its own jsdom window per
 // page (tests/helpers/load-page.js), so it needs no Vitest DOM environment. The
-// e2e tier is not declared yet because tests/e2e does not exist; add it to
-// `tierGlobs` when it does.
+// e2e tier launches Electron, so its project exists only when TURNSTONE_E2E=1.
 
 import os from "node:os";
 import { randomInt } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { OrderedRandomSequencer } from "./tests/helpers/ordered-random-sequencer.mjs";
 
@@ -18,7 +18,20 @@ export const tierGlobs = {
   unit: "tests/unit/**/*.test.js",
   contract: "tests/contract/**/*.test.js",
   renderer: "tests/renderer/**/*.test.js",
+  e2e: "tests/e2e/**/*.test.js",
 };
+
+// Each e2e test launches Electron. The test timeout leaves room for chained 30 s waits; the hook
+// timeout covers the launch and the quit (the quit guard is 25 s). At most
+// three apps at once so a runner is not starved of CPU and memory.
+function e2eOverrides(maxWorkers) {
+  return {
+    testTimeout: 120_000,
+    hookTimeout: 60_000,
+    maxWorkers: Math.min(maxWorkers, 3),
+    setupFiles: [fileURLToPath(new URL("./tests/helpers/e2e-setup.js", import.meta.url))],
+  };
+}
 
 // VITEST_MAX_WORKERS is validated here before Vitest reads it, so a typo fails
 // the run instead of silently falling back to the default worker count.
@@ -78,16 +91,24 @@ export default defineConfig(() => {
       : {},
   };
 
+  // The e2e project opens real windows, so it is built only when the run asks for it. Without the
+  // gate, a plain `npx vitest run` would launch Electron.
+  const e2eEnabled = env.TURNSTONE_E2E === "1";
+  const projects = Object.entries(tierGlobs)
+    .filter(([name]) => name !== "e2e" || e2eEnabled)
+    .map(([name, include]) => ({
+      test: {
+        ...shared,
+        name,
+        include: [include],
+        ...(name === "e2e" ? e2eOverrides(maxWorkers) : {}),
+      },
+    }));
+
   return {
     test: {
       ...shared,
-      projects: Object.entries(tierGlobs).map(([name, include]) => ({
-        test: {
-          ...shared,
-          name,
-          include: [include],
-        },
-      })),
+      projects,
     },
   };
 });

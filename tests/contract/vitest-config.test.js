@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import config from "../../vitest.config.mjs";
+import config, { tierGlobs } from "../../vitest.config.mjs";
 import { OrderedRandomSequencer } from "../helpers/ordered-random-sequencer.mjs";
 
 // A seed that is silently ignored makes a replay run in a different order from
@@ -48,10 +48,65 @@ describe("vitest.config.mjs hermetic env", () => {
   it("clears both smoke-tier overrides on the root and on each of the three projects", () => {
     vi.stubEnv("VITEST_SHUFFLE", "0");
     vi.stubEnv("VITEST_SEED", "");
+    vi.stubEnv("TURNSTONE_E2E", "");
     const { test } = config();
     const cleared = { TURNSTONE_PODMAN: "", TURNSTONE_LOCAL_CONSOLE_URL: "" };
 
     expect(test.env).toEqual(cleared);
     expect(test.projects.map((p) => p.test.env)).toEqual([cleared, cleared, cleared]);
+  });
+});
+
+// The e2e project opens Electron windows, so it must exist only when the run asks for it.
+describe("vitest.config.mjs e2e project", () => {
+  function projectNames() {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubEnv("VITEST_SHUFFLE", "0");
+    vi.stubEnv("VITEST_SEED", "");
+    return config().test.projects.map((p) => p.test.name);
+  }
+
+  function e2eProject() {
+    return config().test.projects.find((p) => p.test.name === "e2e").test;
+  }
+
+  it("lists the e2e tier in tierGlobs", () => {
+    expect(tierGlobs.e2e).toBe("tests/e2e/**/*.test.js");
+  });
+
+  // Failure: a plain npx vitest run opens Electron windows on a developer machine or in the default CI jobs.
+  it("has no e2e project when TURNSTONE_E2E is unset or not exactly 1", () => {
+    vi.stubEnv("TURNSTONE_E2E", "");
+    expect(projectNames()).toEqual(["unit", "contract", "renderer"]);
+    vi.stubEnv("TURNSTONE_E2E", "true");
+    expect(projectNames()).toEqual(["unit", "contract", "renderer"]);
+  });
+
+  // Failure: the smoke command runs without its project, so it passes having run zero Electron tests.
+  it("has the e2e project, after the other three, when TURNSTONE_E2E is 1", () => {
+    vi.stubEnv("TURNSTONE_E2E", "1");
+    expect(projectNames()).toEqual(["unit", "contract", "renderer", "e2e"]);
+  });
+
+  // Failure: the Electron launch hits the default 10 s test timeout on a loaded runner and the smoke tier reports a broken app.
+  it("gives the e2e project the launch timeouts, its glob, and the setup check", () => {
+    vi.stubEnv("TURNSTONE_E2E", "1");
+    vi.stubEnv("VITEST_MAX_WORKERS", "16");
+    const e2e = e2eProject();
+    expect(e2e.include).toEqual(["tests/e2e/**/*.test.js"]);
+    expect(e2e.testTimeout).toBe(120000);
+    expect(e2e.hookTimeout).toBe(60000);
+    expect(e2e.setupFiles).toHaveLength(1);
+    expect(e2e.setupFiles[0].split(String.fromCharCode(92)).join("/").endsWith("/tests/helpers/e2e-setup.js")).toBe(true);
+    expect(e2e.env).toEqual({ TURNSTONE_PODMAN: "", TURNSTONE_LOCAL_CONSOLE_URL: "" });
+  });
+
+  // Failure: a run that asks for one worker still runs three Electron apps at once, which makes the smoke tier flaky on a small runner.
+  it("caps the e2e project at three workers and never raises a lower configured count", () => {
+    vi.stubEnv("TURNSTONE_E2E", "1");
+    vi.stubEnv("VITEST_MAX_WORKERS", "16");
+    expect(e2eProject().maxWorkers).toBe(3);
+    vi.stubEnv("VITEST_MAX_WORKERS", "1");
+    expect(e2eProject().maxWorkers).toBe(1);
   });
 });

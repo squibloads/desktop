@@ -11,7 +11,8 @@
     "test:unit": "vitest run --project unit",
     "test:contract": "vitest run --project contract",
     "test:renderer": "vitest run --project renderer",
-    "test:shuffle": "node tests/helpers/run-shuffled.mjs"
+    "test:shuffle": "node tests/helpers/run-shuffled.mjs",
+    "test:e2e": "node tests/helpers/run-e2e.mjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.0",
@@ -23,6 +24,7 @@
     "@reforged/maker-appimage": "^5.2.0",
     "electron": "^40.8.0",
     "jsdom": "^29.1.1",
+    "playwright-core": "^1.64.1",
     "vitest": "^4.0.18"
   },
   "dependencies": {

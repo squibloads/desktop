@@ -63,3 +63,36 @@ jobs:
       # The seed is printed at the top of the log; rerun with VITEST_SEED to replay.
       - name: Run tests in random order
         run: node tests/helpers/run-shuffled.mjs
+
+  # Electron smoke tier. Locally it is opt-in (npm run test:e2e). Here it runs under Xvfb and must
+  # fail, not skip, when the Electron binary is missing: see tests/helpers/e2e-setup.js.
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # The Electron binary is needed here, so this job does not skip the postinstall download.
+      - name: Install dependencies
+        run: npm ci
+
+      # ubuntu-24.04 ships xvfb-run, so the install runs only when it is missing. The libraries are
+      # what Electron needs on Ubuntu 24.04 (the t64 package names).
+      - name: Install Xvfb and Electron libraries
+        run: |
+          sudo apt-get update
+          command -v xvfb-run || sudo apt-get install -y --no-install-recommends xvfb
+          sudo apt-get install -y --no-install-recommends libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0
+
+      - name: Run Electron smoke tests
+        run: xvfb-run -a npm run test:e2e
+        env:
+          CI: "true"

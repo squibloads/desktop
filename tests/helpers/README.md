@@ -18,6 +18,10 @@ tier fails it.
   window from `tests/helpers/load-page.js`; the project itself runs in Node. CSS is not loaded in
   this tier, so a test asserts class names such as `hidden` or `gone`,
   never what is visible.
+- `tests/e2e/` is tier 4, the Electron smoke tier. Each test launches the real
+  app with Playwright's Electron support, against a fake Podman and a fake
+  Console. See "Tier 4" below. It is opt-in: its project exists only when
+  `TURNSTONE_E2E=1`.
 - `tests/fixtures/` holds static input a test reads, such as a sample file.
 - `tests/golden/` holds expected output a test compares against.
 - `tests/helpers/` holds fakes shared by more than one test file, plus the
@@ -37,6 +41,31 @@ tier fails it.
     timeout counts polls. `make()` in `tests/unit/local-runtime.test.js`
     installs it by default. `restoreMocks` in `vitest.config.mjs` restores it
     after each test.
+
+- `fake-podman.js` is the podman binary the app shells out to. It implements
+  exactly the five calls `local-runtime.js` makes, matched argv element by
+  element; any other call exits 1. It keeps machine and pod state in a JSON
+  file (`FAKE_PODMAN_STATE`), and logs every call to `FAKE_PODMAN_LOG`.
+  `FAKE_PODMAN_STOP_DELAY_MS` makes `pod stop` take that long, then logs
+  `pod stop done`, so a test can check that the stop finished before the app exited.
+- `fake-console.js` exports `createFakeConsole()`, a loopback `/health` server
+  with a settable status and node count. It counts health reads, so a test can
+  wait for the app to poll without a fixed delay. A bind refused because the port
+  is still in use is retried 20 times, 100 ms apart, before the start fails.
+- `launch-app.js` exports `launchApp()`, which seeds a fresh user-data
+  directory, launches the app, and returns a handle with `findPage`,
+  `windowUrls`, `readPodmanLog`, `setPodmanState`, `clickMenuItem` and `close`.
+  `closeEverything()` is the afterEach hook: it closes every app, then stops every
+  console passed to `registerConsole()`, even when a close throws. A quit that does
+  not finish within 25 s kills the app's whole process tree. A launch with no
+  `consolePort` gets one closed loopback port per process, never 8090. `safe-path.js`
+  builds the child's PATH without any directory that holds a podman executable.
+  `urlIs` and `urlEndsWith` are window predicates for `findPage`.
+- `poll.js` exports `pollUntil(check)`, a deadline-bounded wait on observable
+  state, built on `vi.waitFor`.
+- `e2e-setup.js` runs before the e2e files. It fails the run when the Electron
+  binary is missing, so the smoke tier can never pass by skipping.
+- `run-e2e.mjs` sets `TURNSTONE_E2E=1` and runs `vitest run --project e2e`.
 
 ## Rules
 
@@ -76,9 +105,33 @@ npm test                  # all tiers, in parallel
 npm run test:unit
 npm run test:contract
 npm run test:renderer
-npm run test:shuffle      # random file and test order; prints the seed
+npm run test:shuffle      # random file and test order; prints the seed; no e2e unless TURNSTONE_E2E=1
+npm run test:e2e          # tier 4, Electron smoke tests; opt-in, see below
 ```
 
 `VITEST_MAX_WORKERS` sets the worker count (default: half the logical cores).
 `VITEST_SEED` replays a shuffled order and requires `VITEST_SHUFFLE=1`; the
 config throws if it is set without it.
+
+## Tier 4: the Electron smoke tier
+
+`tests/e2e/` drives the real app. Each test launches Electron with Playwright,
+so it opens real windows: the shell, the console view and the local
+loading and error pages. Run it on a machine with a display.
+
+What it needs: the Electron binary from `npm ci` (without
+`ELECTRON_SKIP_BINARY_DOWNLOAD`), and nothing else. Podman and the Turnstone
+console are both faked, so no real container or server is touched.
+
+```bash
+npm run test:e2e                                   # all e2e files
+node tests/helpers/run-e2e.mjs tests/e2e/quit.test.js   # one file
+```
+
+The project is absent unless `TURNSTONE_E2E=1`, so `npm test` never opens a
+window. CI runs it in a separate `smoke` job under Xvfb. Each e2e file must pass
+alone and in any order. Each test uses its own temp directory and its own port 0
+console. One fixed port is the exception: a launch with no `consolePort` gets the
+closed port `launchApp` reserves once per process. Another process can take that
+port in the gap after it is released. A failure comment above each test names the
+user-visible failure it guards against.
