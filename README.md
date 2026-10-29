@@ -95,7 +95,7 @@ The app never stops the Podman machine. If you switch away from Local mode durin
 | Dim red | **Disconnected**: no answer within 3 seconds, or the answer was not JSON |
 | Dim grey | **Unknown**: not checked yet |
 
-The app checks each service every 5 seconds. When a service changes from not OK to OK, its view reloads.
+The app checks each service every 5 seconds. When a service changes from not OK to OK, its view recovers on its own: a working page is reloaded, and a view showing an error page loads its address again.
 
 ### System tray
 
@@ -116,7 +116,7 @@ The app does not check whether the window has focus before it shows a notificati
 
 ### Reload and developer tools
 
-- `Ctrl+R` (`Cmd+R` on macOS) reloads the active view.
+- `Ctrl+R` (`Cmd+R` on macOS) reloads the active view. If the view is showing an error page, it loads the view's address again instead.
 - `Ctrl+Shift+I` (`Cmd+Shift+I` on macOS) opens or closes developer tools for the active view.
 
 ### Keyboard shortcuts
@@ -140,12 +140,11 @@ On macOS the View menu also has zoom and full-screen items; the app does not set
 
 ### "Unable to connect" page
 
-A view shows this page when it cannot load its address. The page names the address that failed and says "The server is not reachable. Check that Turnstone is running."
+A view shows this page when it cannot load its address. The page names the address that failed (the one currently in Settings) and says "The server is not reachable. Check that Turnstone is running."
 
-The page does not recover on its own yet. Its buttons also do not respond, so do not rely on them. To recover:
-
-- **Restart the app.** The views load their addresses again at startup.
-- **Or change Mode in Settings and Save.** A mode change rebuilds the window. To keep your original mode, change it back and Save again.
+- **It reconnects on its own.** When the health check sees the service come back, the view loads its address again.
+- **Retry** tries the address now. **Settings** opens the Settings dialog.
+- **Reload** (`Ctrl+R`) also tries the address again.
 
 To fix a wrong address, open Settings with `Ctrl+,` or from the tray menu. On macOS, you can also use the app menu. Saving the same address does not reload the view. Change the address or the mode.
 
