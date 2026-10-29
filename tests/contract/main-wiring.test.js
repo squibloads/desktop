@@ -27,6 +27,10 @@ const shapes = [
   ["tab switch plan", 'if (plan.tab === "server")'],
   // Failure: the mode is written before the URLs, so a URL write that throws leaves a mode switch with no rebuild.
   ["save write order", "writeSavePlan(settings, plan.apply);"],
+  // Failure: a URL change in the same mode leaves the connection on the old settings.
+  ["notification restart", "if (plan.restartNotifications) notificationLifecycle.restart();"],
+  // Failure: quitting leaves a notification connection open.
+  ["notification stop on quit", "notificationLifecycle.stop();"],
 ];
 
 describe("main.js wiring", () => {
@@ -71,18 +75,19 @@ describe("main.js wiring", () => {
     expect(hits.length).toBe(2);
   });
 
-  // Failure: the old mode keeps alerting when the rebuild throws half way, because its notifications were stopped last.
-  it("stops the notification manager before the window is closed and rebuilt", () => {
+  // Failure: the old mode keeps alerting when the rebuild throws half way, because its notifications are applied after the window.
+  it("applies the notification mode before the window is closed and rebuilt", () => {
     const fn = main.indexOf("function rebuildWindow() {");
-    const stop = main.indexOf("notifications.stop();", fn);
-    const clear = main.indexOf("notifications = null;", fn);
+    const apply = main.indexOf("notificationLifecycle.apply(settings);", fn);
     const close = main.indexOf("mainWindow.close();", fn);
-    const build = main.indexOf("notifications = new NotificationManager(settings);", fn);
 
     expect(fn).toBeGreaterThan(-1);
-    expect(stop).toBeGreaterThan(fn);
-    expect(clear).toBeGreaterThan(stop);
-    expect(close).toBeGreaterThan(clear);
-    expect(build).toBeGreaterThan(close);
+    expect(apply).toBeGreaterThan(fn);
+    expect(close).toBeGreaterThan(apply);
+  });
+
+  // Failure: a launch or a mode rebuild that skips the apply leaves the mode's notifications unset, or runs them from a stale manager.
+  it("applies notifications at launch and on every mode rebuild", () => {
+    expect(main.split("notificationLifecycle.apply(settings);").length - 1).toBe(2);
   });
 });

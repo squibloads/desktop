@@ -12,7 +12,7 @@ const { SettingsStore } = require("./settings-store.js");
 const { HealthPoller } = require("./health.js");
 const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
-const { NotificationManager } = require("./notifications.js");
+const { NotificationManager, createNotificationLifecycle } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
 const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 const { planRecovery } = require("./recovery.js");
@@ -33,7 +33,7 @@ let settingsWindow = null;
 let activeTab = "server";
 let healthPoller = null;
 let tray = null;
-let notifications = null;
+const notificationLifecycle = createNotificationLifecycle((s) => new NotificationManager(s));
 let localRuntime = null;
 let quitting = false;
 
@@ -393,11 +393,10 @@ function openSettings() {
 // ─── Rebuild Window ──────────────────────────────────────────────────────
 
 function rebuildWindow() {
-  // Stop the old notifications before the window is rebuilt. If the rebuild
-  // throws, the new mode is already saved, and the old manager must not keep
-  // alerting under it.
-  if (notifications) notifications.stop();
-  notifications = null;
+  // Apply the new mode's notifications before the window is rebuilt. If the
+  // rebuild throws, the new mode is already saved, so its notifications must
+  // already match it.
+  notificationLifecycle.apply(settings);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.close();
@@ -428,12 +427,6 @@ function rebuildWindow() {
   // Restart health poller (mode may have changed which URLs to poll)
   if (healthPoller) healthPoller.stop();
   setupHealthPoller();
-
-  // Start notifications for the new mode
-  if (settings.hasServer) {
-    notifications = new NotificationManager(settings);
-    notifications.start();
-  }
 }
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────
@@ -465,10 +458,7 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
       consoleView.webContents.loadURL(settings.consoleUrl);
     }
     if (healthPoller) healthPoller.poll();
-    if (plan.restartNotifications && notifications) {
-      notifications.stop();
-      notifications.start();
-    }
+    if (plan.restartNotifications) notificationLifecycle.restart();
   }
 
   return { ok: true };
@@ -620,11 +610,8 @@ app.whenReady().then(async () => {
   });
   tray.create();
 
-  // Notifications (only if server mode is active)
-  if (settings.hasServer) {
-    notifications = new NotificationManager(settings);
-    notifications.start();
-  }
+  // Notifications run only while the mode has a server
+  notificationLifecycle.apply(settings);
 
   if (isFirstLaunch) {
     openSettings();
@@ -670,6 +657,6 @@ app.on("before-quit", (event) => {
     return;
   }
   if (healthPoller) healthPoller.stop();
-  if (notifications) notifications.stop();
+  notificationLifecycle.stop();
   if (tray) tray.destroy();
 });

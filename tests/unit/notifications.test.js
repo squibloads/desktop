@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // notifications.js does not load electron, so this file runs under plain Node.
 // The Notification class is injected, which keeps the electron package and its
 // binary out of every test here.
-const { NotificationManager } = require("../../src/main/notifications.js");
+const { NotificationManager, createNotificationLifecycle } = require("../../src/main/notifications.js");
 
 const SETTINGS = { serverUrl: "http://127.0.0.1" };
 
@@ -556,5 +556,90 @@ describe("NotificationManager connection lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(manager.retryDelay).toEqual(2000);
+  });
+});
+
+describe("createNotificationLifecycle", () => {
+  // A factory whose managers record their own starts and stops.
+  function fakeFactory() {
+    const made = [];
+    const create = (settings) => {
+      const manager = {
+        settings,
+        starts: 0,
+        stops: 0,
+        start() {
+          this.starts += 1;
+        },
+        stop() {
+          this.stops += 1;
+        },
+      };
+      made.push(manager);
+      return manager;
+    };
+    return { create, made };
+  }
+
+  // Failure: a switch into a mode without a server starts a manager that dials the remote server saved for another mode.
+  it("starts nothing in a mode without a server", () => {
+    const { create, made } = fakeFactory();
+    createNotificationLifecycle(create).apply({ hasServer: false, serverUrl: "http://127.0.0.1" });
+
+    expect(made).toEqual([]);
+  });
+
+  // Failure: a mode with a server runs no alerts, or runs them from a copy of the settings that goes stale.
+  it("starts one manager for a mode with a server, given the live settings", () => {
+    const { create, made } = fakeFactory();
+    const settings = { hasServer: true, serverUrl: "http://127.0.0.1" };
+    createNotificationLifecycle(create).apply(settings);
+
+    expect(made.length).toEqual(1);
+    expect(made[0].starts).toEqual(1);
+    expect(made[0].settings).toBe(settings);
+  });
+
+  // Failure: applying a new mode leaves the previous manager connected beside the new one.
+  it("stops the previous manager when the settings are applied again", () => {
+    const { create, made } = fakeFactory();
+    const lifecycle = createNotificationLifecycle(create);
+    lifecycle.apply({ hasServer: true });
+    lifecycle.apply({ hasServer: false });
+
+    expect(made[0].stops).toEqual(1);
+    expect(made.length).toEqual(1);
+  });
+
+  // Failure: a URL change in the same mode leaves the old connection open, and no new one starts.
+  it("restarts the same manager on a URL change", () => {
+    const { create, made } = fakeFactory();
+    const lifecycle = createNotificationLifecycle(create);
+    lifecycle.apply({ hasServer: true });
+    lifecycle.restart();
+
+    expect(made.length).toEqual(1);
+    expect(made[0].stops).toEqual(1);
+    expect(made[0].starts).toEqual(2);
+  });
+
+  // Failure: a save that arrives after a stop revives a manager the user turned off.
+  it("does nothing on restart after stop", () => {
+    const { create, made } = fakeFactory();
+    const lifecycle = createNotificationLifecycle(create);
+    lifecycle.apply({ hasServer: true });
+    lifecycle.stop();
+    lifecycle.restart();
+
+    expect(made[0].stops).toEqual(1);
+    expect(made[0].starts).toEqual(1);
+  });
+
+  // Failure: a restart with no manager running starts one for a mode that has none.
+  it("does nothing on restart when no manager runs", () => {
+    const { create, made } = fakeFactory();
+    createNotificationLifecycle(create).restart();
+
+    expect(made).toEqual([]);
   });
 });

@@ -124,4 +124,38 @@ class NotificationManager {
   }
 }
 
-module.exports = { NotificationManager };
+// The one manager the app runs. It exists only while the mode has a server, so a
+// switch into a mode without one leaves nothing connected, and a restart always
+// reaches the manager that is running.
+function createNotificationLifecycle(create) {
+  let current = null;
+
+  function stop() {
+    if (current) current.stop();
+    current = null;
+  }
+
+  return {
+    // Replaces whatever runs with a manager for these settings, or with nothing
+    // when the mode has no server. The old manager is stopped first, so no stale
+    // one is left to restart.
+    apply(settings) {
+      stop();
+      if (settings.hasServer) {
+        current = create(settings);
+        current.start();
+      }
+    },
+    // A URL change in the same mode. The manager reads the settings again when it
+    // connects, so stopping and starting it is enough.
+    restart() {
+      if (current) {
+        current.stop();
+        current.start();
+      }
+    },
+    stop,
+  };
+}
+
+module.exports = { NotificationManager, createNotificationLifecycle };
