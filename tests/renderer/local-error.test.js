@@ -27,7 +27,10 @@ describe("local error page", () => {
     expect(doc.getElementById("error-detail").textContent).toBe("exit status 125");
   });
 
-  // Failure: a missing parameter shows the word "null" or "undefined", or throws and leaves the buttons unwired.
+  // Failure: a missing parameter shows the word "null" or "undefined" in the error text. The page
+  // falls back to an empty string for each one, and this test pins that. Loading completing is the
+  // no-throw check: a throw during the page script would fail the load itself. Whether the buttons
+  // are wired is covered by the Retry and Settings tests below.
   it("shows empty text when the query string carries no parameters", () => {
     const page = loadPage("local-error", createFakeBridge());
     const doc = page.document;
@@ -71,5 +74,32 @@ describe("local error page", () => {
     expect(page.api.openSettings).toHaveBeenCalledTimes(1);
     expect(page.api.openSettings).toHaveBeenCalledWith();
     expect(page.api.retryLocal).not.toHaveBeenCalled();
+  });
+});
+
+describe("theme", () => {
+  // Failure: the local error page keeps the dark palette under a light system theme, so its text is hard to read on the light background.
+  it("applies the light theme at load when the system prefers light", () => {
+    const page = loadPage("local-error", { ...createFakeBridge(), prefersLight: true });
+
+    expect(page.document.documentElement.dataset.theme).toBe("light");
+  });
+
+  // Failure: the local error page takes the light palette under a dark system theme.
+  it("applies no light theme at load when the system prefers dark", () => {
+    const page = loadPage("local-error", { ...createFakeBridge(), prefersLight: false });
+
+    expect(page.document.documentElement.dataset.theme).toBe("");
+  });
+
+  // Failure: the page takes the wrong palette after a system theme switch. local-error.js reads the theme
+  // once, at load, and has no change listener, so the page keeps the theme it loaded with. This pins that
+  // current behaviour. If the page starts following the system theme, change this test to expect "light".
+  it("keeps the load-time theme when a change event fires, because the script has no change listener", () => {
+    const page = loadPage("local-error", { ...createFakeBridge(), prefersLight: false });
+
+    page.setPrefersLight(true);
+
+    expect(page.document.documentElement.dataset.theme).toBe("");
   });
 });

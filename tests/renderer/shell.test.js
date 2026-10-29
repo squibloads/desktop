@@ -5,27 +5,38 @@ afterEach(() => {
   closeAllPages();
 });
 
-// Opens the title bar with the given saved settings. The mode-aware code runs
-// in the getSettings promise callback; awaiting the promise the test created
-// runs that callback first, since it was attached before this await.
-async function openShell({ mode = "both", activeTab = "server", platform = "win32" } = {}) {
-  const bridge = createFakeBridge({
-    platform,
-    settings: {
-      mode,
-      serverUrl: "http://server.example.test:8080",
-      consoleUrl: "http://console.example.test:8090",
-      quitBehavior: "stop",
-      activeTab,
-    },
-  });
-  const page = loadPage("shell", { api: bridge.api, hub: bridge.hub });
+const SERVER = "http://server.example.test:8080";
+const CONSOLE = "http://console.example.test:8090";
+
+// Opens the title bar with the given saved settings exactly as passed, so a test
+// can leave a key out. The mode-aware code runs in the getSettings promise
+// callback; awaiting the promise the test created runs that callback first, since
+// it was attached before this await.
+async function openShellWith(settings, { platform = "win32", prefersLight = false } = {}) {
+  const bridge = createFakeBridge({ platform, settings });
+  const page = loadPage("shell", { api: bridge.api, hub: bridge.hub, prefersLight });
   await bridge.api.getSettings.mock.results[0].value;
   return page;
 }
 
+async function openShell({ mode = "both", activeTab = "server", platform = "win32", prefersLight = false } = {}) {
+  return openShellWith(
+    { mode, serverUrl: SERVER, consoleUrl: CONSOLE, quitBehavior: "stop", activeTab },
+    { platform, prefersLight },
+  );
+}
+
 function hasHidden(el) {
   return el.classList.contains("hidden");
+}
+
+// Dispatches a cancelable keydown on a tab, as the browser does for the focused
+// tab, and returns the event so a test can read defaultPrevented.
+function pressOnTab(page, tabName, key) {
+  const tab = page.document.querySelector(`.tab[data-tab="${tabName}"]`);
+  const event = new page.window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+  tab.dispatchEvent(event);
+  return event;
 }
 
 describe("platform setup", () => {
@@ -120,6 +131,21 @@ describe("visible tabs and health groups per mode", () => {
 
     expect(hasHidden(page.document.getElementById("tabs"))).toBe(true);
   });
+
+  // Failure: a settings file from before the mode existed hides a service or the tab strip, so a user who never picked a mode sees a partial title bar.
+  it("treats a settings file with no mode as Both", async () => {
+    const page = await openShellWith({ serverUrl: SERVER, consoleUrl: CONSOLE, quitBehavior: "stop", activeTab: "console" });
+    const doc = page.document;
+    const tabsHidden = hasHidden(doc.getElementById("tabs"));
+    const serverGroupHidden = hasHidden(doc.getElementById("server-health-group"));
+    const consoleGroupHidden = hasHidden(doc.getElementById("console-health-group"));
+    const consoleTabActive = doc.querySelector('.tab[data-tab="console"]').classList.contains("active");
+
+    expect(tabsHidden).toBe(false);
+    expect(serverGroupHidden).toBe(false);
+    expect(consoleGroupHidden).toBe(false);
+    expect(consoleTabActive).toBe(true);
+  });
 });
 
 describe("active tab", () => {
@@ -141,6 +167,27 @@ describe("active tab", () => {
   it("restores the saved tab without telling the main process", async () => {
     const page = await openShell({ mode: "both", activeTab: "console" });
 
+    expect(page.api.switchTab).not.toHaveBeenCalled();
+  });
+
+  // Failure: a single-view mode restores the saved tab, so the hidden tab strip switches the view on launch with no tab visible.
+  it.each([["server"], ["console"], ["local"]])("mode %s does not restore the saved console tab", async (mode) => {
+    const page = await openShell({ mode, activeTab: "console" });
+    const server = page.document.querySelector('.tab[data-tab="server"]');
+    const console = page.document.querySelector('.tab[data-tab="console"]');
+
+    expect(console.classList.contains("active")).toBe(false);
+    expect(server.classList.contains("active")).toBe(true);
+    expect(page.api.switchTab).not.toHaveBeenCalled();
+  });
+
+  // Failure: a saved tab that matches no tab (an old or hand-edited settings file) leaves the strip with no tab highlighted, or throws on load.
+  it("keeps the markup's default tab when the saved activeTab matches no tab", async () => {
+    const page = await openShell({ mode: "both", activeTab: "bogus" });
+    const server = page.document.querySelector('.tab[data-tab="server"]');
+
+    expect(server.classList.contains("active")).toBe(true);
+    expect(page.document.querySelector('.tab[data-tab="console"]').classList.contains("active")).toBe(false);
     expect(page.api.switchTab).not.toHaveBeenCalled();
   });
 });
@@ -170,6 +217,68 @@ describe("tab switching", () => {
   });
 });
 
+describe("tab keyboard navigation", () => {
+  // Failure: a key the tab strip handles does not move the selection or moves it to the wrong tab, and the browser acts on the key too (scrolls or types), so keyboard users cannot reach the Console tab.
+  it.each([
+    // key, tab the key is pressed on, tab it selects
+    ["ArrowRight", "server", "console"],
+    ["ArrowDown", "server", "console"],
+    ["ArrowLeft", "console", "server"],
+    ["ArrowUp", "console", "server"],
+    ["Home", "console", "server"],
+    ["End", "server", "console"],
+  ])("%s on the %s tab selects %s, prevents the default action and moves focus there", async (key, from, to) => {
+    const page = await openShell({ mode: "both", activeTab: from });
+
+    const event = pressOnTab(page, from, key);
+
+    const target = page.document.querySelector(`.tab[data-tab="${to}"]`);
+    expect(page.api.switchTab.mock.calls).toEqual([[to]]);
+    expect(target.classList.contains("active")).toBe(true);
+    expect(page.document.activeElement).toBe(target);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  // Failure: the arrow keys stop at the ends of the strip instead of wrapping, so from the last tab the user cannot get back to the first.
+  it.each([
+    // key, tab the key is pressed on, tab it wraps to
+    ["ArrowRight", "console", "server"],
+    ["ArrowDown", "console", "server"],
+    ["ArrowLeft", "server", "console"],
+    ["ArrowUp", "server", "console"],
+  ])("%s on the %s tab wraps to %s", async (key, from, to) => {
+    const page = await openShell({ mode: "both", activeTab: from });
+
+    pressOnTab(page, from, key);
+
+    expect(page.api.switchTab.mock.calls).toEqual([[to]]);
+    expect(page.document.querySelector(`.tab[data-tab="${to}"]`).classList.contains("active")).toBe(true);
+  });
+
+  // Failure: Home on the first tab or End on the last does nothing, so the keys look broken at the ends of the strip.
+  it.each([
+    ["Home", "server"],
+    ["End", "console"],
+  ])("%s on the tab already at that end keeps it selected", async (key, tab) => {
+    const page = await openShell({ mode: "both", activeTab: tab });
+
+    pressOnTab(page, tab, key);
+
+    expect(page.api.switchTab.mock.calls).toEqual([[tab]]);
+  });
+
+  // Failure: a key the strip does not handle, such as a letter, Enter, Space or Tab, changes the tab or is swallowed, so typing or activating something else misfires.
+  it.each([["a"], ["Enter"], [" "], ["Tab"]])("%j on a tab does nothing", async (key) => {
+    const page = await openShell({ mode: "both", activeTab: "server" });
+
+    const event = pressOnTab(page, "server", key);
+
+    expect(page.api.switchTab).not.toHaveBeenCalled();
+    expect(page.document.querySelector('.tab[data-tab="server"]').classList.contains("active")).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
 describe("window controls", () => {
   // Failure: a window control calls the wrong main-process action, so Maximize minimises the window.
   it.each([
@@ -195,5 +304,34 @@ describe("window controls", () => {
     page.document.getElementById("btn-close").click();
 
     expect(page.api.windowClose).not.toHaveBeenCalled();
+  });
+});
+
+describe("theme", () => {
+  // Failure: the title bar keeps the dark palette under a light system theme, so its text is hard to read on the light background.
+  it("applies the light theme at load when the system prefers light", async () => {
+    const page = await openShell({ prefersLight: true });
+
+    expect(page.document.documentElement.dataset.theme).toBe("light");
+  });
+
+  // Failure: the title bar takes the light palette under a dark system theme.
+  it("applies no light theme at load when the system prefers dark", async () => {
+    const page = await openShell({ prefersLight: false });
+
+    expect(page.document.documentElement.dataset.theme).toBe("");
+  });
+
+  // Failure: the title bar keeps the theme it loaded with after the system theme changes, so it stays on the old palette until the window is reopened.
+  it("follows a change event when the system theme switches while the page is open", async () => {
+    const page = await openShell({ prefersLight: false });
+
+    page.setPrefersLight(true);
+    const afterLight = page.document.documentElement.dataset.theme;
+    page.setPrefersLight(false);
+    const afterDark = page.document.documentElement.dataset.theme;
+
+    expect(afterLight).toBe("light");
+    expect(afterDark).toBe("");
   });
 });

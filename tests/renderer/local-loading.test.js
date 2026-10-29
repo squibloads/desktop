@@ -26,7 +26,8 @@ describe("local loading stages", () => {
   it("starts on the Podman machine stage", () => {
     const { document, jsdomErrors } = loadPage("local-loading", createFakeBridge());
 
-    expect(stageStates(document)).toEqual(STARTING);
+    const states = stageStates(document);
+    expect(states).toEqual(STARTING);
     expect(document.getElementById("status").textContent).toBe("Starting the Podman machine");
     expect(jsdomErrors).toEqual([]);
   });
@@ -37,31 +38,34 @@ describe("local loading stages", () => {
     const page = loadPage("local-loading", bridge);
 
     page.hub.emitLocalProgress("pod");
-    expect(stageStates(page.document)).toEqual({ machine: "done", pod: "active", console: "pending", node: "pending" });
+    const afterPod = stageStates(page.document);
+    expect(afterPod).toEqual({ machine: "done", pod: "active", console: "pending", node: "pending" });
     expect(page.document.getElementById("status").textContent).toBe("Starting Turnstone");
 
     page.hub.emitLocalProgress("console");
-    expect(stageStates(page.document)).toEqual({ machine: "done", pod: "done", console: "active", node: "pending" });
+    const afterConsole = stageStates(page.document);
+    expect(afterConsole).toEqual({ machine: "done", pod: "done", console: "active", node: "pending" });
     expect(page.document.getElementById("status").textContent).toBe("Waiting for the console");
 
     page.hub.emitLocalProgress("node");
-    expect(stageStates(page.document)).toEqual({ machine: "done", pod: "done", console: "done", node: "active" });
+    const afterNode = stageStates(page.document);
+    expect(afterNode).toEqual({ machine: "done", pod: "done", console: "done", node: "active" });
     expect(page.document.getElementById("status").textContent).toBe(
       "Waiting for the node to come online (this can take about a minute)",
     );
   });
 
-  // Failure: a stage sent before the page's listener attaches is shown as if the page had seen it; it is lost, and the
-  // page stays on the first stage until main replays the current stage once the load finishes.
-  it("drops a stage sent before the page attached, and shows the replay sent after load", () => {
-    const bridge = createFakeBridge();
-    bridge.hub.emitLocalProgress("console");
-
-    const page = loadPage("local-loading", bridge);
-    expect(stageStates(page.document)).toEqual(STARTING);
+  // Failure: a stage main sends once the page has loaded (the replay that catches up a stage sent before
+  // the listener attached) is not shown, so the page stays on the first stage while the start has moved on.
+  it("shows the stage main sends after load, skipping the first stage", () => {
+    const page = loadPage("local-loading", createFakeBridge());
+    const atLoad = stageStates(page.document);
+    expect(atLoad).toEqual(STARTING);
 
     page.hub.emitLocalProgress("console");
-    expect(stageStates(page.document)).toEqual({ machine: "done", pod: "done", console: "active", node: "pending" });
+
+    const afterReplay = stageStates(page.document);
+    expect(afterReplay).toEqual({ machine: "done", pod: "done", console: "active", node: "pending" });
   });
 
   // Failure: an unknown stage name clears every stage or shows "undefined" in the status line.
@@ -71,7 +75,35 @@ describe("local loading stages", () => {
 
     page.hub.emitLocalProgress("bogus");
 
-    expect(stageStates(page.document)).toEqual({ machine: "done", pod: "active", console: "pending", node: "pending" });
+    const states = stageStates(page.document);
+    expect(states).toEqual({ machine: "done", pod: "active", console: "pending", node: "pending" });
     expect(page.document.getElementById("status").textContent).toBe("Starting Turnstone");
+  });
+});
+
+describe("theme", () => {
+  // Failure: the loading page keeps the dark palette under a light system theme, so its text is hard to read on the light background.
+  it("applies the light theme at load when the system prefers light", () => {
+    const page = loadPage("local-loading", { ...createFakeBridge(), prefersLight: true });
+
+    expect(page.document.documentElement.dataset.theme).toBe("light");
+  });
+
+  // Failure: the loading page takes the light palette under a dark system theme.
+  it("applies no light theme at load when the system prefers dark", () => {
+    const page = loadPage("local-loading", { ...createFakeBridge(), prefersLight: false });
+
+    expect(page.document.documentElement.dataset.theme).toBe("");
+  });
+
+  // Failure: the page takes the wrong palette after a system theme switch. local-loading.js reads the theme
+  // once, at load, and has no change listener, so the page keeps the theme it loaded with. This pins that
+  // current behaviour. If the page starts following the system theme, change this test to expect "light".
+  it("keeps the load-time theme when a change event fires, because the script has no change listener", () => {
+    const page = loadPage("local-loading", { ...createFakeBridge(), prefersLight: false });
+
+    page.setPrefersLight(true);
+
+    expect(page.document.documentElement.dataset.theme).toBe("");
   });
 });

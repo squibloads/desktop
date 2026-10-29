@@ -15,7 +15,9 @@ tier fails it.
   renderer page's CSP or the test layout itself.
 - `tests/renderer/` runs each `src/renderer/` page in jsdom, with the real HTML
   and script and a fake `window.electronAPI`. It runs in the `renderer`
-  project, the only one with `environment: "jsdom"`.
+  project, the only one with `environment: "jsdom"`. CSS is not loaded in
+  this tier, so a test asserts class names such as `hidden` or `gone`,
+  never what is visible.
 - `tests/fixtures/` holds static input a test reads, such as a sample file.
 - `tests/golden/` holds expected output a test compares against.
 - `tests/helpers/` holds fakes shared by more than one test file, plus the
@@ -26,8 +28,10 @@ tier fails it.
     whatever order Vitest discovers the files in.
   - `load-page.js` exports `loadPage(name, { api, hub, prefersLight, query })`,
     `createFakeBridge()` and `closeAllPages()`. The fake bridge has exactly the
-    keys `src/preload/preload.js` exposes. Test-only emitters (health and stage
-    events) sit on a separate `hub`, so the page never sees them.
+    keys `src/preload/preload.js` exposes; `tests/contract/renderer-bridge.test.js`
+    checks that. Test-only emitters (health and stage events) sit on a separate
+    `hub`, so the page never sees them. A loaded page's `setPrefersLight(bool)`
+    changes the colour scheme and fires the page's `change` listeners.
   - `fake-clock.js` exports `installSteppedClock({ step })`. It replaces
     `Date.now` with a counter that advances by `step` ms on every read, so a
     timeout counts polls. `make()` in `tests/unit/local-runtime.test.js`
@@ -71,6 +75,7 @@ that file.
 npm test                  # all tiers, in parallel
 npm run test:unit
 npm run test:contract
+npm run test:renderer
 npm run test:shuffle      # random file and test order; prints the seed
 ```
 

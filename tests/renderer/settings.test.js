@@ -7,6 +7,7 @@ afterEach(() => {
 
 const SERVER = "http://server.example.test:8080";
 const CONSOLE = "http://console.example.test:8090";
+const URL_ERROR = "Enter a valid URL (http:// or https://)";
 
 // Opens the settings page with the given saved settings. The page fills the
 // form in a promise callback and sets the mode radio last, so waiting for a
@@ -54,10 +55,13 @@ describe("field visibility per mode", () => {
   ])("mode %s: server %j, console %j, quit row %j", async (mode, serverState, consoleState, localState) => {
     const page = await openSettings({ mode });
     const doc = page.document;
+    const serverGroup = stateOf(doc.getElementById("server-group"));
+    const consoleGroup = stateOf(doc.getElementById("console-group"));
+    const localGroup = stateOf(doc.getElementById("local-group"));
 
-    expect(stateOf(doc.getElementById("server-group"))).toEqual(serverState);
-    expect(stateOf(doc.getElementById("console-group"))).toEqual(consoleState);
-    expect(stateOf(doc.getElementById("local-group"))).toEqual(localState);
+    expect(serverGroup).toEqual(serverState);
+    expect(consoleGroup).toEqual(consoleState);
+    expect(localGroup).toEqual(localState);
   });
 
   // Failure: picking a mode radio leaves the previous mode's fields on screen until the window is reopened.
@@ -67,9 +71,12 @@ describe("field visibility per mode", () => {
 
     doc.getElementById("mode-local").click();
 
-    expect(stateOf(doc.getElementById("server-group"))).toEqual(["gone", "hidden"]);
-    expect(stateOf(doc.getElementById("console-group"))).toEqual(["gone", "hidden"]);
-    expect(stateOf(doc.getElementById("local-group"))).toEqual([]);
+    const serverGroup = stateOf(doc.getElementById("server-group"));
+    const consoleGroup = stateOf(doc.getElementById("console-group"));
+    const localGroup = stateOf(doc.getElementById("local-group"));
+    expect(serverGroup).toEqual(["gone", "hidden"]);
+    expect(consoleGroup).toEqual(["gone", "hidden"]);
+    expect(localGroup).toEqual([]);
     expect(page.api.getSettings).toHaveBeenCalledTimes(1);
   });
 });
@@ -96,6 +103,18 @@ describe("initial values", () => {
     const page = await openSettings({ mode: undefined });
 
     expect(page.document.querySelector('input[name="mode"]:checked').id).toBe("mode-both");
+  });
+
+  // Failure: the user cannot tell why the form is empty, so they assume their saved URLs are gone and re-enter them, or Save overwrites them with blanks.
+  it("shows the read error when getSettings rejects", async () => {
+    const bridge = createFakeBridge();
+    bridge.api.getSettings.mockRejectedValueOnce(new Error("disk gone"));
+    const page = loadPage("settings", { api: bridge.api, hub: bridge.hub });
+
+    await vi.waitFor(() => {
+      expect(page.document.getElementById("save-error").classList.contains("visible")).toBe(true);
+    });
+    expect(page.document.getElementById("save-error").textContent).toBe("Could not read settings: disk gone");
   });
 });
 
@@ -135,6 +154,22 @@ describe("save payload per mode", () => {
     expect(page.api.saveSettings).toHaveBeenCalledTimes(1);
     expect(page.api.saveSettings).toHaveBeenCalledWith(payload);
   });
+
+  // Failure: a valid https address is refused, so a server behind TLS cannot be saved, or the trailing slash is kept in the stored address.
+  it("accepts https URLs and saves them without trailing slashes", async () => {
+    const page = await openSettings({ mode: "both" });
+    setValue(page, "server-url", "https://turnstone.example.test/");
+    setValue(page, "console-url", "https://console.example.test:9443");
+
+    page.document.getElementById("btn-save").click();
+
+    expect(page.api.saveSettings).toHaveBeenCalledWith({
+      mode: "both",
+      serverUrl: "https://turnstone.example.test",
+      consoleUrl: "https://console.example.test:9443",
+      quitBehavior: "stop",
+    });
+  });
 });
 
 describe("validation", () => {
@@ -149,6 +184,17 @@ describe("validation", () => {
     expect(page.document.getElementById("server-url").classList.contains("invalid")).toBe(true);
     expect(page.document.getElementById("server-url-error").classList.contains("visible")).toBe(true);
     expect(page.closeCalls()).toBe(0);
+  });
+
+  // Failure: a URL made only of spaces passes the check and Save sends an empty server address.
+  it("rejects a URL that is only whitespace", async () => {
+    const page = await openSettings({ mode: "server" });
+    setValue(page, "server-url", "   ");
+
+    page.document.getElementById("btn-save").click();
+
+    expect(page.api.saveSettings).not.toHaveBeenCalled();
+    expect(page.document.getElementById("server-url").classList.contains("invalid")).toBe(true);
   });
 
   // Failure: a field the mode hides is validated, so a console-only user is blocked by a server URL they cannot see.
@@ -174,6 +220,33 @@ describe("validation", () => {
     expect(page.document.getElementById("console-url").classList.contains("invalid")).toBe(true);
     expect(page.document.getElementById("console-url-error").classList.contains("visible")).toBe(true);
     expect(page.document.getElementById("server-url").classList.contains("invalid")).toBe(false);
+  });
+
+  // Failure: in Both mode an invalid URL in either field is saved, or the field that is valid is marked as invalid.
+  it.each([
+    // server URL, console URL, server marked, console marked
+    ["nope", CONSOLE, true, false],
+    [SERVER, "nope", false, true],
+    ["nope", "nope", true, true],
+  ])("Both mode with server %s and console %s marks server %j and console %j", async (server, console, serverMarked, consoleMarked) => {
+    const page = await openSettings({ mode: "both" });
+    setValue(page, "server-url", server);
+    setValue(page, "console-url", console);
+
+    page.document.getElementById("btn-save").click();
+
+    const doc = page.document;
+    const serverInvalid = doc.getElementById("server-url").classList.contains("invalid");
+    const consoleInvalid = doc.getElementById("console-url").classList.contains("invalid");
+    const serverError = doc.getElementById("server-url-error");
+    const consoleError = doc.getElementById("console-url-error");
+    expect(page.api.saveSettings).not.toHaveBeenCalled();
+    expect(serverInvalid).toBe(serverMarked);
+    expect(consoleInvalid).toBe(consoleMarked);
+    expect(serverError.classList.contains("visible")).toBe(serverMarked);
+    expect(consoleError.classList.contains("visible")).toBe(consoleMarked);
+    expect(serverError.textContent).toBe(URL_ERROR);
+    expect(consoleError.textContent).toBe(URL_ERROR);
   });
 
   // Failure: the field keeps its red error after the user starts correcting it.
@@ -205,6 +278,8 @@ describe("validation", () => {
   });
 
   // Failure: a save that fails over IPC leaves Save disabled, so the user cannot retry.
+  // No message is shown for this case today: the catch only re-enables Save, so the user
+  // gets no reason. The last assertion pins that. A message added later changes it, on purpose.
   it("re-enables Save when the save call itself throws", async () => {
     const page = await openSettings({ mode: "server" });
     page.api.saveSettings.mockRejectedValueOnce(new Error("ipc gone"));
@@ -216,6 +291,7 @@ describe("validation", () => {
     });
     expect(page.document.getElementById("btn-save").textContent).toBe("Save");
     expect(page.closeCalls()).toBe(0);
+    expect(page.document.getElementById("save-error").classList.contains("visible")).toBe(false);
   });
 
   // Failure: a successful save leaves the dialog open, so the user does not see the change take effect.
@@ -292,6 +368,8 @@ describe("closing and keyboard", () => {
 
 describe("window resizing", () => {
   // Failure: the window is not resized when the content changes height, so Save and Cancel are pushed off the bottom.
+  // The observer's callback is fired by the test rather than on observe(), so the sequence below is only the heights
+  // the test triggers. See the ResizeObserver stub in load-page.js for why.
   it("observes the settings box and reports its height plus the 32px body padding, each time it changes", async () => {
     const page = await openSettings({ mode: "both" });
     const box = page.document.querySelector(".settings-box");
@@ -313,5 +391,25 @@ describe("theme", () => {
     const page = await openSettings({ mode: "both" }, { prefersLight: true });
 
     expect(page.document.documentElement.dataset.theme).toBe("light");
+  });
+
+  // Failure: the dialog takes the light palette under a dark system theme.
+  it("applies no light theme when the system prefers dark", async () => {
+    const page = await openSettings({ mode: "both" }, { prefersLight: false });
+
+    expect(page.document.documentElement.dataset.theme).toBe("");
+  });
+
+  // Failure: the dialog keeps the theme it loaded with after the system theme changes, so it stays on the old palette until it is reopened.
+  it("follows a change event when the system theme switches while the page is open", async () => {
+    const page = await openSettings({ mode: "both" }, { prefersLight: false });
+
+    page.setPrefersLight(true);
+    const afterLight = page.document.documentElement.dataset.theme;
+    page.setPrefersLight(false);
+    const afterDark = page.document.documentElement.dataset.theme;
+
+    expect(afterLight).toBe("light");
+    expect(afterDark).toBe("");
   });
 });

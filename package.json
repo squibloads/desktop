@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:contract": "vitest run --project contract",
+    "test:renderer": "vitest run --project renderer",
     "test:shuffle": "node tests/helpers/run-shuffled.mjs"
   },
   "devDependencies": {

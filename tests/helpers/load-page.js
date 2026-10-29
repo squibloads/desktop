@@ -3,8 +3,9 @@
 //
 // The fake is exposed as window.electronAPI, the name preload.js uses and the
 // name every renderer script reads. Its keys are exactly the keys preload.js
-// exposes. Test-only controls (emitting health or stage events) live on a
-// separate `hub`, so the object a page sees carries nothing production does not.
+// exposes; tests/contract/renderer-bridge.test.js checks that. Test-only controls
+// (emitting health or stage events) live on a separate `hub`, so the object a
+// page sees carries nothing production does not.
 //
 // Nothing here reaches the network: jsdom fetches no subresources, and the
 // page's <script src> tag is removed so the only script that runs is the file
@@ -19,6 +20,8 @@ import { vi } from "vitest";
 // Read from the file path, not `new URL(...)`: the jsdom environment replaces the URL
 // global, and fileURLToPath rejects its objects.
 const RENDERER_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "renderer");
+
+const COLOUR_SCHEME_LIGHT = "(prefers-color-scheme: light)";
 
 const DEFAULT_SETTINGS = {
   mode: "both",
@@ -97,13 +100,15 @@ const openWindows = [];
  *
  * Options:
  *   api        a bridge from createFakeBridge (default: a fresh one)
- *   prefersLight  the value the matchMedia stub reports for prefers-color-scheme: light
+ *   prefersLight  the value the matchMedia stub reports for prefers-color-scheme: light at load
  *   query      an object written to the URL's query string, as loadFile's query option
  *
  * Returns { window, document, api, hub, jsdomErrors, closeCalls, resizeObservers,
- * triggerResize }. window.close is a spy, so a page closing its own window only
- * records the call. jsdomErrors collects what jsdom reports as not implemented,
- * such as a navigation it declines to perform.
+ * triggerResize, setPrefersLight }. window.close is a spy, so a page closing its own
+ * window only records the call. jsdomErrors collects what jsdom reports as not
+ * implemented, such as a navigation it declines to perform. setPrefersLight(bool)
+ * changes what the colour-scheme query reports and fires its `change` listeners,
+ * as the OS theme switching while the window is open does.
  */
 export function loadPage(name, { api, hub, prefersLight = false, query } = {}) {
   const bridge = api ? { api, hub } : createFakeBridge();
@@ -126,14 +131,34 @@ export function loadPage(name, { api, hub, prefersLight = false, query } = {}) {
   openWindows.push({ win, realClose: win.close.bind(win) });
 
   // jsdom has no matchMedia or ResizeObserver. The stubs keep the real logic:
-  // matchMedia answers only the colour-scheme query the pages ask, and
-  // ResizeObserver keeps its callback so a test can fire a resize.
+  // matchMedia answers only the colour-scheme query the pages ask, and its `change`
+  // listeners are kept so setPrefersLight can fire them. ResizeObserver keeps its
+  // callback so a test can fire a resize.
+  let lightNow = prefersLight;
+  const changeListeners = new Set();
   win.matchMedia = (query) => ({
-    matches: query === "(prefers-color-scheme: light)" ? prefersLight : false,
+    get matches() {
+      return query === COLOUR_SCHEME_LIGHT ? lightNow : false;
+    },
     media: query,
-    addEventListener() {},
-    removeEventListener() {},
+    addEventListener(type, listener) {
+      if (type === "change" && query === COLOUR_SCHEME_LIGHT) changeListeners.add(listener);
+    },
+    removeEventListener(type, listener) {
+      if (type === "change" && query === COLOUR_SCHEME_LIGHT) changeListeners.delete(listener);
+    },
   });
+  const setPrefersLight = (value) => {
+    lightNow = value;
+    for (const listener of [...changeListeners]) {
+      listener({ matches: value, media: COLOUR_SCHEME_LIGHT });
+    }
+  };
+
+  // A real ResizeObserver also calls back once on observe(). This stub does not:
+  // the settings page reports its height on every callback, and its resize test
+  // asserts the exact list of heights reported. Firing on observe would add a
+  // load-time call to that list, so each test fires the resize it checks.
   const resizeObservers = [];
   win.ResizeObserver = class {
     constructor(callback) {
@@ -168,6 +193,7 @@ export function loadPage(name, { api, hub, prefersLight = false, query } = {}) {
     closeCalls: () => closeSpy.mock.calls.length,
     resizeObservers,
     triggerResize,
+    setPrefersLight,
   };
 }
 
