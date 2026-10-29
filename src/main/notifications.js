@@ -1,38 +1,55 @@
-const { Notification } = require("electron");
-
+// electron is not required at the top: the tests run under plain Node and inject
+// Notification. The lazy require below only runs in the real app.
 class NotificationManager {
-  constructor(settings) {
+  constructor(settings, { Notification } = {}) {
     this.settings = settings;
+    this._Notification = Notification;
     this.controller = null;
+    this.retryTimer = null;
     this.retryDelay = 1000;
     this.running = false;
+    // Bumped by stop(). A loop started under an older value does nothing: stop()
+    // has already aborted its connection, and it writes no shared state.
+    this.generation = 0;
   }
 
   start() {
+    // One loop at a time: stop() cancels a pending retry and aborts an open
+    // stream, so a second start() cannot leave the first loop connected. A new
+    // start is a fresh connection, so it also drops the backoff the old loop
+    // built up; otherwise a corrected URL waits out the old delay.
+    this.stop();
+    this.retryDelay = 1000;
     this.running = true;
-    this._connect();
+    this._connect(this.generation);
   }
 
   stop() {
     this.running = false;
+    this.generation += 1;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     if (this.controller) {
       this.controller.abort();
       this.controller = null;
     }
   }
 
-  async _connect() {
-    if (!this.running) return;
+  async _connect(generation) {
+    if (!this.running || generation !== this.generation) return;
 
-    this.controller = new AbortController();
+    const controller = new AbortController();
+    this.controller = controller;
     try {
       const resp = await fetch(
         `${this.settings.serverUrl}/v1/api/events/global`,
         {
           headers: { Accept: "text/event-stream" },
-          signal: this.controller.signal,
+          signal: controller.signal,
         },
       );
+      // A stale answer must not touch the backoff the live loop is using.
+      if (generation !== this.generation) return;
 
       if (!resp.ok || !resp.body) {
         throw new Error(`HTTP ${resp.status}`);
@@ -46,6 +63,8 @@ class NotificationManager {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // An event read before stop() ran must not notify once the user has moved on.
+        if (generation !== this.generation) return;
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
@@ -73,9 +92,9 @@ class NotificationManager {
       if (err.name === "AbortError") return;
     }
 
-    // Reconnect with exponential backoff
-    if (this.running) {
-      setTimeout(() => this._connect(), this.retryDelay);
+    // Reconnect with exponential backoff, unless stop() or a newer start() has run.
+    if (this.running && generation === this.generation) {
+      this.retryTimer = setTimeout(() => this._connect(generation), this.retryDelay);
       this.retryDelay = Math.min(this.retryDelay * 2, 30000);
     }
   }
@@ -99,9 +118,44 @@ class NotificationManager {
   }
 
   _notify(title, body) {
+    const Notification = this._Notification ?? require("electron").Notification;
     if (!Notification.isSupported()) return;
     new Notification({ title: `Turnstone: ${title}`, body }).show();
   }
 }
 
-module.exports = { NotificationManager };
+// The one manager the app runs. It exists only while the mode has a server, so a
+// switch into a mode without one leaves nothing connected, and a restart always
+// reaches the manager that is running.
+function createNotificationLifecycle(create) {
+  let current = null;
+
+  function stop() {
+    if (current) current.stop();
+    current = null;
+  }
+
+  return {
+    // Replaces whatever runs with a manager for these settings, or with nothing
+    // when the mode has no server. The old manager is stopped first, so no stale
+    // one is left to restart.
+    apply(settings) {
+      stop();
+      if (settings.hasServer) {
+        current = create(settings);
+        current.start();
+      }
+    },
+    // A URL change in the same mode. The manager reads the settings again when it
+    // connects, so stopping and starting it is enough.
+    restart() {
+      if (current) {
+        current.stop();
+        current.start();
+      }
+    },
+    stop,
+  };
+}
+
+module.exports = { NotificationManager, createNotificationLifecycle };

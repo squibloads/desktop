@@ -5,15 +5,24 @@ const {
   ipcMain,
   shell,
   screen,
+  dialog,
 } = require("electron");
 const path = require("path");
 const { SettingsStore } = require("./settings-store.js");
 const { HealthPoller } = require("./health.js");
 const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
-const { NotificationManager } = require("./notifications.js");
+const { NotificationManager, createNotificationLifecycle } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
-const { shouldShowErrorPage, errorPageQuery, recoveryAction } = require("./load-failure.js");
+const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
+const { planRecovery } = require("./recovery.js");
+const { planSettingsSave, writeSavePlan } = require("./settings-save.js");
+const { shouldStopPodOnQuit } = require("./quit-policy.js");
+const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
+const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
+const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
+const { canRetryLocal } = require("./ipc-guards.js");
+const { firstConfigError } = require("./runtime-config.js");
 
 let settings = null;
 let mainWindow = null;
@@ -24,7 +33,7 @@ let settingsWindow = null;
 let activeTab = "server";
 let healthPoller = null;
 let tray = null;
-let notifications = null;
+const notificationLifecycle = createNotificationLifecycle((s) => new NotificationManager(s));
 let localRuntime = null;
 let quitting = false;
 
@@ -141,19 +150,20 @@ function createMainWindow() {
 
 function setupViewSecurity(view, settingKey) {
   view.webContents.on("will-navigate", (event, url) => {
+    // An unreadable setting counts as no allowed URL, so the navigation is cancelled.
+    let allowedUrl = null;
     try {
-      const allowed = new URL(settings[settingKey]);
-      const target = new URL(url);
-      if (target.origin !== allowed.origin) {
-        event.preventDefault();
-      }
+      allowedUrl = settings[settingKey];
     } catch {
+      allowedUrl = null;
+    }
+    if (!isNavigationAllowed(allowedUrl, url)) {
       event.preventDefault();
     }
   });
 
   view.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://") || url.startsWith("http://")) {
+    if (windowOpenAction(url).open) {
       shell.openExternal(url);
     }
     return { action: "deny" };
@@ -175,27 +185,34 @@ function setupFailHandler(view, getUrl) {
   );
 }
 
-// A reload repeats the current page, which after a failure is our error page;
-// recoveryAction decides when the original URL has to be loaded instead.
+// A reload repeats the current page, which after a failure is our error page.
+// The decision lives in planRecovery; this only carries it out.
 function recoverView(view, getUrl) {
   const wc = view.webContents;
   if (wc.isDestroyed()) return;
-  // The health poller keeps running while the quit-time pod stop finishes;
-  // a recovery then must not re-run a start that cancels or races the stop.
-  if (quitting) return;
-  const localConsole = settings.isLocal && view === consoleView;
-  // A local start owns the console view while it runs: loading the console
-  // now would replace the loading page with one whose node is not up.
-  if (localConsole && localRuntime && localRuntime.starting) return;
+  const localConsole = Boolean(settings.isLocal && view === consoleView);
   // Local mode: a reload of a console the health poller sees as down just
   // fails again (the pod is stopped), so go through the local start instead.
-  const consoleDown = localConsole && healthPoller && healthPoller.status.console !== "ok";
-  if (recoveryAction(wc.getURL()) === "reload" && !consoleDown) {
+  const consoleDown = Boolean(
+    localConsole && healthPoller && healthPoller.status.console !== "ok",
+  );
+  // A local start owns the console view while it runs (see planRecovery).
+  const starting = Boolean(
+    localConsole && localRuntime && localRuntime.starting,
+  );
+  const action = planRecovery({
+    localConsole,
+    starting,
+    quitting,
+    url: wc.getURL(),
+    consoleDown,
+  });
+  if (action === "skip") return;
+  if (action === "reload") {
     wc.reload();
-  } else if (localConsole) {
-    // Our own local error/loading page is showing: re-run the local start
-    // (idempotent, so it also waits for the node) rather than load the URL
-    // directly and strand the local Retry.
+  } else if (action === "restart-local") {
+    // Idempotent, so it also waits for the node; loading the URL directly
+    // would strand the local Retry.
     showLocalLoading(view);
     startLocalRuntime();
   } else {
@@ -260,9 +277,10 @@ async function startLocalRuntime() {
   if (!settings.isLocal) return;
   // Quitting: the pod is being stopped; a fresh start would fight it.
   if (quitting) return;
-  if (!localRuntime) localRuntime = new LocalRuntime({ onProgress: sendLocalProgress });
   const view = consoleView;
   try {
+    // Inside the try: a failure to build the runtime must reach the UNEXPECTED branch below, not escape unhandled.
+    if (!localRuntime) localRuntime = new LocalRuntime({ onProgress: sendLocalProgress });
     await localRuntime.start();
     loadLocalConsole(view);
   } catch (err) {
@@ -295,35 +313,27 @@ function layoutViews() {
 
   const { width, height } = mainWindow.getContentBounds();
   // Shell (title bar) always present
-  shellView.setBounds({ x: 0, y: 0, width, height: TAB_BAR_HEIGHT });
+  shellView.setBounds(tabBarBounds(width, TAB_BAR_HEIGHT));
 
-  const contentBounds = {
-    x: 0,
-    y: TAB_BAR_HEIGHT,
-    width,
-    height: height - TAB_BAR_HEIGHT,
-  };
-
-  if (settings.isSingleView) {
-    const view = settings.hasServer ? serverView : consoleView;
-    if (view) view.setBounds(contentBounds);
-  } else {
-    if (activeTab === "server" && serverView) {
-      serverView.setBounds(contentBounds);
-    } else if (consoleView) {
-      consoleView.setBounds(contentBounds);
-    }
-  }
+  const bounds = contentBounds(width, height, TAB_BAR_HEIGHT);
+  const target = planLayout({
+    isSingleView: settings.isSingleView,
+    hasServer: settings.hasServer,
+    activeTab,
+    hasServerView: Boolean(serverView),
+    hasConsoleView: Boolean(consoleView),
+  });
+  if (target === "server") serverView.setBounds(bounds);
+  else if (target === "console") consoleView.setBounds(bounds);
 }
 
 // ─── Tab Switching ───────────────────────────────────────────────────────
 
 function switchTab(tab) {
-  if (settings.isSingleView) return;
-  if (tab === activeTab) return;
-  if (tab !== "server" && tab !== "console") return;
+  const plan = planTabSwitch({ isSingleView: settings.isSingleView, activeTab, tab });
+  if (!plan.switch) return;
 
-  if (tab === "server") {
+  if (plan.tab === "server") {
     mainWindow.contentView.removeChildView(consoleView);
     mainWindow.contentView.addChildView(serverView);
   } else {
@@ -331,8 +341,8 @@ function switchTab(tab) {
     mainWindow.contentView.addChildView(consoleView);
   }
 
-  activeTab = tab;
-  settings.activeTab = tab;
+  activeTab = plan.tab;
+  settings.activeTab = plan.tab;
   layoutViews();
 }
 
@@ -366,7 +376,7 @@ function openSettings() {
   // Learn more and other links leave the app in the user's browser, never
   // inside a window that carries this preload.
   settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://") || url.startsWith("http://")) {
+    if (windowOpenAction(url).open) {
       shell.openExternal(url);
     }
     return { action: "deny" };
@@ -380,20 +390,14 @@ function openSettings() {
   });
 }
 
-// ─── URL Validation ──────────────────────────────────────────────────────
-
-function isValidUrl(str) {
-  try {
-    const u = new URL(str);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 // ─── Rebuild Window ──────────────────────────────────────────────────────
 
 function rebuildWindow() {
+  // Apply the new mode's notifications before the window is rebuilt. If the
+  // rebuild throws, the new mode is already saved, so its notifications must
+  // already match it.
+  notificationLifecycle.apply(settings);
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.close();
   }
@@ -423,13 +427,6 @@ function rebuildWindow() {
   // Restart health poller (mode may have changed which URLs to poll)
   if (healthPoller) healthPoller.stop();
   setupHealthPoller();
-
-  // Restart notifications
-  if (notifications) notifications.stop();
-  if (settings.hasServer) {
-    notifications = new NotificationManager(settings);
-    notifications.start();
-  }
 }
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────
@@ -439,53 +436,29 @@ ipcMain.handle("turnstone:get-settings", () => {
 });
 
 ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
-  const mode = newSettings.mode || "both";
-  const needsServer = mode === "server" || mode === "both";
-  const needsConsole = mode === "console" || mode === "both";
-  if (!["server", "console", "both", "local"].includes(mode)) {
-    return { error: "Invalid mode" };
-  }
+  // quitBehavior is not passed in: reading it can throw on a corrupt store,
+  // and this handler never read it.
+  const plan = planSettingsSave(
+    { mode: settings.mode, serverUrl: settings.serverUrl, consoleUrl: settings.consoleUrl },
+    newSettings,
+  );
+  if (plan.error) return { error: plan.error };
 
-  // Validate only the URLs needed for this mode
-  if (needsServer && !isValidUrl(newSettings.serverUrl)) {
-    return { error: "Invalid Server URL — must be http:// or https://" };
-  }
-  if (needsConsole && !isValidUrl(newSettings.consoleUrl)) {
-    return { error: "Invalid Console URL — must be http:// or https://" };
-  }
+  writeSavePlan(settings, plan.apply);
 
-  if (newSettings.quitBehavior !== undefined) {
-    if (newSettings.quitBehavior !== "stop" && newSettings.quitBehavior !== "keep") {
-      return { error: "Invalid quit behaviour" };
-    }
-    settings.quitBehavior = newSettings.quitBehavior;
-  }
-
-  const modeChanged = mode !== settings.mode;
-  const serverChanged = newSettings.serverUrl !== settings.serverUrl;
-  const consoleChanged = newSettings.consoleUrl !== settings.consoleUrl;
-
-  settings.mode = mode;
-  // Local mode hides both URL fields; never overwrite the saved remote URLs.
-  if (needsServer) settings.serverUrl = newSettings.serverUrl;
-  if (needsConsole) settings.consoleUrl = newSettings.consoleUrl;
-
-  if (modeChanged) {
+  if (plan.modeChanged) {
     // Mode change requires full window rebuild
     rebuildWindow();
   } else {
     // Just reload affected views
-    if (serverChanged && serverView) {
+    if (plan.reloadServer && serverView) {
       serverView.webContents.loadURL(settings.serverUrl);
     }
-    if (consoleChanged && consoleView && !settings.isLocal) {
+    if (plan.reloadConsole && consoleView) {
       consoleView.webContents.loadURL(settings.consoleUrl);
     }
     if (healthPoller) healthPoller.poll();
-    if (serverChanged && notifications) {
-      notifications.stop();
-      notifications.start();
-    }
+    if (plan.restartNotifications) notificationLifecycle.restart();
   }
 
   return { ok: true };
@@ -497,11 +470,17 @@ ipcMain.on("turnstone:switch-tab", (_event, tab) => {
 
 // The local-error page runs in the console view; nothing else may retry.
 ipcMain.on("turnstone:retry-local", (event) => {
-  if (!consoleView || consoleView.webContents.isDestroyed()) return;
-  if (event.sender !== consoleView.webContents) return;
+  const hasConsoleView = Boolean(consoleView);
+  const consoleDestroyed = hasConsoleView && consoleView.webContents.isDestroyed();
   // A start already in flight owns the loading page; reloading it would
-  // blank the stage list until the next stage.
-  if (localRuntime && localRuntime.starting) return;
+  // blank the stage list until the next stage. The rule lives in ipc-guards.js.
+  const allowed = canRetryLocal({
+    senderIsConsole: hasConsoleView && isFromWindow(event, consoleView.webContents),
+    hasConsoleView,
+    consoleDestroyed,
+    starting: Boolean(localRuntime && localRuntime.starting),
+  });
+  if (!allowed) return;
   showLocalLoading(consoleView);
   startLocalRuntime();
 });
@@ -509,13 +488,13 @@ ipcMain.on("turnstone:retry-local", (event) => {
 // The settings dialog sizes itself to its content; only that window may ask.
 ipcMain.on("turnstone:settings-resize", (event, height) => {
   if (!settingsWindow || settingsWindow.isDestroyed()) return;
-  if (event.sender !== settingsWindow.webContents) return;
-  if (typeof height !== "number" || !Number.isFinite(height)) {
+  if (!isFromWindow(event, settingsWindow.webContents)) return;
+  // Reject a bad request before touching `screen`, as the handler always did.
+  if (!isValidHeight(height)) {
     console.warn("settings-resize: ignoring non-numeric height");
     return;
   }
-  const maxH = screen.getPrimaryDisplay().workAreaSize.height - 120;
-  const h = Math.min(Math.max(Math.round(height), 300), Math.max(300, maxH));
+  const h = clampSettingsHeight(height, screen.getPrimaryDisplay().workAreaSize.height);
   settingsWindow.setContentSize(460, h);
 });
 
@@ -581,6 +560,15 @@ function getActiveView() {
 // ─── App Lifecycle ───────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Checked in every mode, before anything reads the overrides: a bad value stops the app here
+  // with a message, instead of failing later inside Local mode.
+  const configError = firstConfigError();
+  if (configError) {
+    console.error(configError);
+    dialog.showErrorBox("Turnstone cannot start", configError);
+    app.exit(1);
+    return;
+  }
   settings = await SettingsStore.create();
   activeTab = settings.activeTab || "server";
 
@@ -622,11 +610,8 @@ app.whenReady().then(async () => {
   });
   tray.create();
 
-  // Notifications (only if server mode is active)
-  if (settings.hasServer) {
-    notifications = new NotificationManager(settings);
-    notifications.start();
-  }
+  // Notifications run only while the mode has a server
+  notificationLifecycle.apply(settings);
 
   if (isFirstLaunch) {
     openSettings();
@@ -653,19 +638,16 @@ app.on("before-quit", (event) => {
   // Stop the pod before exiting unless the user chose to keep it. Keyed on
   // whether this session managed the pod (it inspected it, whether or not it
   // had to start it), so a mode switch away from local still stops it.
-  let stopPod = false;
-  try {
-    stopPod = Boolean(
-      settings &&
-        settings.quitBehavior === "stop" &&
-        localRuntime &&
-        localRuntime.active,
-    );
-  } catch (err) {
-    // A corrupt setting must not trap the user in the app.
-    console.error("quitBehavior unreadable, not stopping pod:", err.message);
+  const decision = shouldStopPodOnQuit({
+    getQuitBehavior: () => (settings ? settings.quitBehavior : undefined),
+    runtime: localRuntime,
+    quitting,
+  });
+  // A corrupt setting must not trap the user in the app: the quit goes on.
+  if ("error" in decision) {
+    console.error("quitBehavior unreadable, not stopping pod:", decision.error.message);
   }
-  if (stopPod && !quitting) {
+  if (decision.stop) {
     event.preventDefault();
     quitting = true;
     localRuntime
@@ -675,6 +657,6 @@ app.on("before-quit", (event) => {
     return;
   }
   if (healthPoller) healthPoller.stop();
-  if (notifications) notifications.stop();
+  notificationLifecycle.stop();
   if (tray) tray.destroy();
 });
