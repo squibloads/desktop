@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
+const { shouldShowErrorPage, errorPageQuery, recoveryAction } = require("./load-failure.js");
 
 describe("shouldShowErrorPage", () => {
   it("shows the error page when the main frame cannot connect", () => {
@@ -23,5 +23,40 @@ describe("shouldShowErrorPage", () => {
 describe("errorPageQuery", () => {
   it("is an object, as loadFile's query option requires", () => {
     expect(errorPageQuery("https://turnstone.example.com:8443")).toEqual({ url: "https://turnstone.example.com:8443" });
+  });
+});
+
+describe("recoveryAction non-http pages", () => {
+  it.each(["about:blank", "data:text/html,hi", "chrome-error://chromewebdata/"])(
+    "loads the original URL when the view shows %s",
+    (url) => {
+      expect(recoveryAction(url)).toBe("load-original");
+    },
+  );
+});
+
+describe("recoveryAction", () => {
+  it("loads the original URL when the view is showing the local error page", () => {
+    expect(recoveryAction("file:///app/renderer/error.html?url=http%3A%2F%2F127.0.0.1%3A8090%2F")).toBe("load-original");
+  });
+
+  it("loads the original URL when the view is showing a local loading page", () => {
+    expect(recoveryAction("file:///app/renderer/local-loading.html")).toBe("load-original");
+  });
+
+  it("reloads a live server page", () => {
+    expect(recoveryAction("http://127.0.0.1:8090/")).toBe("reload");
+  });
+
+  it("reloads a live https page", () => {
+    expect(recoveryAction("https://example.com:8443/console")).toBe("reload");
+  });
+
+  it("loads the original URL when nothing is loaded yet (empty string)", () => {
+    expect(recoveryAction("")).toBe("load-original");
+  });
+
+  it("loads the original URL when the URL is undefined", () => {
+    expect(recoveryAction(undefined)).toBe("load-original");
   });
 });
