@@ -4,8 +4,9 @@
 // and the projects are built from that map, so tests/contract/test-layout.test.js
 // can check that every tests/<tier> directory is covered.
 //
-// Renderer and e2e tiers are not declared yet because tests/renderer and
-// tests/e2e do not exist. When they do, add them to `tierGlobs`.
+// The renderer tier runs in jsdom, so its project carries an environment. Every
+// other project runs in Node. The e2e tier is not declared yet because
+// tests/e2e does not exist; add it to `tierGlobs` when it does.
 
 import os from "node:os";
 import { randomInt } from "node:crypto";
@@ -15,6 +16,12 @@ import { OrderedRandomSequencer } from "./tests/helpers/ordered-random-sequencer
 export const tierGlobs = {
   unit: "tests/unit/**/*.test.js",
   contract: "tests/contract/**/*.test.js",
+  renderer: "tests/renderer/**/*.test.js",
+};
+
+// Tiers that need a DOM. Any tier not listed runs in Vitest's default Node environment.
+const tierEnvironments = {
+  renderer: "jsdom",
 };
 
 // VITEST_MAX_WORKERS is validated here before Vitest reads it, so a typo fails
@@ -76,7 +83,12 @@ export default defineConfig(() => {
     test: {
       ...shared,
       projects: Object.entries(tierGlobs).map(([name, include]) => ({
-        test: { ...shared, name, include: [include] },
+        test: {
+          ...shared,
+          name,
+          include: [include],
+          ...(tierEnvironments[name] ? { environment: tierEnvironments[name] } : {}),
+        },
       })),
     },
   };
