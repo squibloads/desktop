@@ -131,7 +131,16 @@ async function quitWithGuard(app, describeState = () => "") {
     );
   });
   try {
-    await Promise.race([app.close(), hung]);
+    // The quit is asked of the app directly and its exit is awaited on the process. Playwright's
+    // own close() also tears down its debugger connection while the app is still stopping the
+    // pod, and on Linux CI that sometimes left the process alive after the stop had finished.
+    const child = app.process();
+    const exited = new Promise((resolveExit) => {
+      if (child.exitCode !== null || child.signalCode !== null) resolveExit();
+      else child.once("exit", () => resolveExit());
+    });
+    app.evaluate(({ app: electronApp }) => electronApp.quit()).catch(() => {});
+    await Promise.race([exited, hung]);
   } catch (err) {
     const child = app.process();
     killTree(child);
@@ -212,7 +221,7 @@ export async function launchApp({ settings = {}, podmanState = {}, env = {}, con
   }
 
   // A page the main process holds, reached through its webContents. Used only when Playwright
-  // has not reported the page; it covers what the tests call: url, title, evaluate, textContent.
+  // has not reported the page; it covers what the tests call: url, title, evaluate, textContent, click.
   function mainPage(initialUrl) {
     const run = (script) =>
       app.evaluate(
@@ -227,6 +236,10 @@ export async function launchApp({ settings = {}, podmanState = {}, env = {}, con
     return {
       url: () => initialUrl,
       title: () => run("document.title"),
+      click: async (selector) => {
+        const clicked = await run(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.click(); return true; })()`);
+        if (!clicked) throw new Error(`no element matches ${selector}`);
+      },
       textContent: (selector) => run(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? null`),
       evaluate: (fn, arg) => run(`(${fn.toString()})(${JSON.stringify(arg ?? null)})`),
     };
