@@ -13,7 +13,11 @@ const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
 const { NotificationManager } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
-const { shouldShowErrorPage, errorPageQuery, recoveryAction } = require("./load-failure.js");
+const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
+const { planRecovery } = require("./recovery.js");
+const { planSettingsSave } = require("./settings-save.js");
+const { shouldStopPodOnQuit } = require("./quit-policy.js");
+const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
 
 let settings = null;
 let mainWindow = null;
@@ -175,27 +179,34 @@ function setupFailHandler(view, getUrl) {
   );
 }
 
-// A reload repeats the current page, which after a failure is our error page;
-// recoveryAction decides when the original URL has to be loaded instead.
+// A reload repeats the current page, which after a failure is our error page.
+// The decision lives in planRecovery; this only carries it out.
 function recoverView(view, getUrl) {
   const wc = view.webContents;
   if (wc.isDestroyed()) return;
-  // The health poller keeps running while the quit-time pod stop finishes;
-  // a recovery then must not re-run a start that cancels or races the stop.
-  if (quitting) return;
-  const localConsole = settings.isLocal && view === consoleView;
-  // A local start owns the console view while it runs: loading the console
-  // now would replace the loading page with one whose node is not up.
-  if (localConsole && localRuntime && localRuntime.starting) return;
+  const localConsole = Boolean(settings.isLocal && view === consoleView);
   // Local mode: a reload of a console the health poller sees as down just
   // fails again (the pod is stopped), so go through the local start instead.
-  const consoleDown = localConsole && healthPoller && healthPoller.status.console !== "ok";
-  if (recoveryAction(wc.getURL()) === "reload" && !consoleDown) {
+  const consoleDown = Boolean(
+    localConsole && healthPoller && healthPoller.status.console !== "ok",
+  );
+  // A local start owns the console view while it runs (see planRecovery).
+  const starting = Boolean(
+    localConsole && localRuntime && localRuntime.starting,
+  );
+  const action = planRecovery({
+    localConsole,
+    starting,
+    quitting,
+    url: wc.getURL(),
+    consoleDown,
+  });
+  if (action === "skip") return;
+  if (action === "reload") {
     wc.reload();
-  } else if (localConsole) {
-    // Our own local error/loading page is showing: re-run the local start
-    // (idempotent, so it also waits for the node) rather than load the URL
-    // directly and strand the local Retry.
+  } else if (action === "restart-local") {
+    // Idempotent, so it also waits for the node; loading the URL directly
+    // would strand the local Retry.
     showLocalLoading(view);
     startLocalRuntime();
   } else {
@@ -380,17 +391,6 @@ function openSettings() {
   });
 }
 
-// ─── URL Validation ──────────────────────────────────────────────────────
-
-function isValidUrl(str) {
-  try {
-    const u = new URL(str);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 // ─── Rebuild Window ──────────────────────────────────────────────────────
 
 function rebuildWindow() {
@@ -439,50 +439,33 @@ ipcMain.handle("turnstone:get-settings", () => {
 });
 
 ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
-  const mode = newSettings.mode || "both";
-  const needsServer = mode === "server" || mode === "both";
-  const needsConsole = mode === "console" || mode === "both";
-  if (!["server", "console", "both", "local"].includes(mode)) {
-    return { error: "Invalid mode" };
-  }
+  // quitBehavior is not passed in: reading it can throw on a corrupt store,
+  // and this handler never read it.
+  const plan = planSettingsSave(
+    { mode: settings.mode, serverUrl: settings.serverUrl, consoleUrl: settings.consoleUrl },
+    newSettings,
+  );
+  if (plan.error) return { error: plan.error };
 
-  // Validate only the URLs needed for this mode
-  if (needsServer && !isValidUrl(newSettings.serverUrl)) {
-    return { error: "Invalid Server URL — must be http:// or https://" };
-  }
-  if (needsConsole && !isValidUrl(newSettings.consoleUrl)) {
-    return { error: "Invalid Console URL — must be http:// or https://" };
-  }
+  const { apply } = plan;
+  if (apply.quitBehavior !== undefined) settings.quitBehavior = apply.quitBehavior;
+  settings.mode = apply.mode;
+  if (apply.serverUrl !== undefined) settings.serverUrl = apply.serverUrl;
+  if (apply.consoleUrl !== undefined) settings.consoleUrl = apply.consoleUrl;
 
-  if (newSettings.quitBehavior !== undefined) {
-    if (newSettings.quitBehavior !== "stop" && newSettings.quitBehavior !== "keep") {
-      return { error: "Invalid quit behaviour" };
-    }
-    settings.quitBehavior = newSettings.quitBehavior;
-  }
-
-  const modeChanged = mode !== settings.mode;
-  const serverChanged = newSettings.serverUrl !== settings.serverUrl;
-  const consoleChanged = newSettings.consoleUrl !== settings.consoleUrl;
-
-  settings.mode = mode;
-  // Local mode hides both URL fields; never overwrite the saved remote URLs.
-  if (needsServer) settings.serverUrl = newSettings.serverUrl;
-  if (needsConsole) settings.consoleUrl = newSettings.consoleUrl;
-
-  if (modeChanged) {
+  if (plan.modeChanged) {
     // Mode change requires full window rebuild
     rebuildWindow();
   } else {
     // Just reload affected views
-    if (serverChanged && serverView) {
+    if (plan.reloadServer && serverView) {
       serverView.webContents.loadURL(settings.serverUrl);
     }
-    if (consoleChanged && consoleView && !settings.isLocal) {
+    if (plan.reloadConsole && consoleView) {
       consoleView.webContents.loadURL(settings.consoleUrl);
     }
     if (healthPoller) healthPoller.poll();
-    if (serverChanged && notifications) {
+    if (plan.restartNotifications && notifications) {
       notifications.stop();
       notifications.start();
     }
@@ -509,13 +492,13 @@ ipcMain.on("turnstone:retry-local", (event) => {
 // The settings dialog sizes itself to its content; only that window may ask.
 ipcMain.on("turnstone:settings-resize", (event, height) => {
   if (!settingsWindow || settingsWindow.isDestroyed()) return;
-  if (event.sender !== settingsWindow.webContents) return;
-  if (typeof height !== "number" || !Number.isFinite(height)) {
+  if (!isFromWindow(event, settingsWindow.webContents)) return;
+  // Reject a bad request before touching `screen`, as the handler always did.
+  if (!isValidHeight(height)) {
     console.warn("settings-resize: ignoring non-numeric height");
     return;
   }
-  const maxH = screen.getPrimaryDisplay().workAreaSize.height - 120;
-  const h = Math.min(Math.max(Math.round(height), 300), Math.max(300, maxH));
+  const h = clampSettingsHeight(height, screen.getPrimaryDisplay().workAreaSize.height);
   settingsWindow.setContentSize(460, h);
 });
 
@@ -653,19 +636,16 @@ app.on("before-quit", (event) => {
   // Stop the pod before exiting unless the user chose to keep it. Keyed on
   // whether this session managed the pod (it inspected it, whether or not it
   // had to start it), so a mode switch away from local still stops it.
-  let stopPod = false;
-  try {
-    stopPod = Boolean(
-      settings &&
-        settings.quitBehavior === "stop" &&
-        localRuntime &&
-        localRuntime.active,
-    );
-  } catch (err) {
-    // A corrupt setting must not trap the user in the app.
-    console.error("quitBehavior unreadable, not stopping pod:", err.message);
+  const decision = shouldStopPodOnQuit({
+    getQuitBehavior: () => (settings ? settings.quitBehavior : undefined),
+    runtime: localRuntime,
+    quitting,
+  });
+  // A corrupt setting must not trap the user in the app: the quit goes on.
+  if ("error" in decision) {
+    console.error("quitBehavior unreadable, not stopping pod:", decision.error.message);
   }
-  if (stopPod && !quitting) {
+  if (decision.stop) {
     event.preventDefault();
     quitting = true;
     localRuntime
