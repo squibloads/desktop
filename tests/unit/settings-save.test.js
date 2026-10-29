@@ -192,6 +192,16 @@ describe("planSettingsSave URLs the mode does not use", () => {
 });
 
 describe("planSettingsSave refused saves", () => {
+  // Failure: a server address sent as an array passes validation, the store rejects it, and the mode has already changed.
+  it("refuses a server URL that is not a string", () => {
+    const result = planSettingsSave(savedBoth(), {
+      mode: "server",
+      serverUrl: ["http://127.0.0.1:8080"],
+      consoleUrl: CONSOLE_URL,
+    });
+    expect(result).toEqual({ error: "Invalid Server URL — must be http:// or https://" });
+  });
+
   // Failure: an unknown mode string is written to the store and the next launch shows a blank window.
   it("refuses an unknown mode before checking any URL", () => {
     const result = planSettingsSave(savedBoth(), { mode: "kiosk", serverUrl: "bad" });
@@ -254,6 +264,14 @@ describe("planSettingsSave refused saves", () => {
 });
 
 describe("isValidUrl", () => {
+  // Failure: an array holding a valid address is coerced to that address and passes, then the store throws on the write.
+  it.each([[["http://127.0.0.1:8080"]], [{ toString: () => "http://127.0.0.1:8080" }]])(
+    "rejects a non-string value (%#)",
+    (value) => {
+      expect(isValidUrl(value)).toBe(false);
+    },
+  );
+
   // Failure: a valid server address is rejected and the user cannot save a working setup.
   it.each(["http://127.0.0.1:8080/", "https://server.example.com:8443/console", "http://localhost:8090"])(
     "accepts %s",

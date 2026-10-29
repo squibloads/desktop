@@ -8,6 +8,8 @@ const MODES = ["server", "console", "both", "local"];
  * it reaches loadURL, where a file: or javascript: address would be loaded.
  */
 function isValidUrl(str) {
+  // new URL() turns an array into its text, so a non-string is refused here, before any write.
+  if (typeof str !== "string") return false;
   try {
     const u = new URL(str);
     return u.protocol === "http:" || u.protocol === "https:";
