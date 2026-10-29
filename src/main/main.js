@@ -4,6 +4,7 @@ const {
   WebContentsView,
   ipcMain,
   shell,
+  screen,
 } = require("electron");
 const path = require("path");
 const { SettingsStore } = require("./settings-store.js");
@@ -11,6 +12,7 @@ const { HealthPoller } = require("./health.js");
 const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
 const { NotificationManager } = require("./notifications.js");
+const { LocalRuntime } = require("./local-runtime.js");
 
 let settings = null;
 let mainWindow = null;
@@ -22,6 +24,8 @@ let activeTab = "server";
 let healthPoller = null;
 let tray = null;
 let notifications = null;
+let localRuntime = null;
+let quitting = false;
 
 // ─── Window Creation ─────────────────────────────────────────────────────
 
@@ -77,7 +81,8 @@ function createMainWindow() {
   // --- Console view (if mode includes console) ---
   if (settings.hasConsole) {
     consoleView = new WebContentsView({ webPreferences: contentViewPrefs });
-    consoleView.webContents.loadURL(settings.consoleUrl);
+    // Local mode loads only once the pod is healthy (startLocalRuntime).
+    if (!settings.isLocal) consoleView.webContents.loadURL(settings.consoleUrl);
     setupViewSecurity(consoleView, "consoleUrl");
     setupFailHandler(consoleView, settings.consoleUrl);
   }
@@ -117,7 +122,11 @@ function createMainWindow() {
   mainWindow.on("resize", saveBounds);
   mainWindow.on("move", saveBounds);
 
+  const thisWindow = mainWindow;
   mainWindow.on("closed", () => {
+    // rebuildWindow closes the old window and builds the new one in the same
+    // tick; a late "closed" must not null the new window's views.
+    if (mainWindow !== thisWindow) return;
     mainWindow = null;
     shellView = null;
     serverView = null;
@@ -154,6 +163,37 @@ function setupFailHandler(view, originalUrl) {
     const url = encodeURIComponent(originalUrl);
     view.webContents.loadFile(errorPage, { query: `url=${url}` });
   });
+}
+
+// ─── Local Runtime ───────────────────────────────────────────────────────
+
+async function startLocalRuntime() {
+  if (!settings.isLocal) return;
+  if (!localRuntime) localRuntime = new LocalRuntime();
+  const view = consoleView;
+  try {
+    await localRuntime.start();
+    if (view && !view.webContents.isDestroyed()) {
+      view.webContents.loadURL(settings.consoleUrl);
+    }
+  } catch (err) {
+    // Quit cancelled the start on purpose; there is nothing to show.
+    if (err.code === "START_CANCELLED") return;
+    // Only runtime errors carry a user message; anything else is a bug.
+    if (!err.userMessage) throw err;
+    if (view && !view.webContents.isDestroyed()) {
+      view.webContents.loadFile(
+        path.join(__dirname, "../renderer/local-error.html"),
+        {
+          query: {
+            code: err.code,
+            message: err.userMessage,
+            detail: String(err.detail || "").slice(0, 500),
+          },
+        },
+      );
+    }
+  }
 }
 
 // ─── View Layout ─────────────────────────────────────────────────────────
@@ -218,6 +258,7 @@ function openSettings() {
     width: 460,
     height: 480,
     resizable: false,
+    useContentSize: true,
     minimizable: false,
     maximizable: false,
     parent: mainWindow,
@@ -230,6 +271,15 @@ function openSettings() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  // Learn more and other links leave the app in the user's browser, never
+  // inside a window that carries this preload.
+  settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://")) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
   });
 
   settingsWindow.setMenu(null);
@@ -278,6 +328,7 @@ function rebuildWindow() {
   else if (settings.mode === "console") activeTab = "console";
 
   createMainWindow();
+  startLocalRuntime();
 
   // Restart health poller (mode may have changed which URLs to poll)
   if (healthPoller) healthPoller.stop();
@@ -301,6 +352,9 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
   const mode = newSettings.mode || "both";
   const needsServer = mode === "server" || mode === "both";
   const needsConsole = mode === "console" || mode === "both";
+  if (!["server", "console", "both", "local"].includes(mode)) {
+    return { error: "Invalid mode" };
+  }
 
   // Validate only the URLs needed for this mode
   if (needsServer && !isValidUrl(newSettings.serverUrl)) {
@@ -310,13 +364,21 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
     return { error: "Invalid Console URL — must be http:// or https://" };
   }
 
+  if (newSettings.quitBehavior !== undefined) {
+    if (newSettings.quitBehavior !== "stop" && newSettings.quitBehavior !== "keep") {
+      return { error: "Invalid quit behaviour" };
+    }
+    settings.quitBehavior = newSettings.quitBehavior;
+  }
+
   const modeChanged = mode !== settings.mode;
   const serverChanged = newSettings.serverUrl !== settings.serverUrl;
   const consoleChanged = newSettings.consoleUrl !== settings.consoleUrl;
 
   settings.mode = mode;
-  settings.serverUrl = newSettings.serverUrl;
-  settings.consoleUrl = newSettings.consoleUrl;
+  // Local mode hides both URL fields; never overwrite the saved remote URLs.
+  if (needsServer) settings.serverUrl = newSettings.serverUrl;
+  if (needsConsole) settings.consoleUrl = newSettings.consoleUrl;
 
   if (modeChanged) {
     // Mode change requires full window rebuild
@@ -326,7 +388,7 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
     if (serverChanged && serverView) {
       serverView.webContents.loadURL(settings.serverUrl);
     }
-    if (consoleChanged && consoleView) {
+    if (consoleChanged && consoleView && !settings.isLocal) {
       consoleView.webContents.loadURL(settings.consoleUrl);
     }
     if (healthPoller) healthPoller.poll();
@@ -341,6 +403,26 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
 
 ipcMain.on("turnstone:switch-tab", (_event, tab) => {
   switchTab(tab);
+});
+
+// The local-error page runs in the console view; nothing else may retry.
+ipcMain.on("turnstone:retry-local", (event) => {
+  if (!consoleView || consoleView.webContents.isDestroyed()) return;
+  if (event.sender !== consoleView.webContents) return;
+  startLocalRuntime();
+});
+
+// The settings dialog sizes itself to its content; only that window may ask.
+ipcMain.on("turnstone:settings-resize", (event, height) => {
+  if (!settingsWindow || settingsWindow.isDestroyed()) return;
+  if (event.sender !== settingsWindow.webContents) return;
+  if (typeof height !== "number" || !Number.isFinite(height)) {
+    console.warn("settings-resize: ignoring non-numeric height");
+    return;
+  }
+  const maxH = screen.getPrimaryDisplay().workAreaSize.height - 120;
+  const h = Math.min(Math.max(Math.round(height), 300), Math.max(300, maxH));
+  settingsWindow.setContentSize(460, h);
 });
 
 ipcMain.on("turnstone:open-settings", () => {
@@ -425,6 +507,7 @@ app.whenReady().then(async () => {
   });
 
   createMainWindow();
+  startLocalRuntime();
   setupHealthPoller();
   settings.hasLaunched = true;
 
@@ -464,10 +547,35 @@ app.on("activate", async () => {
       settings = await SettingsStore.create();
     }
     createMainWindow();
+    startLocalRuntime();
   }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  // Stop the pod before exiting unless the user chose to keep it. Keyed on
+  // whether this session managed the pod (it inspected it, whether or not it
+  // had to start it), so a mode switch away from local still stops it.
+  let stopPod = false;
+  try {
+    stopPod = Boolean(
+      settings &&
+        settings.quitBehavior === "stop" &&
+        localRuntime &&
+        localRuntime.active,
+    );
+  } catch (err) {
+    // A corrupt setting must not trap the user in the app.
+    console.error("quitBehavior unreadable, not stopping pod:", err.message);
+  }
+  if (stopPod && !quitting) {
+    event.preventDefault();
+    quitting = true;
+    localRuntime
+      .stop()
+      .catch((err) => console.error("pod stop failed:", err.message))
+      .finally(() => app.quit());
+    return;
+  }
   if (healthPoller) healthPoller.stop();
   if (notifications) notifications.stop();
   if (tray) tray.destroy();

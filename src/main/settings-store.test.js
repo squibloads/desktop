@@ -25,6 +25,7 @@ describe("SettingsStore", () => {
       consoleUrl: "http://localhost:8090",
       activeTab: "server",
       hasLaunched: false,
+      quitBehavior: "stop",
       ...initial,
     };
     for (const [k, v] of Object.entries(defaults)) {
@@ -96,7 +97,70 @@ describe("SettingsStore", () => {
         serverUrl: "http://test:1234",
         consoleUrl: "http://test:5678",
         activeTab: "console",
+        quitBehavior: "stop",
       });
     });
+  });
+});
+
+describe("SettingsStore local mode", () => {
+  function createLocal(initial = {}) {
+    const data = { mode: "local", quitBehavior: "stop", serverUrl: "http://x:1", consoleUrl: "http://y:2", ...initial };
+    return new SettingsStore({
+      get: (k) => data[k],
+      set: (k, v) => {
+        data[k] = v;
+      },
+    });
+  }
+
+  it("is console-only against the local pod, ignoring saved URLs", () => {
+    const s = createLocal();
+    expect(s.hasConsole).toBe(true);
+    expect(s.hasServer).toBe(false);
+    expect(s.isSingleView).toBe(true);
+    expect(s.isLocal).toBe(true);
+    expect(s.consoleUrl).toBe("http://127.0.0.1:8090");
+  });
+
+  it("keeps the saved consoleUrl for other modes", () => {
+    const s = createLocal({ mode: "both" });
+    expect(s.isLocal).toBe(false);
+    expect(s.consoleUrl).toBe("http://y:2");
+  });
+
+  it("defaults quitBehavior to stop and rejects unknown values", () => {
+    const s = createLocal();
+    expect(s.quitBehavior).toBe("stop");
+    s.quitBehavior = "keep";
+    expect(s.quitBehavior).toBe("keep");
+    expect(() => {
+      s.quitBehavior = "bogus";
+    }).toThrow();
+  });
+
+  it("getAll exposes quitBehavior", () => {
+    expect(createLocal().getAll().quitBehavior).toBe("stop");
+  });
+
+  it("getAll returns the saved remote consoleUrl, not the local override", () => {
+    const s = createLocal({ consoleUrl: "http://console.example.com:8090" });
+    expect(s.getAll().consoleUrl).toBe("http://console.example.com:8090");
+    expect(s.consoleUrl).toBe("http://127.0.0.1:8090");
+  });
+});
+
+describe("SettingsStore quitBehavior validation", () => {
+  const make = (v) =>
+    new SettingsStore({ get: () => v, set: () => {} });
+
+  it("returns stored stop and keep", () => {
+    expect(make("stop").quitBehavior).toBe("stop");
+    expect(make("keep").quitBehavior).toBe("keep");
+  });
+
+  it("throws on an unreadable value instead of inventing one", () => {
+    expect(() => make("bogus").quitBehavior).toThrow(/invalid quitBehavior/);
+    expect(() => make(undefined).quitBehavior).toThrow(/invalid quitBehavior/);
   });
 });

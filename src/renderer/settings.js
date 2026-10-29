@@ -21,11 +21,32 @@ function updateFieldVisibility() {
   const mode = getMode();
   document
     .getElementById("server-group")
-    .classList.toggle("hidden", mode === "console");
+    .classList.toggle("hidden", mode === "console" || mode === "local");
   document
     .getElementById("console-group")
-    .classList.toggle("hidden", mode === "server");
+    .classList.toggle("hidden", mode === "server" || mode === "local");
+  // Local mode takes the URL fields out of layout entirely; the quit control
+  // is only meaningful in local mode, so it is removed from layout elsewhere.
+  document
+    .getElementById("server-group")
+    .classList.toggle("gone", mode === "local");
+  document
+    .getElementById("console-group")
+    .classList.toggle("gone", mode === "local");
+  document
+    .getElementById("local-group")
+    .classList.toggle("gone", mode !== "local");
 }
+
+// Main sizes the window to the box, so Save/Cancel are never pushed out.
+// Observed rather than reported once: fonts and mode changes both resize it.
+const box = document.querySelector(".settings-box");
+new ResizeObserver(() => {
+  const margin = 32; // body padding, top + bottom
+  window.electronAPI.resizeSettings(
+    Math.ceil(box.getBoundingClientRect().height) + margin,
+  );
+}).observe(box);
 
 document.querySelectorAll('input[name="mode"]').forEach((radio) => {
   radio.addEventListener("change", updateFieldVisibility);
@@ -36,6 +57,7 @@ document.querySelectorAll('input[name="mode"]').forEach((radio) => {
 window.electronAPI.getSettings().then((settings) => {
   document.getElementById("server-url").value = settings.serverUrl;
   document.getElementById("console-url").value = settings.consoleUrl;
+  document.getElementById("quit-behavior").value = settings.quitBehavior;
 
   const modeRadio = document.getElementById(
     "mode-" + (settings.mode || "both"),
@@ -43,6 +65,10 @@ window.electronAPI.getSettings().then((settings) => {
   if (modeRadio) modeRadio.checked = true;
 
   updateFieldVisibility();
+}).catch((err) => {
+  const e = document.getElementById("save-error");
+  e.textContent = "Could not read settings: " + err.message;
+  e.classList.add("visible");
 });
 
 // ─── URL validation ──────────────────────────────────────────────────────
@@ -114,12 +140,14 @@ saveBtn.addEventListener("click", async () => {
       mode,
       serverUrl,
       consoleUrl,
+      quitBehavior: document.getElementById("quit-behavior").value,
     });
     if (result && result.error) {
       saveBtn.disabled = false;
       saveBtn.textContent = "Save";
-      document.getElementById("server-url-error").textContent = result.error;
-      document.getElementById("server-url-error").classList.add("visible");
+      const err = document.getElementById("save-error");
+      err.textContent = result.error;
+      err.classList.add("visible");
       return;
     }
     window.close();

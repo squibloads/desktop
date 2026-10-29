@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getSettings: () => ipcRenderer.invoke("turnstone:get-settings"),
   saveSettings: (settings) =>
     ipcRenderer.invoke("turnstone:save-settings", settings),
+  // Content height in CSS px; main clamps it and sizes the settings window.
+  resizeSettings: (height) =>
+    ipcRenderer.send("turnstone:settings-resize", height),
 
   // Tab switching
   switchTab: (tab) => ipcRenderer.send("turnstone:switch-tab", tab),
@@ -18,6 +21,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("turnstone:health-update", handler);
     return () => ipcRenderer.removeListener("turnstone:health-update", handler);
   },
+
+  // Local mode: re-run the start sequence after a failure
+  retryLocal: () => ipcRenderer.send("turnstone:retry-local"),
 
   // Open settings dialog
   openSettings: () => ipcRenderer.send("turnstone:open-settings"),
