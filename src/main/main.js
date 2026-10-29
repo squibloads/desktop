@@ -177,6 +177,8 @@ async function startLocalRuntime() {
       view.webContents.loadURL(settings.consoleUrl);
     }
   } catch (err) {
+    // Quit cancelled the start on purpose; there is nothing to show.
+    if (err.code === "START_CANCELLED") return;
     // Only runtime errors carry a user message; anything else is a bug.
     if (!err.userMessage) throw err;
     if (view && !view.webContents.isDestroyed()) {
@@ -559,7 +561,7 @@ app.on("before-quit", (event) => {
       settings &&
         settings.quitBehavior === "stop" &&
         localRuntime &&
-        localRuntime.started,
+        localRuntime.active,
     );
   } catch (err) {
     // A corrupt setting must not trap the user in the app.

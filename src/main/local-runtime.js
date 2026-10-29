@@ -17,6 +17,7 @@ const USER_MESSAGES = {
   POD_MISSING: "The Turnstone pod does not exist on the Podman machine.",
   POD_START_FAILED: "The Turnstone pod would not start.",
   POD_STOP_FAILED: "The Turnstone pod would not stop cleanly.",
+  START_CANCELLED: "Startup was cancelled because Turnstone is quitting.",
   HEALTH_TIMEOUT:
     "Turnstone started but did not become healthy before the timeout.",
 };
@@ -90,12 +91,20 @@ class LocalRuntime {
     // stop a pod this session started without touching one it never saw.
     this.started = false;
     this._starting = null;
+    this._cancelled = false;
+  }
+
+  // True from the moment a start begins: quit must handle a run still
+  // inspecting the pod, before `started` is set.
+  get active() {
+    return this.started || this._starting !== null;
   }
 
   // Overlapping callers (double-click Retry, fast mode switching) share one
   // run instead of racing podman against itself.
   start() {
     if (!this._starting) {
+      this._cancelled = false;
       this._starting = this._start().finally(() => {
         this._starting = null;
       });
@@ -105,18 +114,30 @@ class LocalRuntime {
 
   async _start() {
     const running = await this._machineRunning();
+    this._checkCancelled();
     if (!running) {
       await this._podman(["machine", "start", MACHINE], "MACHINE_START_FAILED");
+      this._checkCancelled();
     }
     const state = await this._podState();
     this.started = true;
+    this._checkCancelled();
     if (state !== "Running") {
       await this._podman(podArgs(["pod", "start", POD]), "POD_START_FAILED");
     }
     await this._waitHealthy();
   }
 
+  // stop() records intent; start() checks it after each await so a quit
+  // never waits out the health window or lets a pod start after the stop.
+  _checkCancelled() {
+    if (this._cancelled) {
+      throw new LocalRuntimeError("START_CANCELLED", "stopped during start");
+    }
+  }
+
   async stop() {
+    this._cancelled = true;
     // A pod start still in flight would bring the pod back up after this
     // stop, so let it settle first; its own error is reported to its caller.
     if (this._starting) await this._starting.catch(() => {});
@@ -173,6 +194,7 @@ class LocalRuntime {
   async _waitHealthy() {
     const deadline = Date.now() + this.healthTimeoutMs;
     for (;;) {
+      this._checkCancelled();
       if ((await this.checkHealth(this.healthUrl)) === "ok") return;
       if (Date.now() >= deadline) {
         throw new LocalRuntimeError(

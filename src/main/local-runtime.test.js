@@ -32,7 +32,7 @@ function make(script, opts = {}) {
   const rt = new LocalRuntime({
     run: runner.run,
     checkHealth,
-    sleep: async () => {},
+    sleep: opts.sleep || (async () => {}),
     healthTimeoutMs: opts.healthTimeoutMs ?? 3,
     healthIntervalMs: 1,
     healthUrl: "http://127.0.0.1:8090",
@@ -244,28 +244,33 @@ describe("LocalRuntimeError messages", () => {
 });
 
 describe("LocalRuntime stop and started semantics", () => {
-  it("stop waits for an in-flight start before issuing pod stop", async () => {
-    let releaseHealth;
-    const gate = new Promise((r) => (releaseHealth = r));
-    const { rt, calls } = make(
-      {
-        [MACHINE_LIST]: machines(true),
-        [POD_STATE]: "Running",
-        "--connection turnstone pod stop turnstone": "",
-      },
-      { checkHealth: vi.fn(async () => (await gate, "ok")) },
-    );
-    const starting = rt.start();
-    await Promise.resolve();
+  it("stop waits for an in-flight pod start before issuing pod stop", async () => {
+    let releasePodStart;
+    const gate = new Promise((r) => (releasePodStart = r));
+    const calls = [];
+    const STOP = "--connection turnstone pod stop turnstone";
+    const run = vi.fn(async (args) => {
+      const key = args.join(" ");
+      calls.push(key);
+      if (key === MACHINE_LIST) return machines(true);
+      if (key === POD_STATE) return "Exited";
+      if (key === "--connection turnstone pod start turnstone") {
+        await gate;
+        return "";
+      }
+      if (key === STOP) return "";
+      throw new Error(`unscripted podman call: ${key}`);
+    });
+    const rt = new LocalRuntime({ run, checkHealth: async () => "ok", sleep: async () => {} });
+    const startErr = rt.start().catch((e) => e);
+    await new Promise((r) => setTimeout(r, 5));
     const stopping = rt.stop();
     await new Promise((r) => setTimeout(r, 5));
-    expect(calls).not.toContain("--connection turnstone pod stop turnstone");
-    releaseHealth();
-    await starting;
+    expect(calls).not.toContain(STOP);
+    releasePodStart();
     await stopping;
-    expect(calls[calls.length - 1]).toBe(
-      "--connection turnstone pod stop turnstone",
-    );
+    await startErr;
+    expect(calls[calls.length - 1]).toBe(STOP);
   });
 
   it("started is true even when pod start then fails, so quit still stops it", async () => {
@@ -276,5 +281,95 @@ describe("LocalRuntime stop and started semantics", () => {
     });
     await rt.start().catch(() => {});
     expect(rt.started).toBe(true);
+  });
+});
+
+describe("LocalRuntime cancellation", () => {
+  const STOP = "--connection turnstone pod stop turnstone";
+
+  it("is active while pod inspection is still pending, before started is set", async () => {
+    let releaseInspect;
+    const gate = new Promise((r) => (releaseInspect = r));
+    const run = vi.fn(async (args) => {
+      const key = args.join(" ");
+      if (key === MACHINE_LIST) return machines(true);
+      if (key === POD_STATE) {
+        await gate;
+        return "Running";
+      }
+      throw new Error(`unscripted podman call: ${key}`);
+    });
+    const rt = new LocalRuntime({
+      run,
+      checkHealth: async () => "ok",
+      sleep: async () => {},
+    });
+    expect(rt.active).toBe(false);
+    const starting = rt.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rt.started).toBe(false);
+    expect(rt.active).toBe(true);
+    releaseInspect();
+    await starting;
+    expect(rt.active).toBe(true);
+  });
+
+  it("stop ends health polling promptly instead of waiting out the timeout", async () => {
+    const { rt, calls } = make(
+      {
+        [MACHINE_LIST]: machines(true),
+        [POD_STATE]: "Running",
+        [STOP]: "",
+      },
+      {
+        checkHealth: vi.fn(async () => "disconnected"),
+        // Real timer so the loop yields to the event loop (a no-op sleep
+        // would starve the stop() call this test issues).
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        healthTimeoutMs: 60 * 60 * 1000,
+      },
+    );
+    const starting = rt.start();
+    const startErr = starting.catch((e) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    await rt.stop();
+    expect(await startErr).toMatchObject({ code: "START_CANCELLED" });
+    expect(calls[calls.length - 1]).toBe(STOP);
+  });
+
+  it("a stop requested before pod start skips pod start", async () => {
+    let releaseMachine;
+    const gate = new Promise((r) => (releaseMachine = r));
+    const calls = [];
+    const run = vi.fn(async (args) => {
+      const key = args.join(" ");
+      calls.push(key);
+      if (key === MACHINE_LIST) return machines(false);
+      if (key === "machine start turnstone") {
+        await gate;
+        return "";
+      }
+      if (key === POD_STATE) return "Exited";
+      if (key === STOP) return "";
+      throw new Error(`unscripted podman call: ${key}`);
+    });
+    const rt = new LocalRuntime({ run, checkHealth: async () => "ok", sleep: async () => {} });
+    const startErr = rt.start().catch((e) => e);
+    await new Promise((r) => setTimeout(r, 0));
+    const stopping = rt.stop();
+    releaseMachine();
+    await stopping;
+    expect(await startErr).toMatchObject({ code: "START_CANCELLED" });
+    expect(calls).not.toContain("--connection turnstone pod start turnstone");
+  });
+
+  it("a start after a stop runs normally again", async () => {
+    const { rt } = make({
+      [MACHINE_LIST]: machines(true),
+      [POD_STATE]: "Running",
+      [STOP]: "",
+    });
+    await rt.stop();
+    await expect(rt.start()).resolves.toBeUndefined();
   });
 });
