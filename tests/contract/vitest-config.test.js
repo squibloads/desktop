@@ -40,3 +40,18 @@ describe("vitest.config.mjs sequencer", () => {
     expect(test.sequence.sequencer).toBeUndefined();
   });
 });
+
+// An exported smoke-tier override on the developer's machine must not change a unit result,
+// so the root and every project clear both variables for their run.
+describe("vitest.config.mjs hermetic env", () => {
+  // Failure: an exported TURNSTONE_PODMAN or TURNSTONE_LOCAL_CONSOLE_URL changes which binary or console the tests use, so the same suite passes or fails by the shell's state.
+  it("clears both smoke-tier overrides on the root and on each of the three projects", () => {
+    vi.stubEnv("VITEST_SHUFFLE", "0");
+    vi.stubEnv("VITEST_SEED", "");
+    const { test } = config();
+    const cleared = { TURNSTONE_PODMAN: "", TURNSTONE_LOCAL_CONSOLE_URL: "" };
+
+    expect(test.env).toEqual(cleared);
+    expect(test.projects.map((p) => p.test.env)).toEqual([cleared, cleared, cleared]);
+  });
+});

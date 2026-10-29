@@ -45,4 +45,20 @@ function localConsoleUrl(env = process.env) {
   return url.origin;
 }
 
-module.exports = { DEFAULT_LOCAL_CONSOLE_URL, podmanCommand, localConsoleUrl };
+// Startup check for both overrides, run in every mode before anything reads them. Returns the
+// first problem as a message, or null. The message never carries the value, only the variable's name.
+function firstConfigError(env = process.env) {
+  try {
+    podmanCommand(env);
+  } catch (err) {
+    return err.message;
+  }
+  try {
+    localConsoleUrl(env);
+  } catch (err) {
+    return err.message;
+  }
+  return null;
+}
+
+module.exports = { DEFAULT_LOCAL_CONSOLE_URL, podmanCommand, localConsoleUrl, firstConfigError };

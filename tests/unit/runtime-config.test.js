@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-const { podmanCommand, localConsoleUrl } = require("../../src/main/runtime-config.js");
+const { podmanCommand, localConsoleUrl, firstConfigError } = require("../../src/main/runtime-config.js");
 
 // Every call passes its environment explicitly, so the shell that runs the suite cannot change a result.
 // Returns the message of the error the function throws, or "" when it returns normally.
@@ -97,5 +97,78 @@ describe("localConsoleUrl", () => {
 
     expect(message).toContain("TURNSTONE_LOCAL_CONSOLE_URL");
     expect(message).not.toContain("hunter2");
+  });
+
+  // Failure: a host that only starts with a loopback name is accepted, so Local mode sends its health checks to a machine other than this PC.
+  it("rejects a host that only starts with localhost", () => {
+    expect(() => localConsoleUrl({ TURNSTONE_LOCAL_CONSOLE_URL: "http://localhost.evil.example:8090" })).toThrow(
+      /TURNSTONE_LOCAL_CONSOLE_URL/,
+    );
+  });
+
+  // Failure: the host-check error echoes the rejected value, so the password in its userinfo is written to the log.
+  it("does not echo the value or its password when the host check fails", () => {
+    const value = "http://user:pw@evil.example";
+    const message = messageOf(() => localConsoleUrl({ TURNSTONE_LOCAL_CONSOLE_URL: value }));
+
+    expect(message).toContain("TURNSTONE_LOCAL_CONSOLE_URL");
+    expect(message).not.toContain("pw");
+    expect(message).not.toContain(value);
+  });
+});
+
+describe("podmanCommand error messages", () => {
+  // Failure: a malformed TURNSTONE_PODMAN is echoed into the log, so a token or path typed into the variable is written out.
+  it.each([["SECRET123 not json"], ['["SECRET123",2]'], ['{"SECRET123":1}'], ['"SECRET123"'], ['["SECRET123",""]']])(
+    "does not repeat the raw value in the error for the bad value %s",
+    (value) => {
+      const message = messageOf(() => podmanCommand({ TURNSTONE_PODMAN: value }));
+
+      expect(message).toContain("TURNSTONE_PODMAN");
+      expect(message).not.toContain("SECRET123");
+    },
+  );
+});
+
+describe("firstConfigError", () => {
+  // Failure: a machine with no overrides is reported as misconfigured, so the app refuses to start for every user who set neither variable.
+  it("returns null when neither variable is set or both are empty", () => {
+    expect(firstConfigError({})).toBeNull();
+    expect(firstConfigError({ TURNSTONE_PODMAN: "", TURNSTONE_LOCAL_CONSOLE_URL: "" })).toBeNull();
+  });
+
+  // Failure: a correct pair of overrides is reported as an error, so the smoke tier cannot start at all.
+  it("returns null when both variables are valid", () => {
+    expect(
+      firstConfigError({ TURNSTONE_PODMAN: '["node","fake-podman.js"]', TURNSTONE_LOCAL_CONSOLE_URL: "http://127.0.0.1:9191" }),
+    ).toBeNull();
+  });
+
+  // Failure: a bad podman override is not checked at startup, so the app starts and only fails later, inside Local mode.
+  it("reports a bad TURNSTONE_PODMAN when the console value is good", () => {
+    expect(firstConfigError({ TURNSTONE_PODMAN: "not json", TURNSTONE_LOCAL_CONSOLE_URL: "http://127.0.0.1:9191" })).toMatch(
+      /^TURNSTONE_PODMAN /,
+    );
+  });
+
+  // Failure: a bad console override is not checked at startup, so the app starts with a console address it will refuse to use.
+  it("reports a bad TURNSTONE_LOCAL_CONSOLE_URL when the podman value is good", () => {
+    expect(firstConfigError({ TURNSTONE_PODMAN: '["node","fake-podman.js"]', TURNSTONE_LOCAL_CONSOLE_URL: "http://example.com" })).toMatch(
+      /^TURNSTONE_LOCAL_CONSOLE_URL /,
+    );
+  });
+
+  // Failure: with both values bad, the message names the console variable, so the developer fixes the wrong one first.
+  it("reports the podman error first when both values are bad", () => {
+    expect(firstConfigError({ TURNSTONE_PODMAN: "not json", TURNSTONE_LOCAL_CONSOLE_URL: "http://example.com" })).toMatch(
+      /^TURNSTONE_PODMAN /,
+    );
+  });
+
+  // Failure: the dialog receives an object or a differently worded message, so the user sees text that does not name the variable.
+  it("returns the thrown message as a plain string", () => {
+    expect(firstConfigError({ TURNSTONE_LOCAL_CONSOLE_URL: "ftp://127.0.0.1" })).toBe(
+      "TURNSTONE_LOCAL_CONSOLE_URL must use the http: scheme",
+    );
   });
 });

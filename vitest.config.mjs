@@ -66,6 +66,9 @@ export default defineConfig(() => {
     restoreMocks: true,
     unstubGlobals: true,
     unstubEnvs: true,
+    // The smoke-tier overrides are cleared so an exported value in the developer's shell cannot
+    // change a result. The empty string counts as unset in runtime-config.js.
+    env: { TURNSTONE_PODMAN: "", TURNSTONE_LOCAL_CONSOLE_URL: "" },
     passWithNoTests: false,
     // Vitest's own RandomSequencer orders files by project discovery timing, so
     // a replayed seed could run files in a different order. The repo sequencer

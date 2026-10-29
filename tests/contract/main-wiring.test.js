@@ -32,6 +32,37 @@ describe("main.js wiring", () => {
     expect(main.includes(text)).toBe(true);
   });
 
+  // Failure: the startup check is not imported or the dialog is not required, so the call throws and the app never reaches its window.
+  it("imports firstConfigError from runtime-config.js and dialog from electron", () => {
+    expect(main).toMatch(/const \{ firstConfigError \} = require\("\.\/runtime-config\.js"\);/);
+    expect(main).toMatch(/^\s*dialog,\r?$/m);
+  });
+
+  // Failure: a bad override reaches SettingsStore or the windows before it is seen, so the error shows up later as a broken Local mode instead of a startup error.
+  it("validates both overrides first in whenReady, before SettingsStore.create, and exits when they are bad", () => {
+    const ready = main.indexOf("app.whenReady().then(async () => {");
+    const check = main.indexOf("const configError = firstConfigError();");
+    const exit = main.indexOf("app.exit(1);", check);
+    const create = main.indexOf("settings = await SettingsStore.create();");
+
+    expect(ready).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(ready);
+    expect(exit).toBeGreaterThan(check);
+    expect(create).toBeGreaterThan(exit);
+  });
+
+  // Failure: the LocalRuntime is built outside the try, so a construction error skips the UNEXPECTED error page and the console view stays blank.
+  it("builds the LocalRuntime inside the try in startLocalRuntime", () => {
+    const fn = main.indexOf("async function startLocalRuntime()");
+    const tryAt = main.indexOf("try {", fn);
+    const build = main.indexOf("if (!localRuntime) localRuntime = new LocalRuntime(", fn);
+    const catchAt = main.indexOf("} catch (err) {", fn);
+
+    expect(fn).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(tryAt);
+    expect(build).toBeLessThan(catchAt);
+  });
+
   // Failure: the open handler runs when the rule says no, opening links the rule rejected.
   it("opens external links only when the rule allows them, in both handlers", () => {
     const hits = main.match(/if \(windowOpenAction\(url\)\.open\) \{/g) || [];

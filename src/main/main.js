@@ -5,6 +5,7 @@ const {
   ipcMain,
   shell,
   screen,
+  dialog,
 } = require("electron");
 const path = require("path");
 const { SettingsStore } = require("./settings-store.js");
@@ -21,6 +22,7 @@ const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings
 const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
 const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
 const { canRetryLocal } = require("./ipc-guards.js");
+const { firstConfigError } = require("./runtime-config.js");
 
 let settings = null;
 let mainWindow = null;
@@ -275,9 +277,10 @@ async function startLocalRuntime() {
   if (!settings.isLocal) return;
   // Quitting: the pod is being stopped; a fresh start would fight it.
   if (quitting) return;
-  if (!localRuntime) localRuntime = new LocalRuntime({ onProgress: sendLocalProgress });
   const view = consoleView;
   try {
+    // Inside the try: a failure to build the runtime must reach the UNEXPECTED branch below, not escape unhandled.
+    if (!localRuntime) localRuntime = new LocalRuntime({ onProgress: sendLocalProgress });
     await localRuntime.start();
     loadLocalConsole(view);
   } catch (err) {
@@ -566,6 +569,15 @@ function getActiveView() {
 // ─── App Lifecycle ───────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Checked in every mode, before anything reads the overrides: a bad value stops the app here
+  // with a message, instead of failing later inside Local mode.
+  const configError = firstConfigError();
+  if (configError) {
+    console.error(configError);
+    dialog.showErrorBox("Turnstone cannot start", configError);
+    app.exit(1);
+    return;
+  }
   settings = await SettingsStore.create();
   activeTab = settings.activeTab || "server";
 

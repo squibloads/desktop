@@ -91,7 +91,7 @@ describe("README settings reference matches the code", () => {
   });
 
   // Failure: the README gives one Local Console address and the app uses another, so the Console opens on the wrong port.
-  it("the Local Console address equals LOCAL_CONSOLE_URL and the local health default", () => {
+  it("the Local Console address equals DEFAULT_LOCAL_CONSOLE_URL and the local health default", () => {
     const constant = capture(/const DEFAULT_LOCAL_CONSOLE_URL = "([^"]*)"/, runtimeConfig, "DEFAULT_LOCAL_CONSOLE_URL");
     const healthWiring = /\bhealthUrl = localConsoleUrl\(\)/.test(localRuntime);
     const consoleWiring = /return this\.isLocal \? localConsoleUrl\(\) : /.test(settingsStore);
@@ -254,5 +254,23 @@ describe("README timing claims match the code", () => {
     expect(capture(/const DEFAULT_LOCAL_CONSOLE_URL = "([^"]*)"/, wiringSample, "constant sample")).toEqual("http://127.0.0.1:8090");
     expect(/\bhealthUrl = localConsoleUrl\(\)/.test(wiringSample)).toBe(true);
     expect(/return this\.isLocal \? localConsoleUrl\(\) : /.test(wiringSample)).toBe(true);
+  });
+});
+
+describe("README developer note for the smoke-test overrides", () => {
+  // Failure: the note drops or misspells a variable name, so a developer who follows the README sets a name the app ignores.
+  it("names TURNSTONE_PODMAN and TURNSTONE_LOCAL_CONSOLE_URL exactly", () => {
+    const note = readmeMatch(/(\*\*For developers: smoke-test overrides\.\*\*[^\n]*)/);
+
+    expect(note).toContain("`TURNSTONE_PODMAN`");
+    expect(note).toContain("`TURNSTONE_LOCAL_CONSOLE_URL`");
+  });
+
+  // Failure: the note does not say a path is dropped or that a bad value stops the app, so a developer expects a path to be honoured or a silent fallback.
+  it("says the console address keeps only the origin and that a bad value stops the app at start", () => {
+    const note = readmeMatch(/(\*\*For developers: smoke-test overrides\.\*\*[^\n]*)/);
+
+    expect(note).toContain("keeps only the origin");
+    expect(note).toContain("stops the app at start");
   });
 });
