@@ -5,33 +5,44 @@ class NotificationManager {
     this.settings = settings;
     this._Notification = Notification;
     this.controller = null;
+    this.retryTimer = null;
     this.retryDelay = 1000;
     this.running = false;
+    // Bumped by stop(). A loop started under an older value exits rather than
+    // reading or reconnecting, so nothing it set up outlives the stop.
+    this.generation = 0;
   }
 
   start() {
+    // One loop at a time: stop() cancels a pending retry and aborts an open
+    // stream, so a second start() cannot leave the first loop connected.
+    this.stop();
     this.running = true;
-    this._connect();
+    this._connect(this.generation);
   }
 
   stop() {
     this.running = false;
+    this.generation += 1;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     if (this.controller) {
       this.controller.abort();
       this.controller = null;
     }
   }
 
-  async _connect() {
-    if (!this.running) return;
+  async _connect(generation = this.generation) {
+    if (!this.running || generation !== this.generation) return;
 
-    this.controller = new AbortController();
+    const controller = new AbortController();
+    this.controller = controller;
     try {
       const resp = await fetch(
         `${this.settings.serverUrl}/v1/api/events/global`,
         {
           headers: { Accept: "text/event-stream" },
-          signal: this.controller.signal,
+          signal: controller.signal,
         },
       );
 
@@ -47,6 +58,8 @@ class NotificationManager {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // An event read before stop() ran must not notify once the user has moved on.
+        if (generation !== this.generation) return;
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
@@ -74,9 +87,9 @@ class NotificationManager {
       if (err.name === "AbortError") return;
     }
 
-    // Reconnect with exponential backoff
-    if (this.running) {
-      setTimeout(() => this._connect(), this.retryDelay);
+    // Reconnect with exponential backoff, unless stop() or a newer start() has run.
+    if (this.running && generation === this.generation) {
+      this.retryTimer = setTimeout(() => this._connect(generation), this.retryDelay);
       this.retryDelay = Math.min(this.retryDelay * 2, 30000);
     }
   }

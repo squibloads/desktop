@@ -47,6 +47,34 @@ function makeSSEResponse(text) {
   };
 }
 
+// A response whose body the test feeds by hand. Like a real fetch, the body
+// errors when the request is aborted, so a stream the manager has stopped
+// delivers nothing more.
+function controlledStream(signal) {
+  let open = true;
+  let streamController;
+  const body = new ReadableStream({
+    start(c) {
+      streamController = c;
+      signal.addEventListener("abort", () => {
+        open = false;
+        c.error(new DOMException("aborted", "AbortError"));
+      });
+    },
+  });
+  return {
+    response: { ok: true, body },
+    push(text) {
+      if (open) streamController.enqueue(new TextEncoder().encode(text));
+    },
+  };
+}
+
+// Connections the mock fetch opened that no abort has reached yet.
+function liveConnections(fetchMock) {
+  return fetchMock.mock.calls.filter(([, init]) => !init.signal.aborted).length;
+}
+
 describe("NotificationManager SSE parser", () => {
   let manager;
   let notifySpy;
@@ -345,5 +373,95 @@ data: {"state":"attention","name":"x"}
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(fetchMock.mock.calls.length).toEqual(4);
+  });
+});
+
+describe("NotificationManager connection lifecycle", () => {
+  let manager;
+  let fake;
+
+  const ATTENTION = `event: ws_state\ndata: {"state":"attention","name":"ws"}\n\n`;
+
+  // With failFirst the first connect fails, so a retry is pending. Every other
+  // connect opens a stream the test controls.
+  function stubStreamingFetch({ failFirst = false } = {}) {
+    const connections = [];
+    const fetchMock = vi.fn();
+    if (failFirst) fetchMock.mockRejectedValueOnce(new Error("connect refused"));
+    fetchMock.mockImplementation((url, { signal }) => {
+      const conn = controlledStream(signal);
+      connections.push(conn);
+      return Promise.resolve(conn.response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return { fetchMock, connections };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fake = makeFakeNotification();
+  });
+
+  afterEach(() => {
+    if (manager) manager.stop();
+    manager = undefined;
+    vi.useRealTimers();
+  });
+
+  // Failure: a save that restarts notifications while a retry is pending starts a second loop, and two streams stay open.
+  it("does not open a second connection when a restart runs while a retry is pending", async () => {
+    const { fetchMock } = stubStreamingFetch({ failFirst: true });
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    manager.stop();
+    manager.start();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fetchMock.mock.calls.length).toEqual(2);
+    expect(liveConnections(fetchMock)).toEqual(1);
+  });
+
+  // Failure: after a restart and a stop, a stream left from the earlier loop still raises server alerts in a mode with no server.
+  it("delivers no alert from any connection after a restart and a stop", async () => {
+    const { connections } = stubStreamingFetch({ failFirst: true });
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    manager.stop();
+    manager.start();
+    await vi.advanceTimersByTimeAsync(1000);
+    manager.stop();
+    for (const conn of connections) conn.push(ATTENTION);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fake.constructed).toEqual([]);
+  });
+
+  // Failure: calling start() twice runs two loops, and a later stop() reaches only the newer one.
+  it("keeps one live connection when start() is called twice", async () => {
+    const { fetchMock } = stubStreamingFetch();
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    manager.start();
+
+    expect(liveConnections(fetchMock)).toEqual(1);
+  });
+
+  // Failure: an event read just before stop() runs notifies after the user has switched to a mode with no server.
+  it("drops an event that was already read when stop() ran", async () => {
+    const { connections } = stubStreamingFetch();
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(0);
+    connections[0].push(ATTENTION);
+    manager.stop();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fake.constructed).toEqual([]);
   });
 });
