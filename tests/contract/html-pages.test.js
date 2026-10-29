@@ -128,10 +128,34 @@ function bodyAfter(live, from, name) {
   return close === -1 ? live.slice(from) : live.slice(from, close);
 }
 
-// Browsers drop ASCII control characters and spaces before reading a URL's scheme, so this does too.
-// It can flag more than a browser would, never less.
+// The URL parser drops leading and trailing C0 controls and spaces, and removes tab and newline
+// everywhere, before it reads a scheme. This drops every C0 control and space everywhere, so it can
+// flag more than a browser would, never less.
 function urlNoise(value) {
   return value.replace(/[\u0000- ]/g, "");
+}
+
+// The named references decoded below. Only the ones that can spell a scheme separator or a
+// whitespace character are needed here; a browser decodes many more.
+const NAMED_ENTITIES = { colon: ":", Tab: "\t", NewLine: "\n" };
+
+// The character for a numeric reference, or the reference unchanged when it is out of range.
+function codePoint(n, whole) {
+  return n > 0x10ffff ? whole : String.fromCodePoint(n);
+}
+
+// Decodes numeric and named character references, as the HTML parser does before the URL is read.
+// Decoding a reference that a browser would leave alone only over-flags.
+function decodeEntities(value) {
+  return value
+    .replace(/&#[xX]([0-9a-fA-F]+);?/g, (whole, hex) => codePoint(parseInt(hex, 16), whole))
+    .replace(/&#(\d+);?/g, (whole, dec) => codePoint(parseInt(dec, 10), whole))
+    .replace(/&(colon|Tab|NewLine);?/g, (whole, name) => NAMED_ENTITIES[name]);
+}
+
+// The value a browser would read as a URL: character references decoded, then the characters urlNoise drops.
+function urlValue(value) {
+  return urlNoise(decodeEntities(value));
 }
 
 // Returns the text of each script that has no src, and each script that has a src and a body.
@@ -155,14 +179,15 @@ function inlineHandlerFindings(html) {
 function remoteScriptFindings(html) {
   return startTags(stripComments(html))
     .filter((tag) => tag.name === "script")
-    .filter((tag) => tag.attrs.some((a) => a.name === "src" && /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(urlNoise(a.value))))
+    .filter((tag) => tag.attrs.some((a) => a.name === "src" && /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(urlValue(a.value))))
     .map((tag) => tag.text);
 }
 
-// Returns the text of each start tag whose href or src uses the javascript: scheme.
+// Returns the text of each start tag whose href, src, action or formaction uses the javascript: scheme.
+// The value is read after character references are decoded, so &#106;avascript: is caught.
 function javascriptUrlFindings(html) {
   return startTags(stripComments(html))
-    .filter((tag) => tag.attrs.some((a) => (a.name === "href" || a.name === "src") && /^javascript:/i.test(urlNoise(a.value))))
+    .filter((tag) => tag.attrs.some((a) => ["href", "src", "action", "formaction"].includes(a.name) && /^javascript:/i.test(urlValue(a.value))))
     .map((tag) => tag.text);
 }
 
@@ -174,15 +199,16 @@ function localRefs(html) {
     if (tag.name !== "script" && tag.name !== "link") continue;
     const attr = tag.attrs.find((a) => a.name === "src" || a.name === "href");
     if (!attr) continue;
-    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(urlNoise(attr.value))) continue;
+    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(urlValue(attr.value))) continue;
     refs.push(attr.value);
   }
   return refs;
 }
 
-// Returns the content of the CSP meta, or null when the page declares none.
+// Returns the content of the CSP meta, or null when the page declares none. A commented-out meta
+// is not a policy the browser applies, so comments are removed before the search.
 function cspOf(html) {
-  const meta = /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"/i.exec(html);
+  const meta = /<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"/i.exec(stripComments(html));
   return meta ? meta[1] : null;
 }
 
@@ -249,8 +275,8 @@ describe("renderer HTML pages", () => {
     expect(remote).toEqual({});
   });
 
-  // Failure: an href or src uses javascript:, which runs script without any inline-script or handler attribute to flag.
-  it("no href or src in any page starts with javascript:", () => {
+  // Failure: an href, src, action or formaction uses javascript:, which runs script without any inline-script or handler attribute to flag.
+  it("no href, src, action or formaction in any page starts with javascript:", () => {
     const found = {};
     for (const page of PAGES) {
       const findings = javascriptUrlFindings(read(page));
@@ -376,5 +402,35 @@ describe("renderer HTML pages", () => {
 
     expect(remoteScriptFindings(sample)).toEqual(['<script src="https://cdn.example.com/x.js">', '<script src="//cdn.example.com/y.js">']);
     expect(javascriptUrlFindings(sample)).toEqual(['<a href="javascript:alert(1)">', '<a href=" JavaScript:alert(2)">', '<a href="jav\tascript:alert(3)">']);
+  });
+
+  // Failure: a commented-out CSP meta is read as the page's policy, so a page with no live CSP is certified.
+  it("detector control: a commented-out CSP meta yields no CSP", () => {
+    const sample = [
+      `<!-- <meta http-equiv="Content-Security-Policy" content="default-src 'self';"> -->`,
+      "<title>x</title>",
+    ].join("\n");
+
+    expect(cspOf(sample)).toBeNull();
+  });
+
+  // Failure: a javascript: URL spelled with character references is read as a plain URL, so the scheme check passes it and the link runs script.
+  it("detector control: javascript: spelled with character references is flagged in href, src, action and formaction", () => {
+    const sample = [
+      `<a href="&#106;avascript:alert(1)">a</a>`,
+      `<a href="javascript&colon;alert(1)">b</a>`,
+      `<a href="&#x6A;avascript:alert(1)">c</a>`,
+      `<form action="&#106;avascript:alert(1)"></form>`,
+      `<button formaction="&#x6a;avascript:alert(1)">d</button>`,
+      `<a href="&#105;ndex.html">ok</a>`,
+    ].join("\n");
+
+    expect(javascriptUrlFindings(sample)).toEqual([
+      `<a href="&#106;avascript:alert(1)">`,
+      `<a href="javascript&colon;alert(1)">`,
+      `<a href="&#x6A;avascript:alert(1)">`,
+      `<form action="&#106;avascript:alert(1)">`,
+      `<button formaction="&#x6a;avascript:alert(1)">`,
+    ]);
   });
 });

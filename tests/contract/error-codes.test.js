@@ -24,7 +24,7 @@ const CODES = [
   "UNEXPECTED",
 ];
 
-// README cells for codes the app never shows. Those rows describe log-only or silent behaviour, so they are checked as text.
+// README cells for codes the app never shows. The source pins below show what keeps each one silent, so these rows are checked as text.
 const NOT_SHOWN_CELLS = {
   NODE_TIMEOUT: "Not shown. The Console opens anyway. The message is written to the log only.",
   START_CANCELLED: "Not shown and not logged.",
@@ -108,6 +108,20 @@ function podmanFailCodes(source) {
   return podmanFailCodeArgs(source).map(literalCode).filter((code) => code !== null);
 }
 
+// The second argument of every `this._wrap(` call that has one, in source order. `this._wrap(err)`
+// has no failCode and adds nothing. The method's own definition has no `this.` and is not matched.
+function wrapFailCodeArgs(source) {
+  return [...source.matchAll(/this\._wrap\(/g)]
+    .map((m) => callArgs(source, m.index + m[0].length - 1)[1])
+    .filter((arg) => arg !== undefined);
+}
+
+// Codes passed as the failCode argument of this._wrap(...), the form that turns a podman
+// error into a LocalRuntimeError.
+function wrapFailCodes(source) {
+  return wrapFailCodeArgs(source).map(literalCode).filter((code) => code !== null);
+}
+
 // Codes main.js handles: the ones it compares against and the one it shows itself, in either quote style.
 function mainHandledCodes(source) {
   return [
@@ -144,7 +158,7 @@ function parseErrorTable(readme) {
   if (start === -1) return [];
   const end = readme.indexOf("\n## ", start);
   const section = readme.slice(start, end === -1 ? undefined : end);
-  return [...section.matchAll(/^\| `([A-Z_]+)` \| ([^|]*?) \| /gm)].map((m) => ({
+  return [...section.matchAll(/^\| `([A-Z][A-Z0-9_]*)` \| ([^|]*?) \| /gm)].map((m) => ({
     code: m[1],
     message: m[2].trim(),
   }));
@@ -154,7 +168,7 @@ const localRuntime = read("src/main/local-runtime.js");
 const mainJs = read("src/main/main.js");
 const readme = read("README.md");
 const messages = userMessages(localRuntime);
-const thrown = [...new Set([...constructedCodes(localRuntime), ...podmanFailCodes(localRuntime)])].sort();
+const thrown = [...new Set([...constructedCodes(localRuntime), ...podmanFailCodes(localRuntime), ...wrapFailCodes(localRuntime)])].sort();
 const handled = [...new Set(mainHandledCodes(mainJs))].sort();
 const derived = [...new Set([...Object.keys(messages), ...thrown, ...handled])].sort();
 const rows = parseErrorTable(readme);
@@ -162,13 +176,13 @@ const rowCodes = rows.map((row) => row.code);
 const unexpectedText = mainUnexpectedMessage(mainJs);
 
 describe("Local mode error codes", () => {
-  // Failure: a thrown code has no USER_MESSAGES text, so the error page shows "undefined" with no message.
+  // Failure: a LocalRuntimeError with no userMessage is reported as UNEXPECTED ("Local startup failed unexpectedly."), so the user loses the specific code and message.
   it("every thrown code has a USER_MESSAGES entry, except UNEXPECTED which main.js sets", () => {
-    const unmessaged = [...thrown, ...handled].filter(
+    const unmessaged = [...new Set([...thrown, ...handled])].filter(
       (code) => code !== "UNEXPECTED" && !Object.hasOwn(messages, code),
     );
 
-    expect([...new Set(unmessaged)]).toEqual([]);
+    expect(unmessaged).toEqual([]);
   });
 
   // Failure: a code is added in the source but the README table is not updated, so users are told nothing about it.
@@ -224,23 +238,38 @@ describe("Local mode error codes", () => {
     });
   });
 
+  // Failure: a source change makes START_CANCELLED, NODE_TIMEOUT or POD_STOP_FAILED visible, or drops the handling that keeps it silent, and the README's not-shown rows are then wrong with no test noticing.
+  it("main.js keeps the not-shown codes silent: START_CANCELLED returns, NODE_TIMEOUT opens the Console, the quit stop is caught", () => {
+    const startCancelled = /if \(err\.code === "START_CANCELLED"\) return;/.exec(mainJs);
+    expect(startCancelled, "START_CANCELLED early return was not found in main.js").not.toBeNull();
+
+    const nodeTimeout = /if \(err\.code === "NODE_TIMEOUT"\) \{\n\s*console\.warn\([^\n]*\);\n\s*loadLocalConsole\(view\);\n\s*return;\n\s*\}/.exec(mainJs);
+    expect(nodeTimeout, "NODE_TIMEOUT branch that calls loadLocalConsole(view) and returns before showLocalError was not found in main.js").not.toBeNull();
+
+    const quitStop = /localRuntime\s*\.stop\(\)\s*\.catch\(/.exec(mainJs);
+    expect(quitStop, "quit-path localRuntime.stop() with a .catch( was not found in main.js").not.toBeNull();
+  });
+
   // Failure: a code is thrown with a variable instead of a literal, so the USER_MESSAGES and README checks never see it and the refactor passes silently.
-  it("has no non-literal code at any call site, except the one forwarder in _wrap", () => {
+  it("has no non-literal code at any call site, except the failCode forwarders in _wrap and _podman", () => {
     const ctor = constructorFirstArgs(localRuntime);
     const forwarded = ctor.filter((arg) => arg === "failCode");
     const variableCtor = ctor.filter((arg) => arg !== "failCode" && literalCode(arg) === null);
     const variablePodman = podmanFailCodeArgs(localRuntime).filter((arg) => literalCode(arg) === null);
+    const variableWrap = wrapFailCodeArgs(localRuntime).filter((arg) => arg !== "failCode" && literalCode(arg) === null);
 
     expect(variableCtor).toEqual([]);
     expect(variablePodman).toEqual([]);
+    expect(variableWrap).toEqual([]);
     expect(forwarded).toEqual(["failCode"]);
   });
 
   // Failure: USER_MESSAGES has the same key twice, and the later entry silently replaces the earlier, so one text is never shown.
   it("USER_MESSAGES has no duplicate keys", () => {
     const keys = userMessageEntries(localRuntime).map((e) => e.key);
+    const duplicates = keys.filter((key, i) => keys.indexOf(key) !== i);
 
-    expect(keys).toEqual([...new Set(keys)]);
+    expect(duplicates).toEqual([]);
   });
 
   // Failure: the table parser silently misses a row, so every table check above passes against a README with a row removed.
@@ -284,6 +313,19 @@ describe("Local mode error codes", () => {
     expect(mainHandledCodes(sample)).toEqual(["START_CANCELLED", "NODE_TIMEOUT"]);
   });
 
+  // Failure: a literal code passed to this._wrap is not read, so a podman failure wrapped with an unknown code passes every check.
+  it("detector control: a literal _wrap failCode is counted as thrown, a variable one as non-literal", () => {
+    const sample = [
+      'throw this._wrap(err, "MACHINE_LIST_NOT_ARRAY");',
+      "throw this._wrap(err, failCode);",
+      "throw this._wrap(err);",
+    ].join("\n");
+
+    expect(wrapFailCodeArgs(sample)).toEqual(['"MACHINE_LIST_NOT_ARRAY"', "failCode"]);
+    expect(wrapFailCodes(sample)).toEqual(["MACHINE_LIST_NOT_ARRAY"]);
+    expect(wrapFailCodeArgs(sample).filter((arg) => literalCode(arg) === null)).toEqual(["failCode"]);
+  });
+
   // Failure: a variable code is passed to either call form and the non-literal check counts nothing, so the refactor passes silently.
   it("detector control: a variable code is counted at both call forms", () => {
     const sample = [
@@ -307,8 +349,9 @@ describe("Local mode error codes", () => {
       "};",
     ].join("\n");
     const keys = userMessageEntries(sample).map((e) => e.key);
+    const duplicates = keys.filter((key, i) => keys.indexOf(key) !== i);
 
     expect(keys).toEqual(["POD_MISSING", "POD_MISSING", "HEALTH_TIMEOUT"]);
-    expect(keys).not.toEqual([...new Set(keys)]);
+    expect(duplicates).toEqual(["POD_MISSING"]);
   });
 });

@@ -67,7 +67,7 @@ The app starts the Podman machine when it is stopped and starts or stops the exi
 
 **What happens on quit.** The Settings field *When the app quits* controls this:
 
-- **Stop Turnstone** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. A failed stop is ignored.
+- **Stop Turnstone** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. If startup was already running a Podman step when you quit, that step finishes first, so quitting can take longer. A failed stop is ignored.
 - **Keep Turnstone running**: the pod is left running. The next launch does not start the machine or the pod if they are already running.
 
 The app never stops the Podman machine. If you switch away from Local mode during a session, Stop Turnstone still stops the pod on quit.

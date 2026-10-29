@@ -56,14 +56,6 @@ function modeNotifications(text) {
   return rows;
 }
 
-// The README mode labels and the settings-store mode values they stand for.
-const MODE_KEYS = {
-  "Server Only": "server",
-  "Console Only": "console",
-  Both: "both",
-  Local: "local",
-};
-
 describe("README settings reference matches the code", () => {
   // Failure: a fresh install opens in a different mode than the README says, so the user sees the wrong views.
   it("Mode defaults to Both, which is schema mode both", () => {
@@ -106,7 +98,12 @@ describe("README settings reference matches the code", () => {
 
     expect(constant).toEqual("http://127.0.0.1:8090");
     expect(healthDefault).toEqual("http://127.0.0.1:8090");
-    expect(readmeAddresses.length > 0).toBe(true);
+    expect(readmeAddresses).toEqual([
+      "http://127.0.0.1:8090",
+      "http://127.0.0.1:8090",
+      "http://127.0.0.1:8090",
+      "http://127.0.0.1:8090",
+    ]);
     expect(mismatched).toEqual([]);
   });
 
@@ -115,13 +112,9 @@ describe("README settings reference matches the code", () => {
     const hasServerBody = capture(/get hasServer\(\) \{\s*return ([^;]+);/, settingsStore, "get hasServer() body");
     const serverModes = [...hasServerBody.matchAll(/this\.mode === "(\w+)"/g)].map((m) => m[1]);
     const actual = Object.fromEntries(modeNotifications(readme).map((r) => [r.mode, r.notifications]));
-    const expected = Object.fromEntries(
-      Object.entries(MODE_KEYS).map(([label, key]) => [label, serverModes.includes(key) ? "Yes" : "No"]),
-    );
 
     expect(serverModes).toEqual(["server", "both"]);
-    expect(actual.Local).toEqual("No");
-    expect(actual).toEqual(expected);
+    expect(actual).toEqual({ "Server Only": "Yes", "Console Only": "No", Both: "Yes", Local: "No" });
   });
 });
 
@@ -150,10 +143,9 @@ describe("README timing claims match the code", () => {
 
   // Failure: the README says the app checks once a second, but the poll interval in code changes, so the documented wait is wrong.
   it("the README's once-a-second wording matches healthIntervalMs 1000", () => {
-    const sentence = readmeMatch(/(The app checks once a second until a node is registered)/);
+    readmeMatch(/(The app checks once a second until a node is registered)/);
     const codeMs = runtimeDefault("healthIntervalMs");
 
-    expect(/once a second/.test(sentence)).toBe(true);
     expect(codeMs).toEqual(1000);
   });
 
