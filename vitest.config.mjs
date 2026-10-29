@@ -10,6 +10,7 @@
 import os from "node:os";
 import { randomInt } from "node:crypto";
 import { defineConfig } from "vitest/config";
+import { OrderedRandomSequencer } from "./tests/helpers/ordered-random-sequencer.mjs";
 
 export const tierGlobs = {
   unit: "tests/unit/**/*.test.js",
@@ -63,7 +64,12 @@ export default defineConfig(() => {
     unstubGlobals: true,
     unstubEnvs: true,
     passWithNoTests: false,
-    sequence: shuffle ? { shuffle: { files: true, tests: true }, seed } : {},
+    // Vitest's own RandomSequencer orders files by project discovery timing, so
+    // a replayed seed could run files in a different order. The repo sequencer
+    // sorts first and only then shuffles.
+    sequence: shuffle
+      ? { shuffle: { files: true, tests: true }, seed, sequencer: OrderedRandomSequencer }
+      : {},
   };
 
   return {

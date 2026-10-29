@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
 
 // Dependency, build and VCS trees are not source, so nothing in them is a stray test.
-const IGNORED = new Set(["node_modules", "out", "dist", ".git"]);
+const IGNORED = new Set(["node_modules", "out", "dist", ".git", ".webpack", ".vite"]);
 
 // Collects paths relative to the repo root, with "/" separators. Symlinks are
 // reported, never followed, so a link cycle cannot make the walk recurse.
@@ -55,8 +55,8 @@ function globToRegExp(glob) {
   return new RegExp(`^${re}$`);
 }
 
-// Support directories under tests/, not test tiers. helpers/ holds shared fakes
-// and the shuffle runner; fixtures/ and golden/ hold static input and expected
+// Support directories under tests/, not test tiers. helpers/ holds shared fakes,
+// the shuffle runner and the ordered sequencer; fixtures/ and golden/ hold static input and expected
 // output. Each is described in tests/helpers/README.md. A test-looking file in
 // any of them still fails the glob-collection check, so none can hide a test.
 const NON_TIER_DIRS = new Set(["helpers", "fixtures", "golden"]);
@@ -75,10 +75,9 @@ function globDir(glob) {
 
 describe("test layout", () => {
   // A link is never followed, so a cycle cannot hang the walk. A link can also
-  // hide a test from the tier globs, so any link fails the run.
-  it("has no symlinks under src/ or tests/", () => {
-    const links = [...walk(join(root, "src")).links, ...walk(join(root, "tests")).links];
-    expect(links).toEqual([]);
+  // hide a test from the tier globs, so any link anywhere in the repo fails the run.
+  it("has no symlinks anywhere in the repository", () => {
+    expect(walk(root).links).toEqual([]);
   });
 
   // A test beside its module under src/ is not run by the tiered config and
@@ -99,11 +98,12 @@ describe("test layout", () => {
     expect(stray).toEqual([]);
   });
 
-  // A test-looking file that no tier glob matches is never collected, so CI
-  // would pass without running it: tests/unit/foo.spec.js, foo.test.mjs.
-  it("collects every test-looking file under tests/ with a tier glob", () => {
+  // Vitest collects only files that match a tier glob, so a test-looking file
+  // outside every glob never runs and CI stays green. The walk covers the whole
+  // repo, not just tests/, so docs/example.test.js or a root probe.test.js is caught.
+  it("collects every test-looking file in the repository with a tier glob", () => {
     const regexes = Object.values(tierGlobs).map(globToRegExp);
-    const { files } = walk(join(root, "tests"));
+    const { files } = walk(root);
     const uncollected = files.filter(
       (f) => TEST_FILE.test(f) && !regexes.some((re) => re.test(f)),
     );

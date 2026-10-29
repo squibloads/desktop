@@ -182,7 +182,7 @@ npm run test:contract   # tests/contract only
 npm run test:shuffle    # files and tests in random order; prints the seed
 ```
 
-Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to change the worker count (default: half the logical cores). To replay a shuffled run, set `VITEST_SHUFFLE=1` and `VITEST_SEED=<printed seed>` in your shell, then run `npx vitest run`. Setting `VITEST_SEED` without `VITEST_SHUFFLE=1` is an error, not a silent no-op.
+Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to change the worker count (default: half the logical cores). To replay a shuffled run, set `VITEST_SHUFFLE=1` and `VITEST_SEED=<printed seed>` in your shell, then run `npx vitest run`. The seed fixes the file order, independent of worker timing; projects run in parallel, so their files can interleave differently. `VITEST_MAX_WORKERS=1` gives an exact replay. Setting `VITEST_SEED` without `VITEST_SHUFFLE=1` is an error, not a silent no-op.
 
 Tests live in `tests/unit` (one module under `src/main`) and `tests/contract` (checks on static files and the test layout). The rules for writing tests are in `tests/helpers/README.md`.
 

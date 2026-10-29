@@ -16,7 +16,11 @@ tier fails it.
 - `tests/fixtures/` holds static input a test reads, such as a sample file.
 - `tests/golden/` holds expected output a test compares against.
 - `tests/helpers/` holds fakes shared by more than one test file, plus the
-  shuffle runner (`run-shuffled.mjs`).
+  shuffle runner (`run-shuffled.mjs`) and the seeded sequencer.
+  - `ordered-random-sequencer.mjs` exports `OrderedRandomSequencer`, the
+    `sequence.sequencer` used when shuffling. It sorts specs by project and
+    module id before the seeded shuffle, so a seed gives the same file order
+    whatever order Vitest discovers the files in.
   - `fake-clock.js` exports `installSteppedClock({ step })`. It replaces
     `Date.now` with a counter that advances by `step` ms on every read, so a
     timeout counts polls. `make()` in `tests/unit/local-runtime.test.js`
