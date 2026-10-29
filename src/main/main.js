@@ -18,6 +18,9 @@ const { planRecovery } = require("./recovery.js");
 const { planSettingsSave } = require("./settings-save.js");
 const { shouldStopPodOnQuit } = require("./quit-policy.js");
 const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
+const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
+const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
+const { canRetryLocal } = require("./ipc-guards.js");
 
 let settings = null;
 let mainWindow = null;
@@ -145,19 +148,20 @@ function createMainWindow() {
 
 function setupViewSecurity(view, settingKey) {
   view.webContents.on("will-navigate", (event, url) => {
+    // An unreadable setting counts as no allowed URL, so the navigation is cancelled.
+    let allowedUrl = null;
     try {
-      const allowed = new URL(settings[settingKey]);
-      const target = new URL(url);
-      if (target.origin !== allowed.origin) {
-        event.preventDefault();
-      }
+      allowedUrl = settings[settingKey];
     } catch {
+      allowedUrl = null;
+    }
+    if (!isNavigationAllowed(allowedUrl, url)) {
       event.preventDefault();
     }
   });
 
   view.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://") || url.startsWith("http://")) {
+    if (windowOpenAction(url).open) {
       shell.openExternal(url);
     }
     return { action: "deny" };
@@ -306,35 +310,27 @@ function layoutViews() {
 
   const { width, height } = mainWindow.getContentBounds();
   // Shell (title bar) always present
-  shellView.setBounds({ x: 0, y: 0, width, height: TAB_BAR_HEIGHT });
+  shellView.setBounds(tabBarBounds(width, TAB_BAR_HEIGHT));
 
-  const contentBounds = {
-    x: 0,
-    y: TAB_BAR_HEIGHT,
-    width,
-    height: height - TAB_BAR_HEIGHT,
-  };
-
-  if (settings.isSingleView) {
-    const view = settings.hasServer ? serverView : consoleView;
-    if (view) view.setBounds(contentBounds);
-  } else {
-    if (activeTab === "server" && serverView) {
-      serverView.setBounds(contentBounds);
-    } else if (consoleView) {
-      consoleView.setBounds(contentBounds);
-    }
-  }
+  const bounds = contentBounds(width, height, TAB_BAR_HEIGHT);
+  const target = planLayout({
+    isSingleView: settings.isSingleView,
+    hasServer: settings.hasServer,
+    activeTab,
+    hasServerView: Boolean(serverView),
+    hasConsoleView: Boolean(consoleView),
+  });
+  if (target === "server") serverView.setBounds(bounds);
+  else if (target === "console") consoleView.setBounds(bounds);
 }
 
 // ─── Tab Switching ───────────────────────────────────────────────────────
 
 function switchTab(tab) {
-  if (settings.isSingleView) return;
-  if (tab === activeTab) return;
-  if (tab !== "server" && tab !== "console") return;
+  const plan = planTabSwitch({ isSingleView: settings.isSingleView, activeTab, tab });
+  if (!plan.switch) return;
 
-  if (tab === "server") {
+  if (plan.tab === "server") {
     mainWindow.contentView.removeChildView(consoleView);
     mainWindow.contentView.addChildView(serverView);
   } else {
@@ -342,8 +338,8 @@ function switchTab(tab) {
     mainWindow.contentView.addChildView(consoleView);
   }
 
-  activeTab = tab;
-  settings.activeTab = tab;
+  activeTab = plan.tab;
+  settings.activeTab = plan.tab;
   layoutViews();
 }
 
@@ -377,7 +373,7 @@ function openSettings() {
   // Learn more and other links leave the app in the user's browser, never
   // inside a window that carries this preload.
   settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith("https://") || url.startsWith("http://")) {
+    if (windowOpenAction(url).open) {
       shell.openExternal(url);
     }
     return { action: "deny" };
@@ -480,11 +476,17 @@ ipcMain.on("turnstone:switch-tab", (_event, tab) => {
 
 // The local-error page runs in the console view; nothing else may retry.
 ipcMain.on("turnstone:retry-local", (event) => {
-  if (!consoleView || consoleView.webContents.isDestroyed()) return;
-  if (event.sender !== consoleView.webContents) return;
+  const hasConsoleView = Boolean(consoleView);
+  const consoleDestroyed = hasConsoleView && consoleView.webContents.isDestroyed();
   // A start already in flight owns the loading page; reloading it would
-  // blank the stage list until the next stage.
-  if (localRuntime && localRuntime.starting) return;
+  // blank the stage list until the next stage. The rule lives in ipc-guards.js.
+  const allowed = canRetryLocal({
+    senderIsConsole: hasConsoleView && isFromWindow(event, consoleView.webContents),
+    hasConsoleView,
+    consoleDestroyed,
+    starting: Boolean(localRuntime && localRuntime.starting),
+  });
+  if (!allowed) return;
   showLocalLoading(consoleView);
   startLocalRuntime();
 });
