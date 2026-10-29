@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-const { SettingsStore } = require("./settings-store.js");
+const { SettingsStore } = require("../../src/main/settings-store.js");
 
 // Create a mock store object that mimics electron-store's get/set API
 function mockStore() {

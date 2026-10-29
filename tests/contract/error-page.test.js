@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-const dir = __dirname;
+const dir = join(__dirname, "..", "..", "src", "renderer");
 const html = readFileSync(join(dir, "error.html"), "utf8");
 
 describe("error.html", () => {

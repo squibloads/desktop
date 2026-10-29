@@ -27,7 +27,7 @@ describe("NotificationManager SSE parser", () => {
   });
 
   function createManager() {
-    const { NotificationManager } = require("./notifications.js");
+    const { NotificationManager } = require("../../src/main/notifications.js");
     const m = new NotificationManager({ serverUrl: "http://localhost:8080" });
     // Spy on _notify to verify what notifications would fire
     notifySpy = vi.spyOn(m, "_notify");

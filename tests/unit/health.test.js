@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Import the module under test
-const { HealthPoller } = require("./health.js");
+const { HealthPoller } = require("../../src/main/health.js");
 
 describe("HealthPoller", () => {
   let poller;

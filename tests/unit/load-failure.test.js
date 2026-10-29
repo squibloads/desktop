@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-const { shouldShowErrorPage, errorPageQuery, recoveryAction } = require("./load-failure.js");
+const { shouldShowErrorPage, errorPageQuery, recoveryAction } = require("../../src/main/load-failure.js");
 
 describe("shouldShowErrorPage", () => {
   it("shows the error page when the main frame cannot connect", () => {
