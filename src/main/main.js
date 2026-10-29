@@ -180,6 +180,9 @@ function setupFailHandler(view, getUrl) {
 function recoverView(view, getUrl) {
   const wc = view.webContents;
   if (wc.isDestroyed()) return;
+  // The health poller keeps running while the quit-time pod stop finishes;
+  // a recovery then must not re-run a start that cancels or races the stop.
+  if (quitting) return;
   const localConsole = settings.isLocal && view === consoleView;
   // A local start owns the console view while it runs: loading the console
   // now would replace the loading page with one whose node is not up.
@@ -252,6 +255,8 @@ function loadLocalConsole(view) {
 
 async function startLocalRuntime() {
   if (!settings.isLocal) return;
+  // Quitting: the pod is being stopped; a fresh start would fight it.
+  if (quitting) return;
   if (!localRuntime) localRuntime = new LocalRuntime({ onProgress: sendLocalProgress });
   const view = consoleView;
   try {
