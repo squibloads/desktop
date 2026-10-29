@@ -25,8 +25,8 @@ function updateFieldVisibility() {
   document
     .getElementById("console-group")
     .classList.toggle("hidden", mode === "server" || mode === "local");
-  // Local mode takes the URL fields out of layout entirely; other modes keep
-  // the dimmed .hidden treatment.
+  // Local mode takes the URL fields out of layout entirely; the quit control
+  // is only meaningful in local mode, so it is removed from layout elsewhere.
   document
     .getElementById("server-group")
     .classList.toggle("gone", mode === "local");
@@ -35,7 +35,7 @@ function updateFieldVisibility() {
     .classList.toggle("gone", mode === "local");
   document
     .getElementById("local-group")
-    .classList.toggle("hidden", mode !== "local");
+    .classList.toggle("gone", mode !== "local");
 }
 
 // Main sizes the window to the box, so Save/Cancel are never pushed out.

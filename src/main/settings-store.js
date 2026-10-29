@@ -108,7 +108,9 @@ class SettingsStore {
     return {
       mode: this.mode,
       serverUrl: this.serverUrl,
-      consoleUrl: this.consoleUrl,
+      // Raw saved value: the getter returns the local pod URL in local mode,
+      // and saving that back would overwrite the user's remote Console URL.
+      consoleUrl: this.store.get("consoleUrl"),
       activeTab: this.activeTab,
       quitBehavior: this.quitBehavior,
     };

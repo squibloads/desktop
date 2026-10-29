@@ -2,6 +2,9 @@ const { execFile } = require("child_process");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
+// Podman's default connection can point at another machine (turnstone-root
+// exists), so pod commands name this connection explicitly.
+const PODMAN_CONNECTION = "turnstone";
 
 const USER_MESSAGES = {
   PODMAN_NOT_FOUND:
@@ -25,6 +28,10 @@ class LocalRuntimeError extends Error {
     this.detail = detail;
     this.userMessage = USER_MESSAGES[code];
   }
+}
+
+function podArgs(args) {
+  return ["--connection", PODMAN_CONNECTION, ...args];
 }
 
 /** Real podman runner. ENOENT is kept on the error so a missing binary is distinguishable. */
@@ -61,8 +68,8 @@ async function checkConsoleHealth(baseUrl) {
 
 /**
  * Drives the local Podman machine and pod. Pod lifecycle is stop-then-start
- * only: `pod restart` or restarting one container kills conmon (POC #1499).
- * A failed read is an error, never a default.
+ * only: `pod restart`, or restarting a single container, kills conmon and
+ * strands the pod. A failed read is an error, never a default.
  */
 class LocalRuntime {
   constructor({
@@ -79,22 +86,41 @@ class LocalRuntime {
     this.healthUrl = healthUrl;
     this.healthTimeoutMs = healthTimeoutMs;
     this.healthIntervalMs = healthIntervalMs;
+    // True once a pod call has succeeded past the machine check, so quit can
+    // stop a pod this session started without touching one it never saw.
+    this.started = false;
+    this._starting = null;
   }
 
-  async start() {
+  // Overlapping callers (double-click Retry, fast mode switching) share one
+  // run instead of racing podman against itself.
+  start() {
+    if (!this._starting) {
+      this._starting = this._start().finally(() => {
+        this._starting = null;
+      });
+    }
+    return this._starting;
+  }
+
+  async _start() {
     const running = await this._machineRunning();
     if (!running) {
       await this._podman(["machine", "start", MACHINE], "MACHINE_START_FAILED");
     }
     const state = await this._podState();
+    this.started = true;
     if (state !== "Running") {
-      await this._podman(["pod", "start", POD], "POD_START_FAILED");
+      await this._podman(podArgs(["pod", "start", POD]), "POD_START_FAILED");
     }
     await this._waitHealthy();
   }
 
   async stop() {
-    await this._podman(["pod", "stop", POD], "POD_STOP_FAILED");
+    // A pod start still in flight would bring the pod back up after this
+    // stop, so let it settle first; its own error is reported to its caller.
+    if (this._starting) await this._starting.catch(() => {});
+    await this._podman(podArgs(["pod", "stop", POD]), "POD_STOP_FAILED");
   }
 
   async _podman(args, failCode) {
@@ -134,13 +160,9 @@ class LocalRuntime {
   async _podState() {
     let out;
     try {
-      out = await this.run([
-        "pod",
-        "inspect",
-        POD,
-        "--format",
-        "{{.State}}",
-      ]);
+      out = await this.run(
+        podArgs(["pod", "inspect", POD, "--format", "{{.State}}"]),
+      );
     } catch (err) {
       if (err && err.code === "ENOENT") throw this._wrap(err);
       throw new LocalRuntimeError("POD_MISSING", err && err.message);

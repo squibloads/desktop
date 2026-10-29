@@ -122,7 +122,11 @@ function createMainWindow() {
   mainWindow.on("resize", saveBounds);
   mainWindow.on("move", saveBounds);
 
+  const thisWindow = mainWindow;
   mainWindow.on("closed", () => {
+    // rebuildWindow closes the old window and builds the new one in the same
+    // tick; a late "closed" must not null the new window's views.
+    if (mainWindow !== thisWindow) return;
     mainWindow = null;
     shellView = null;
     serverView = null;
@@ -267,6 +271,15 @@ function openSettings() {
     },
   });
 
+  // Learn more and other links leave the app in the user's browser, never
+  // inside a window that carries this preload.
+  settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://")) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
   settingsWindow.setMenu(null);
   settingsWindow.loadFile(path.join(__dirname, "../renderer/settings.html"));
   settingsWindow.once("ready-to-show", () => settingsWindow.show());
@@ -390,7 +403,10 @@ ipcMain.on("turnstone:switch-tab", (_event, tab) => {
   switchTab(tab);
 });
 
-ipcMain.on("turnstone:retry-local", () => {
+// The local-error page runs in the console view; nothing else may retry.
+ipcMain.on("turnstone:retry-local", (event) => {
+  if (!consoleView || consoleView.webContents.isDestroyed()) return;
+  if (event.sender !== consoleView.webContents) return;
   startLocalRuntime();
 });
 
@@ -529,19 +545,27 @@ app.on("activate", async () => {
       settings = await SettingsStore.create();
     }
     createMainWindow();
+    startLocalRuntime();
   }
 });
 
 app.on("before-quit", (event) => {
-  // Local mode: stop the pod before exiting unless the user chose to keep it.
+  // Stop the pod before exiting unless the user chose to keep it. Keyed on
+  // whether this session managed the pod (it inspected it, whether or not it
+  // had to start it), so a mode switch away from local still stops it.
   let stopPod = false;
   try {
-    stopPod = settings && settings.isLocal && settings.quitBehavior === "stop";
+    stopPod = Boolean(
+      settings &&
+        settings.quitBehavior === "stop" &&
+        localRuntime &&
+        localRuntime.started,
+    );
   } catch (err) {
     // A corrupt setting must not trap the user in the app.
     console.error("quitBehavior unreadable, not stopping pod:", err.message);
   }
-  if (stopPod && localRuntime && !quitting) {
+  if (stopPod && !quitting) {
     event.preventDefault();
     quitting = true;
     localRuntime

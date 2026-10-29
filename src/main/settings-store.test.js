@@ -142,6 +142,12 @@ describe("SettingsStore local mode", () => {
   it("getAll exposes quitBehavior", () => {
     expect(createLocal().getAll().quitBehavior).toBe("stop");
   });
+
+  it("getAll returns the saved remote consoleUrl, not the local override", () => {
+    const s = createLocal({ consoleUrl: "http://console.example.com:8090" });
+    expect(s.getAll().consoleUrl).toBe("http://console.example.com:8090");
+    expect(s.consoleUrl).toBe("http://127.0.0.1:8090");
+  });
 });
 
 describe("SettingsStore quitBehavior validation", () => {

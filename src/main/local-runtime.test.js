@@ -20,7 +20,7 @@ function makeRunner(script) {
 }
 
 const MACHINE_LIST = "machine list --format json";
-const POD_STATE = "pod inspect turnstone --format {{.State}}";
+const POD_STATE = "--connection turnstone pod inspect turnstone --format {{.State}}";
 
 function machines(running) {
   return JSON.stringify([{ Name: "turnstone", Running: running }]);
@@ -46,14 +46,14 @@ describe("LocalRuntime.start", () => {
       [MACHINE_LIST]: machines(false),
       "machine start turnstone": "",
       [POD_STATE]: "Exited",
-      "pod start turnstone": "",
+      "--connection turnstone pod start turnstone": "",
     });
     await rt.start();
     expect(calls).toEqual([
       MACHINE_LIST,
       "machine start turnstone",
       POD_STATE,
-      "pod start turnstone",
+      "--connection turnstone pod start turnstone",
     ]);
     expect(checkHealth).toHaveBeenCalledWith("http://127.0.0.1:8090");
   });
@@ -62,7 +62,7 @@ describe("LocalRuntime.start", () => {
     const { rt, calls } = make({
       [MACHINE_LIST]: machines(true),
       [POD_STATE]: "Exited",
-      "pod start turnstone": "",
+      "--connection turnstone pod start turnstone": "",
     });
     await rt.start();
     expect(calls).not.toContain("machine start turnstone");
@@ -114,7 +114,7 @@ describe("LocalRuntime.start", () => {
     const { rt } = make({
       [MACHINE_LIST]: machines(true),
       [POD_STATE]: "Exited",
-      "pod start turnstone": new Error("conmon"),
+      "--connection turnstone pod start turnstone": new Error("conmon"),
     });
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_START_FAILED" });
   });
@@ -149,14 +149,76 @@ describe("LocalRuntime.start", () => {
 
 describe("LocalRuntime.stop", () => {
   it("stops the pod with pod stop, never restart", async () => {
-    const { rt, calls } = make({ "pod stop turnstone": "" });
+    const { rt, calls } = make({ "--connection turnstone pod stop turnstone": "" });
     await rt.stop();
-    expect(calls).toEqual(["pod stop turnstone"]);
+    expect(calls).toEqual(["--connection turnstone pod stop turnstone"]);
   });
 
   it("surfaces a failed stop as POD_STOP_FAILED", async () => {
-    const { rt } = make({ "pod stop turnstone": new Error("busy") });
+    const { rt } = make({ "--connection turnstone pod stop turnstone": new Error("busy") });
     await expect(rt.stop()).rejects.toMatchObject({ code: "POD_STOP_FAILED" });
+  });
+});
+
+describe("LocalRuntime.start overlap guard", () => {
+  it("returns the in-flight promise to an overlapping call", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: machines(true),
+      [POD_STATE]: "Running",
+    });
+    const first = rt.start();
+    const second = rt.start();
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+    expect(calls.filter((c) => c === MACHINE_LIST)).toHaveLength(1);
+  });
+
+  it("runs again after a failed start settles", async () => {
+    const script = {
+      [MACHINE_LIST]: new Error("podman busy"),
+      [POD_STATE]: "Running",
+    };
+    const runner = makeRunner(script);
+    const rt = new LocalRuntime({
+      run: runner.run,
+      checkHealth: vi.fn(async () => "ok"),
+      sleep: async () => {},
+      healthTimeoutMs: 3,
+      healthIntervalMs: 1,
+    });
+    await expect(rt.start()).rejects.toMatchObject({
+      code: "MACHINE_LIST_FAILED",
+    });
+    script[MACHINE_LIST] = machines(true);
+    await rt.start();
+    expect(runner.calls.filter((c) => c === MACHINE_LIST)).toHaveLength(2);
+  });
+});
+
+describe("LocalRuntime.started", () => {
+  it("is false before any start", () => {
+    expect(make({}).rt.started).toBe(false);
+  });
+
+  it("stays false when the machine check fails", async () => {
+    const { rt } = make({ [MACHINE_LIST]: new Error("no podman") });
+    await rt.start().catch(() => {});
+    expect(rt.started).toBe(false);
+  });
+
+  it("stays false when the turnstone machine is missing", async () => {
+    const { rt } = make({ [MACHINE_LIST]: JSON.stringify([]) });
+    await rt.start().catch(() => {});
+    expect(rt.started).toBe(false);
+  });
+
+  it("becomes true once a pod call succeeds past the machine check", async () => {
+    const { rt } = make({
+      [MACHINE_LIST]: machines(true),
+      [POD_STATE]: "Running",
+    });
+    await rt.start();
+    expect(rt.started).toBe(true);
   });
 });
 
@@ -178,5 +240,41 @@ describe("LocalRuntimeError messages", () => {
     expect(e.userMessage).not.toBe(
       new LocalRuntimeError("PODMAN_NOT_FOUND" === code ? "HEALTH_TIMEOUT" : "PODMAN_NOT_FOUND", "x").userMessage,
     );
+  });
+});
+
+describe("LocalRuntime stop and started semantics", () => {
+  it("stop waits for an in-flight start before issuing pod stop", async () => {
+    let releaseHealth;
+    const gate = new Promise((r) => (releaseHealth = r));
+    const { rt, calls } = make(
+      {
+        [MACHINE_LIST]: machines(true),
+        [POD_STATE]: "Running",
+        "--connection turnstone pod stop turnstone": "",
+      },
+      { checkHealth: vi.fn(async () => (await gate, "ok")) },
+    );
+    const starting = rt.start();
+    await Promise.resolve();
+    const stopping = rt.stop();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(calls).not.toContain("--connection turnstone pod stop turnstone");
+    releaseHealth();
+    await starting;
+    await stopping;
+    expect(calls[calls.length - 1]).toBe(
+      "--connection turnstone pod stop turnstone",
+    );
+  });
+
+  it("started is true even when pod start then fails, so quit still stops it", async () => {
+    const { rt } = make({
+      [MACHINE_LIST]: machines(true),
+      [POD_STATE]: "Exited",
+      "--connection turnstone pod start turnstone": new Error("conmon"),
+    });
+    await rt.start().catch(() => {});
+    expect(rt.started).toBe(true);
   });
 });
