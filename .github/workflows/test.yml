@@ -63,3 +63,31 @@ jobs:
       # The seed is printed at the top of the log; rerun with VITEST_SEED to replay.
       - name: Run tests in random order
         run: node tests/helpers/run-shuffled.mjs
+
+  # Electron smoke tier. Locally it is opt-in (npm run test:e2e). Here it runs under Xvfb and must
+  # fail, not skip, when the Electron binary is missing: see tests/helpers/e2e-setup.js.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # The Electron binary is needed here, so this job does not skip the postinstall download.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Run Electron smoke tests
+        run: xvfb-run -a npm run test:e2e
+        env:
+          CI: "true"
