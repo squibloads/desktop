@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:contract": "vitest run --project contract",
+    "test:renderer": "vitest run --project renderer",
     "test:shuffle": "node tests/helpers/run-shuffled.mjs"
   },
   "devDependencies": {
@@ -21,6 +22,7 @@
     "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
     "@reforged/maker-appimage": "^5.2.0",
     "electron": "^40.8.0",
+    "jsdom": "^29.1.1",
     "vitest": "^4.0.18"
   },
   "dependencies": {
