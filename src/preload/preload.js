@@ -22,6 +22,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return () => ipcRenderer.removeListener("turnstone:health-update", handler);
   },
 
+  // Local mode start stages (main -> renderer) — returns cleanup function
+  onLocalProgress: (callback) => {
+    const handler = (_event, stage) => callback(stage);
+    ipcRenderer.on("turnstone:local-progress", handler);
+    return () => ipcRenderer.removeListener("turnstone:local-progress", handler);
+  },
+
   // Local mode: re-run the start sequence after a failure
   retryLocal: () => ipcRenderer.send("turnstone:retry-local"),
 
