@@ -147,3 +147,35 @@ describe("buildMenuTemplate Window submenu", () => {
     ]);
   });
 });
+
+// One label, role or separator marker per item, so a changed role or a stray separator shows.
+function shape(items) {
+  return items.map((item) => item.role ?? (item.type === "separator" ? "-" : item.label));
+}
+
+describe("buildMenuTemplate full item order", () => {
+  // Failure: a role is swapped (zoomOut becomes zoomIn, quit becomes close) or a separator moves, and the menu behaves differently on one platform.
+  it("lays out the macOS app menu in order", () => {
+    const mac = build({ isMac: true }).template;
+    expect(shape(submenuOf(mac, APP_NAME))).toEqual(["about", "-", "Settings…", "-", "hide", "hideOthers", "unhide", "-", "quit"]);
+  });
+
+  // Failure: File differs from the platform convention (close vs quit, Settings placement).
+  it("lays out File per platform", () => {
+    expect(shape(submenuOf(build({ isMac: true }).template, "File"))).toEqual(["close"]);
+    expect(shape(submenuOf(build({ isMac: false }).template, "File"))).toEqual(["Settings…", "-", "quit"]);
+  });
+
+  // Failure: View loses or reorders zoom and fullscreen entries.
+  it("lays out View in order, with tabs only in both mode", () => {
+    const tail = ["Reload", "Toggle Developer Tools", "-", "zoomIn", "zoomOut", "resetZoom", "-", "togglefullscreen"];
+    expect(shape(submenuOf(build({ isMac: false, mode: "both" }).template, "View"))).toEqual(["Server", "Console", "-", ...tail]);
+    expect(shape(submenuOf(build({ isMac: false, mode: "server" }).template, "View"))).toEqual(tail);
+  });
+
+  // Failure: the Window menu differs from the platform convention (front vs close).
+  it("lays out Window per platform", () => {
+    expect(shape(submenuOf(build({ isMac: true }).template, "Window"))).toEqual(["minimize", "-", "front"]);
+    expect(shape(submenuOf(build({ isMac: false }).template, "Window"))).toEqual(["minimize", "close"]);
+  });
+});

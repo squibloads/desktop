@@ -305,4 +305,45 @@ describe("NotificationManager reconnect and stop", () => {
     expect(signal.aborted).toEqual(true);
     expect(fetchMock.mock.calls.length).toEqual(1);
   });
+
+  // Failure: a non-2xx answer is read as an event stream, so an error page raises alerts or the retry never happens.
+  it("treats a non-2xx response as a failed connect and retries", async () => {
+    const bad = makeSSEResponse(`event: ws_state
+data: {"state":"attention","name":"x"}
+
+`);
+    bad.ok = false;
+    bad.status = 500;
+    const fetchMock = vi.fn().mockResolvedValue(bad);
+    vi.stubGlobal("fetch", fetchMock);
+    const fake = makeFakeNotification();
+    manager = new NotificationManager(SETTINGS, { Notification: fake.Notification });
+
+    manager.start();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fake.shown).toEqual([]);
+    expect(fetchMock.mock.calls.length).toEqual(2);
+  });
+
+  // Failure: after a good connection the delay stays at its old backed-off value, so a later drop waits far too long.
+  it("resets the retry delay to one second after a successful connect", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockRejectedValueOnce(new Error("down"))
+      .mockResolvedValueOnce(makeSSEResponse(""))
+      .mockRejectedValue(new Error("down"));
+    vi.stubGlobal("fetch", fetchMock);
+    manager = new NotificationManager(SETTINGS, { Notification: makeFakeNotification().Notification });
+
+    manager.start();
+    // Attempts at 0 (fail, wait 1 s), 1000 (fail, wait 2 s), 3000 (connects, stream ends).
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetchMock.mock.calls.length).toEqual(3);
+    // With the reset the next attempt is 1 s later; without it, 4 s later.
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fetchMock.mock.calls.length).toEqual(4);
+  });
 });

@@ -37,9 +37,8 @@ describe("pure modules", () => {
     const offenders = {};
     for (const name of PURE_MODULES) {
       const path = join(MAIN_DIR, name);
-      // Names with no file on this branch are skipped. view-rules.js, layout.js and
-      // ipc-guards.js were removed earlier and are not on main either.
-      if (!existsSync(path)) continue;
+      // A listed module that is missing or renamed must fail, not shrink the guard.
+      expect(existsSync(path), `${name} exists`).toBe(true);
       const hits = topLevelElectronLines(readFileSync(path, "utf8"));
       if (hits.length > 0) offenders[name] = hits;
     }
