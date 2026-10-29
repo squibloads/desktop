@@ -14,8 +14,8 @@ tier fails it.
 - `tests/contract/` checks static files and cross-cutting rules, such as the
   renderer page's CSP or the test layout itself.
 - `tests/renderer/` runs each `src/renderer/` page in jsdom, with the real HTML
-  and script and a fake `window.electronAPI`. It runs in the `renderer`
-  project, the only one with `environment: "jsdom"`. CSS is not loaded in
+  and script and a fake `window.electronAPI`. Each page gets its own jsdom
+  window from `tests/helpers/load-page.js`; the project itself runs in Node. CSS is not loaded in
   this tier, so a test asserts class names such as `hidden` or `gone`,
   never what is visible.
 - `tests/fixtures/` holds static input a test reads, such as a sample file.

@@ -17,8 +17,7 @@ import { fileURLToPath } from "node:url";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { vi } from "vitest";
 
-// Read from the file path, not `new URL(...)`: the jsdom environment replaces the URL
-// global, and fileURLToPath rejects its objects.
+// Read from the file path rather than a URL object, so the helper does not depend on the URL global.
 const RENDERER_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "renderer");
 
 const COLOUR_SCHEME_LIGHT = "(prefers-color-scheme: light)";

@@ -27,10 +27,9 @@ describe("local error page", () => {
     expect(doc.getElementById("error-detail").textContent).toBe("exit status 125");
   });
 
-  // Failure: a missing parameter shows the word "null" or "undefined" in the error text. The page
-  // falls back to an empty string for each one, and this test pins that. Loading completing is the
-  // no-throw check: a throw during the page script would fail the load itself. Whether the buttons
-  // are wired is covered by the Retry and Settings tests below.
+  // Failure: a missing parameter is turned into the word "null" or "undefined" in the error text (for
+  // example by building the text with a template literal). Setting textContent to null already gives
+  // empty text, so this does not pin the page's own fallback. Loading completing is the no-throw check.
   it("shows empty text when the query string carries no parameters", () => {
     const page = loadPage("local-error", createFakeBridge());
     const doc = page.document;
