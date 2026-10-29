@@ -2,7 +2,7 @@ const LOCAL_CONSOLE_URL = "http://127.0.0.1:8090";
 
 const schema = {
   mode: { type: "string", default: "both" }, // 'server', 'console', 'both', 'local'
-  quitBehavior: { type: "string", default: "stop" }, // local mode: 'stop' | 'keep'
+  quitBehavior: { type: "string", enum: ["stop", "keep"], default: "stop" }, // local mode: 'stop' | 'keep'
   serverUrl: { type: "string", default: "http://localhost:8080" },
   consoleUrl: { type: "string", default: "http://localhost:8090" },
   windowBounds: {
@@ -73,8 +73,14 @@ class SettingsStore {
     this.store.set("hasLaunched", v);
   }
 
+  // conf fills schema defaults on read, so an absent key reads as "stop".
+  // Anything else that is not stop/keep is a failed read and throws.
   get quitBehavior() {
-    return this.store.get("quitBehavior");
+    const raw = this.store.get("quitBehavior");
+    if (raw !== "stop" && raw !== "keep") {
+      throw new Error(`invalid quitBehavior in settings store: ${raw}`);
+    }
+    return raw;
   }
   set quitBehavior(v) {
     if (v !== "stop" && v !== "keep") {

@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getSettings: () => ipcRenderer.invoke("turnstone:get-settings"),
   saveSettings: (settings) =>
     ipcRenderer.invoke("turnstone:save-settings", settings),
+  // Content height in CSS px; main clamps it and sizes the settings window.
+  resizeSettings: (height) =>
+    ipcRenderer.send("turnstone:settings-resize", height),
 
   // Tab switching
   switchTab: (tab) => ipcRenderer.send("turnstone:switch-tab", tab),

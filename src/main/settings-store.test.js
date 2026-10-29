@@ -25,6 +25,7 @@ describe("SettingsStore", () => {
       consoleUrl: "http://localhost:8090",
       activeTab: "server",
       hasLaunched: false,
+      quitBehavior: "stop",
       ...initial,
     };
     for (const [k, v] of Object.entries(defaults)) {
@@ -96,6 +97,7 @@ describe("SettingsStore", () => {
         serverUrl: "http://test:1234",
         consoleUrl: "http://test:5678",
         activeTab: "console",
+        quitBehavior: "stop",
       });
     });
   });
@@ -139,5 +141,20 @@ describe("SettingsStore local mode", () => {
 
   it("getAll exposes quitBehavior", () => {
     expect(createLocal().getAll().quitBehavior).toBe("stop");
+  });
+});
+
+describe("SettingsStore quitBehavior validation", () => {
+  const make = (v) =>
+    new SettingsStore({ get: () => v, set: () => {} });
+
+  it("returns stored stop and keep", () => {
+    expect(make("stop").quitBehavior).toBe("stop");
+    expect(make("keep").quitBehavior).toBe("keep");
+  });
+
+  it("throws on an unreadable value instead of inventing one", () => {
+    expect(() => make("bogus").quitBehavior).toThrow(/invalid quitBehavior/);
+    expect(() => make(undefined).quitBehavior).toThrow(/invalid quitBehavior/);
   });
 });

@@ -11,7 +11,6 @@
   <link rel="stylesheet" href="tokens.css">
   <style>
     html, body {
-      height: 100%;
       background: var(--bg);
       color: var(--fg);
       font-family: var(--font-mono);
@@ -19,9 +18,11 @@
       -webkit-font-smoothing: antialiased;
     }
 
+    /* Content-height body (no 100%/centering): main sizes the window to
+       .settings-box, and a stretched body would hide its true height. */
     body {
+      padding: 16px;
       display: flex;
-      align-items: center;
       justify-content: center;
       background-image:
         radial-gradient(ellipse at 20% 0%, rgba(229, 160, 66, 0.03) 0%, transparent 50%),
@@ -132,6 +133,10 @@
     .url-group.hidden {
       opacity: 0.3;
       pointer-events: none;
+    }
+
+    .url-group.gone {
+      display: none;
     }
 
     input[type="text"] {
@@ -269,6 +274,8 @@
       <input type="text" id="console-url" placeholder="http://localhost:8090">
       <div class="field-error" id="console-url-error">Enter a valid URL (http:// or https://)</div>
     </div>
+
+    <div class="field-error" id="save-error"></div>
 
     <div class="btn-row">
       <button class="btn-secondary" id="btn-cancel">Cancel</button>
