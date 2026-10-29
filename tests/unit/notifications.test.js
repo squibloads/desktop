@@ -185,6 +185,87 @@ describe("NotificationManager SSE parser", () => {
   });
 });
 
+// Like makeSSEResponse, but each string is one network chunk, so a test can put a
+// chunk boundary anywhere in a frame.
+function makeChunkedSSEResponse(chunks) {
+  const encoder = new TextEncoder();
+  let next = 0;
+  return {
+    ok: true,
+    body: {
+      getReader: () => ({
+        read: () => {
+          if (next < chunks.length) {
+            return Promise.resolve({ done: false, value: encoder.encode(chunks[next++]) });
+          }
+          return Promise.resolve({ done: true });
+        },
+      }),
+    },
+  };
+}
+
+// An SSE frame can arrive split anywhere across network chunks, and every split
+// must still produce its alert.
+describe("NotificationManager SSE frames across chunks", () => {
+  const FRAME = 'event: ws_state\ndata: {"state":"attention","name":"ws"}\n\n';
+  let manager;
+  let notifySpy;
+
+  afterEach(() => {
+    if (manager) manager.stop();
+    manager = undefined;
+  });
+
+  function createManager() {
+    const m = new NotificationManager(SETTINGS, { Notification: makeFakeNotification().Notification });
+    notifySpy = vi.spyOn(m, "_notify");
+    return m;
+  }
+
+  // Failure: a chunk that ends inside an event drops the event's fields before its blank line arrives, so the alert is lost.
+  it.each(Array.from({ length: FRAME.length - 1 }, (_, i) => i + 1))(
+    "keeps the alert when the frame is split after byte %i",
+    async (split) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(makeChunkedSSEResponse([FRAME.slice(0, split), FRAME.slice(split)])),
+      );
+      manager = createManager();
+      manager.running = true;
+      await manager._connect(manager.generation);
+
+      expect(notifySpy.mock.calls).toEqual([["Attention Needed", "ws requires your input"]]);
+    },
+  );
+
+  // Failure: a frame that arrives whole stops alerting when the split handling changes.
+  it("keeps the alert when the frame arrives in one chunk", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeChunkedSSEResponse([FRAME])));
+    manager = createManager();
+    manager.running = true;
+    await manager._connect(manager.generation);
+
+    expect(notifySpy.mock.calls).toEqual([["Attention Needed", "ws requires your input"]]);
+  });
+
+  // Failure: an unfinished event from one connection fires when the next connection's blank line arrives, so a reconnect raises an alert nobody sent.
+  it("does not carry an unfinished event into a new connection", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(makeChunkedSSEResponse([FRAME.slice(0, -1)]))
+      .mockResolvedValueOnce(makeChunkedSSEResponse(["\n"]));
+    vi.stubGlobal("fetch", fetchMock);
+    manager = createManager();
+    manager.running = true;
+    await manager._connect(manager.generation);
+    await manager._connect(manager.generation);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(notifySpy.mock.calls).toEqual([]);
+  });
+});
+
 describe("NotificationManager notification content", () => {
   let manager;
   let fake;

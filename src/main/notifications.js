@@ -60,6 +60,11 @@ class NotificationManager {
       const decoder = new TextDecoder();
       let buffer = "";
 
+      // An event can span network chunks, so its fields last for the whole
+      // connection and reset only when a blank line ends the event.
+      let eventType = "";
+      let eventDataParts = [];
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -69,9 +74,6 @@ class NotificationManager {
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
-
-        let eventType = "";
-        let eventDataParts = [];
 
         for (const line of lines) {
           if (line.startsWith("event: ")) {
