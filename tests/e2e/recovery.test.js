@@ -1,16 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakeConsole } from "../helpers/fake-console.js";
-import { closeAllApps, launchApp, urlEndsWith, urlIs } from "../helpers/launch-app.js";
+import { closeEverything, launchApp, registerConsole, urlEndsWith, urlIs } from "../helpers/launch-app.js";
 import { pollUntil, waitForTitle } from "../helpers/poll.js";
 
 const POD_START = "--connection turnstone pod start turnstone";
 
-const consoles = [];
-
 function startConsole() {
-  const fake = createFakeConsole({ nodes: 1 });
-  consoles.push(fake);
-  return fake;
+  return registerConsole(createFakeConsole({ nodes: 1 }));
 }
 
 // The shell's health dot for the console. shell.js sets the state as a class on this element.
@@ -18,10 +14,7 @@ function consoleDotHas(shell, state) {
   return () => shell.evaluate((cls) => document.getElementById("console-health").classList.contains(cls), state);
 }
 
-afterEach(async () => {
-  await closeAllApps();
-  await Promise.all(consoles.splice(0).map((fake) => fake.stop()));
-});
+afterEach(closeEverything);
 
 describe("recovery", () => {
   // Failure: after the console goes down and comes back, the console view stays on a dead page, and the user has to reload by hand.
@@ -60,7 +53,8 @@ describe("recovery", () => {
 
     await app.clickMenuItem("Reload");
     await pollUntil(() => app.readPodmanLog().includes(POD_START), { description: "a pod start after Reload" });
-    expect(app.readPodmanLog().filter((line) => line === POD_START)).toEqual([POD_START]);
+    const podStarts = app.readPodmanLog().filter((line) => line === POD_START);
+    expect(podStarts).toEqual([POD_START]);
     // The loading page takes the view while the start runs; the old console page is gone.
     await app.findPage(urlEndsWith("local-loading.html"), { description: "loading page during the restart" });
 

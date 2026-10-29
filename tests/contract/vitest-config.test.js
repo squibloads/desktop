@@ -94,7 +94,7 @@ describe("vitest.config.mjs e2e project", () => {
     vi.stubEnv("VITEST_MAX_WORKERS", "16");
     const e2e = e2eProject();
     expect(e2e.include).toEqual(["tests/e2e/**/*.test.js"]);
-    expect(e2e.testTimeout).toBe(90000);
+    expect(e2e.testTimeout).toBe(120000);
     expect(e2e.hookTimeout).toBe(60000);
     expect(e2e.setupFiles).toHaveLength(1);
     expect(e2e.setupFiles[0].split(String.fromCharCode(92)).join("/").endsWith("/tests/helpers/e2e-setup.js")).toBe(true);

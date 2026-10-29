@@ -21,11 +21,12 @@ export const tierGlobs = {
   e2e: "tests/e2e/**/*.test.js",
 };
 
-// Each e2e test launches Electron: a longer timeout for the launch and the quit, and at most
+// Each e2e test launches Electron. The test timeout leaves room for chained 30 s waits; the hook
+// timeout covers the launch and the quit (the quit guard is 25 s). At most
 // three apps at once so a runner is not starved of CPU and memory.
 function e2eOverrides(maxWorkers) {
   return {
-    testTimeout: 90_000,
+    testTimeout: 120_000,
     hookTimeout: 60_000,
     maxWorkers: Math.min(maxWorkers, 3),
     setupFiles: [fileURLToPath(new URL("./tests/helpers/e2e-setup.js", import.meta.url))],

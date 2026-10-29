@@ -43,16 +43,24 @@ tier fails it.
     after each test.
 
 - `fake-podman.js` is the podman binary the app shells out to. It implements
-  only the calls `local-runtime.js` makes, keeps machine and pod state in a JSON
+  exactly the five calls `local-runtime.js` makes, matched argv element by
+  element; any other call exits 1. It keeps machine and pod state in a JSON
   file (`FAKE_PODMAN_STATE`), and logs every call to `FAKE_PODMAN_LOG`.
+  `FAKE_PODMAN_STOP_DELAY_MS` makes `pod stop` take that long, then logs
+  `pod stop done`, so a test can check that the stop finished before the app exited.
 - `fake-console.js` exports `createFakeConsole()`, a loopback `/health` server
   with a settable status and node count. It counts health reads, so a test can
-  wait for the app to poll without a fixed delay.
+  wait for the app to poll without a fixed delay. A bind refused because the port
+  is still in use is retried 20 times, 100 ms apart, before the start fails.
 - `launch-app.js` exports `launchApp()`, which seeds a fresh user-data
   directory, launches the app, and returns a handle with `findPage`,
   `windowUrls`, `readPodmanLog`, `setPodmanState`, `clickMenuItem` and `close`.
-  `closeAllApps()` is the afterEach safety net. `urlIs` and `urlEndsWith` are
-  window predicates for `findPage`.
+  `closeEverything()` is the afterEach hook: it closes every app, then stops every
+  console passed to `registerConsole()`, even when a close throws. A quit that does
+  not finish within 25 s kills the app's whole process tree. A launch with no
+  `consolePort` gets one closed loopback port per process, never 8090. `safe-path.js`
+  builds the child's PATH without any directory that holds a podman executable.
+  `urlIs` and `urlEndsWith` are window predicates for `findPage`.
 - `poll.js` exports `pollUntil(check)`, a deadline-bounded wait on observable
   state, built on `vi.waitFor`.
 - `e2e-setup.js` runs before the e2e files. It fails the run when the Electron
@@ -97,7 +105,7 @@ npm test                  # all tiers, in parallel
 npm run test:unit
 npm run test:contract
 npm run test:renderer
-npm run test:shuffle      # random file and test order; prints the seed
+npm run test:shuffle      # random file and test order; prints the seed; no e2e unless TURNSTONE_E2E=1
 npm run test:e2e          # tier 4, Electron smoke tests; opt-in, see below
 ```
 
@@ -122,6 +130,8 @@ node tests/helpers/run-e2e.mjs tests/e2e/quit.test.js   # one file
 
 The project is absent unless `TURNSTONE_E2E=1`, so `npm test` never opens a
 window. CI runs it in a separate `smoke` job under Xvfb. Each e2e file must pass
-alone and in any order, and each test uses its own port 0 console and temp
-directory. A failure comment above each test names the user-visible failure it
-guards against.
+alone and in any order. Each test uses its own temp directory and its own port 0
+console. One fixed port is the exception: a launch with no `consolePort` gets the
+closed port `launchApp` reserves once per process. Another process can take that
+port in the gap after it is released. A failure comment above each test names the
+user-visible failure it guards against.

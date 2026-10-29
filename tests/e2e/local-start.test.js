@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakeConsole } from "../helpers/fake-console.js";
-import { closeAllApps, launchApp, urlEndsWith, urlIs } from "../helpers/launch-app.js";
+import { closeEverything, launchApp, registerConsole, urlEndsWith, urlIs } from "../helpers/launch-app.js";
 import { pollUntil, waitForTitle } from "../helpers/poll.js";
 
 // The podman calls local-runtime.js makes, in the form fake-podman.js logs them.
@@ -12,17 +12,11 @@ const POD_START = "--connection turnstone pod start turnstone";
 // The text local-loading.js shows for the node stage (STAGE_LABELS).
 const NODE_STAGE_LABEL = "Waiting for the node to come online (this can take about a minute)";
 
-const consoles = [];
 function startConsole(options) {
-  const fake = createFakeConsole(options);
-  consoles.push(fake);
-  return fake;
+  return registerConsole(createFakeConsole(options));
 }
 
-afterEach(async () => {
-  await closeAllApps();
-  await Promise.all(consoles.splice(0).map((fake) => fake.stop()));
-});
+afterEach(closeEverything);
 
 describe("local start", () => {
   // Failure: a machine and pod that are already running get restarted on every launch, so the pod bounces and the user waits for nothing.
@@ -37,7 +31,8 @@ describe("local start", () => {
 
     const page = await app.findPage(urlIs(`${fake.url}/`), { description: "console page" });
     await waitForTitle(page, "fake console");
-    expect(app.windowUrls().filter((url) => url.split("?")[0].endsWith("error.html"))).toEqual([]);
+    const errorWindows = app.windowUrls().filter((url) => url.split("?")[0].endsWith("error.html"));
+    expect(errorWindows).toEqual([]);
     expect(app.readPodmanLog()).toEqual([MACHINE_LIST, POD_INSPECT]);
   });
 

@@ -7,6 +7,15 @@
 
 import http from "node:http";
 
+// A port another process still holds, or one this process released a moment ago, can refuse the
+// bind for a short while. Those refusals are retried. Port 0 never clashes, so it is not retried.
+const LISTEN_RETRIES = 20;
+const LISTEN_RETRY_MS = 100;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function createFakeConsole({ nodes = 1, health = "ok" } = {}) {
   const state = { nodes, status: health };
   let server = null;
@@ -29,7 +38,7 @@ export function createFakeConsole({ nodes = 1, health = "ok" } = {}) {
     );
   }
 
-  function listen(requestedPort) {
+  function bindOnce(requestedPort) {
     return new Promise((resolve, reject) => {
       const candidate = http.createServer(handle);
       candidate.on("connection", (socket) => {
@@ -39,16 +48,32 @@ export function createFakeConsole({ nodes = 1, health = "ok" } = {}) {
       candidate.once("error", reject);
       candidate.listen(requestedPort, "127.0.0.1", () => {
         candidate.off("error", reject);
-        server = candidate;
-        port = candidate.address().port;
-        resolve();
+        resolve(candidate);
       });
     });
   }
 
+  async function listen(requestedPort) {
+    for (let retry = 0; ; retry += 1) {
+      try {
+        return await bindOnce(requestedPort);
+      } catch (err) {
+        if (err.code !== "EADDRINUSE" || requestedPort === 0) throw err;
+        if (retry === LISTEN_RETRIES) {
+          throw new Error(
+            `fake console could not bind 127.0.0.1:${requestedPort}: still in use after ${LISTEN_RETRIES} retries`,
+          );
+        }
+        await sleep(LISTEN_RETRY_MS);
+      }
+    }
+  }
+
   async function start(requestedPort = 0) {
     if (server) throw new Error("fake console is already running");
-    await listen(requestedPort);
+    const bound = await listen(requestedPort);
+    server = bound;
+    port = bound.address().port;
   }
 
   async function stop() {
