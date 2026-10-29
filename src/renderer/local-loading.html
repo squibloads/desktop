@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com;">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="tokens.css">
+  <title>Starting Local Turnstone</title>
+  <style>
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-image:
+        radial-gradient(ellipse at 50% 30%, var(--accent-glow) 0%, transparent 50%);
+    }
+
+    .loading-box {
+      text-align: center;
+      max-width: 420px;
+      padding: 32px;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 2px solid var(--border-strong);
+      border-top-color: var(--accent);
+      margin: 0 auto 24px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    h1 {
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--fg-bright);
+      margin-bottom: 20px;
+    }
+
+    .stages {
+      list-style: none;
+      text-align: left;
+      display: inline-block;
+      margin: 0;
+      padding: 0;
+    }
+
+    .stages li {
+      font-size: 12px;
+      color: var(--fg-dim);
+      padding: 4px 0;
+      opacity: 0.45;
+    }
+
+    .stages li.done {
+      opacity: 0.7;
+    }
+
+    .stages li.done::before {
+      content: "\2713";
+      display: inline-block;
+      width: 16px;
+      color: var(--green);
+    }
+
+    .stages li.active {
+      color: var(--fg-bright);
+      opacity: 1;
+    }
+
+    .stages li.active::before {
+      content: "\2192";
+      display: inline-block;
+      width: 16px;
+      color: var(--accent);
+    }
+
+    .status {
+      font-family: var(--font-display);
+      font-size: 11px;
+      color: var(--fg-dim);
+      margin-top: 20px;
+      min-height: 1.4em;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .spinner { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="loading-box">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1>Starting Local Turnstone</h1>
+    <ul class="stages" id="stages">
+      <li data-stage="machine">Starting the Podman machine</li>
+      <li data-stage="pod">Starting Turnstone</li>
+      <li data-stage="console">Waiting for the console</li>
+      <li data-stage="node">Waiting for the node to come online (this can take about a minute)</li>
+    </ul>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
+  </div>
+  <script src="local-loading.js"></script>
+</body>
+</html>
