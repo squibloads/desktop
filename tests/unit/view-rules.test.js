@@ -76,7 +76,7 @@ describe("windowOpenAction", () => {
     expect(windowOpenAction("http://127.0.0.1:8080/")).toEqual({ open: true });
   });
 
-  // Failure: an upper-case scheme is opened in the browser today; the rule matches today's case-sensitive check, so a change here is a visible behaviour change.
+  // Failure: an upper-case scheme is not opened today (the check is case-sensitive), so a change here is a visible behaviour change.
   it("does not open an upper-case HTTP:// URL (today's case-sensitive match)", () => {
     expect(windowOpenAction("HTTP://example.com/")).toEqual({ open: false });
   });

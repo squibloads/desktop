@@ -15,9 +15,12 @@ const shapes = [
   // Failure: a fixed answer lets any window trigger the local start.
   ["retry sender check", "senderIsConsole: hasConsoleView && isFromWindow(event, consoleView.webContents)"],
   // Failure: ignoring the configured URL lets the page navigate anywhere.
-  ["navigation setting", "isNavigationAllowed(allowedUrl, url)"],
+  ["navigation setting", "if (!isNavigationAllowed(allowedUrl, url)) {"],
   ["allowed url source", "allowedUrl = settings[settingKey];"],
   // Failure: a fixed flag lays out a view that does not exist.
+  ["layout single view", "isSingleView: settings.isSingleView,"],
+  ["layout server view", "hasServerView: Boolean(serverView),"],
+  ["layout console view", "hasConsoleView: Boolean(consoleView),"],
   ["layout server flag", "hasServer: settings.hasServer,"],
   ["layout active tab", "    activeTab,"],
   // Failure: switching on the requested tab instead of the planned one.
