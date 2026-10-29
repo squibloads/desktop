@@ -7,7 +7,10 @@
     "start": "electron-forge start",
     "package": "electron-forge package",
     "make": "electron-forge make",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:contract": "vitest run --project contract",
+    "test:shuffle": "node tests/helpers/run-shuffled.mjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.0",

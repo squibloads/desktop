@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+import { installSteppedClock } from "../helpers/fake-clock.js";
 
-const { LocalRuntime, LocalRuntimeError } = require("./local-runtime.js");
+const { LocalRuntime, LocalRuntimeError } = require("../../src/main/local-runtime.js");
 
 /**
  * Scripted podman: each entry maps a joined argv to a result. An unscripted
@@ -17,6 +18,11 @@ function makeRunner(script) {
     return out;
   });
   return { run, calls };
+}
+
+// Whether podman was invoked with this command; a barrier waits on it.
+function calledWith(run, key) {
+  return run.mock.calls.some(([args]) => args.join(" ") === key);
 }
 
 const MACHINE_LIST = "machine list --format json";
@@ -37,6 +43,9 @@ function healthSequence(...items) {
 }
 
 function make(script, opts = {}) {
+  // Deadlines read Date.now(), so the clock is stepped: each timeout counts
+  // polls, not wall time. Pass `step` to change the cost of one read.
+  installSteppedClock({ step: opts.step ?? 1 });
   const runner = makeRunner(script);
   const fetchHealth = opts.fetchHealth || vi.fn(async () => READY);
   const rt = new LocalRuntime({
@@ -145,7 +154,8 @@ describe("LocalRuntime.start", () => {
       { fetchHealth: vi.fn(async () => null) },
     );
     await expect(rt.start()).rejects.toMatchObject({ code: "HEALTH_TIMEOUT" });
-    expect(fetchHealth.mock.calls.length).toBeGreaterThan(1);
+    // Deadline of 3 reads at 1 per read: three polls.
+    expect(fetchHealth).toHaveBeenCalledTimes(3);
   });
 
   it("keeps polling the console past a degraded status until ok, then waits for the node", async () => {
@@ -173,7 +183,7 @@ describe("LocalRuntime node stage", () => {
     );
     const { rt } = make(
       { [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" },
-      // Generous deadlines: the default 3ms is wall-clock and can flake.
+      // The clock is stepped (see make()), so these bounds count polls.
       { fetchHealth, healthTimeoutMs: 1000, nodeTimeoutMs: 1000 },
     );
     await expect(rt.start()).resolves.toBeUndefined();
@@ -217,14 +227,16 @@ describe("LocalRuntime node stage", () => {
       {
         fetchHealth,
         healthTimeoutMs: 1000,
-        nodeTimeoutMs: 60,
-        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        // Reads advance 10ms, so the 40ms node deadline is hit on the 4th node check.
+        nodeTimeoutMs: 40,
+        step: 10,
       },
     );
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("NODE_TIMEOUT");
     expect(err.detail).toContain("no numeric nodes field");
-    expect(fetchHealth.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // One console poll (status ok, nodes missing), then four node polls.
+    expect(fetchHealth).toHaveBeenCalledTimes(5);
   });
 
   it("does not look at nodes until the console reports ok", async () => {
@@ -254,7 +266,7 @@ describe("LocalRuntime node stage", () => {
 
   it("stop() during the node wait cancels promptly instead of waiting out the timeout", async () => {
     const stages = [];
-    const { rt, calls } = make(
+    const { rt, calls, fetchHealth } = make(
       { [MACHINE_LIST]: machines(true), [POD_STATE]: "Running", [STOP]: "" },
       {
         fetchHealth: vi.fn(async () => ({ status: "ok", nodes: 0 })),
@@ -267,12 +279,16 @@ describe("LocalRuntime node stage", () => {
       },
     );
     const startErr = rt.start().catch((e) => e);
-    await new Promise((r) => setTimeout(r, 5));
-    expect(stages).toContain("node");
-    const t0 = Date.now();
+    await vi.waitFor(() => expect(stages).toContain("node"));
+    // Read before stop(): the loop is confirmed running and nothing between
+    // this read and stop() can poll, so this count is the baseline.
+    const pollsAtStop = fetchHealth.mock.calls.length;
+    const maxPolls = pollsAtStop + 1;
     await rt.stop();
     expect(await startErr).toMatchObject({ code: "START_CANCELLED" });
-    expect(Date.now() - t0).toBeLessThan(1000);
+    // Start has settled, so the loop is finished and the count is final. Cancel
+    // ends the loop: at most the one poll already in flight may follow stop().
+    expect(fetchHealth.mock.calls.length).toBeLessThanOrEqual(maxPolls);
     expect(calls[calls.length - 1]).toBe(STOP);
   });
 
@@ -385,7 +401,7 @@ describe("LocalRuntime.starting", () => {
     });
     expect(rt.starting).toBe(false);
     const starting = rt.start();
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.waitFor(() => expect(calledWith(run, POD_STATE)).toBe(true));
     expect(rt.starting).toBe(true);
     releaseInspect();
     await starting;
@@ -451,9 +467,10 @@ describe("LocalRuntime stop and started semantics", () => {
       sleep: async () => {},
     });
     const startErr = rt.start().catch((e) => e);
-    await new Promise((r) => setTimeout(r, 5));
+    await vi.waitFor(() => expect(calls).toContain(POD_START));
     const stopping = rt.stop();
-    await new Promise((r) => setTimeout(r, 5));
+    // The gate holds the start open, so this is a drain, not a race.
+    await new Promise((r) => setImmediate(r));
     expect(calls).not.toContain(STOP);
     releasePodStart();
     await stopping;
@@ -492,7 +509,7 @@ describe("LocalRuntime cancellation", () => {
     });
     expect(rt.active).toBe(false);
     const starting = rt.start();
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.waitFor(() => expect(calledWith(run, POD_STATE)).toBe(true));
     expect(rt.started).toBe(false);
     expect(rt.active).toBe(true);
     releaseInspect();
@@ -501,7 +518,7 @@ describe("LocalRuntime cancellation", () => {
   });
 
   it("stop ends console polling promptly instead of waiting out the timeout", async () => {
-    const { rt, calls } = make(
+    const { rt, calls, fetchHealth } = make(
       {
         [MACHINE_LIST]: machines(true),
         [POD_STATE]: "Running",
@@ -517,9 +534,13 @@ describe("LocalRuntime cancellation", () => {
     );
     const starting = rt.start();
     const startErr = starting.catch((e) => e);
-    await new Promise((r) => setTimeout(r, 5));
+    await vi.waitFor(() => expect(fetchHealth).toHaveBeenCalled());
+    // Read before stop(), as in the node-stage twin above.
+    const pollsAtStop = fetchHealth.mock.calls.length;
+    const maxPolls = pollsAtStop + 1;
     await rt.stop();
     expect(await startErr).toMatchObject({ code: "START_CANCELLED" });
+    expect(fetchHealth.mock.calls.length).toBeLessThanOrEqual(maxPolls);
     expect(calls[calls.length - 1]).toBe(STOP);
   });
 
@@ -545,8 +566,10 @@ describe("LocalRuntime cancellation", () => {
       sleep: async () => {},
     });
     const startErr = rt.start().catch((e) => e);
-    await new Promise((r) => setTimeout(r, 0));
+    await vi.waitFor(() => expect(calls).toContain("machine start turnstone"));
     const stopping = rt.stop();
+    // The gate holds the start open, so this is a drain, not a race.
+    await new Promise((r) => setImmediate(r));
     releaseMachine();
     await stopping;
     expect(await startErr).toMatchObject({ code: "START_CANCELLED" });
@@ -594,12 +617,15 @@ describe("LocalRuntime node wait when the console drops", () => {
       {
         fetchHealth,
         healthTimeoutMs: 1000,
+        // Reads advance 10ms, so the 40ms node deadline is hit on the 4th node check.
         nodeTimeoutMs: 40,
-        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        step: 10,
       },
     );
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("HEALTH_TIMEOUT");
     expect(err.detail).toContain("stopped answering");
+    // One console poll (ok, nodes=0), then four node polls.
+    expect(fetchHealth).toHaveBeenCalledTimes(5);
   });
 });
