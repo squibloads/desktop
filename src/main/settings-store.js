@@ -1,5 +1,8 @@
+const LOCAL_CONSOLE_URL = "http://127.0.0.1:8090";
+
 const schema = {
-  mode: { type: "string", default: "both" }, // 'server', 'console', 'both'
+  mode: { type: "string", default: "both" }, // 'server', 'console', 'both', 'local'
+  quitBehavior: { type: "string", default: "stop" }, // local mode: 'stop' | 'keep'
   serverUrl: { type: "string", default: "http://localhost:8080" },
   consoleUrl: { type: "string", default: "http://localhost:8090" },
   windowBounds: {
@@ -41,8 +44,9 @@ class SettingsStore {
     this.store.set("serverUrl", v);
   }
 
+  // Local mode always talks to the pod's published port, whatever was saved.
   get consoleUrl() {
-    return this.store.get("consoleUrl");
+    return this.isLocal ? LOCAL_CONSOLE_URL : this.store.get("consoleUrl");
   }
   set consoleUrl(v) {
     this.store.set("consoleUrl", v);
@@ -69,11 +73,26 @@ class SettingsStore {
     this.store.set("hasLaunched", v);
   }
 
+  get quitBehavior() {
+    return this.store.get("quitBehavior");
+  }
+  set quitBehavior(v) {
+    if (v !== "stop" && v !== "keep") {
+      throw new Error(`invalid quitBehavior: ${v}`);
+    }
+    this.store.set("quitBehavior", v);
+  }
+
+  get isLocal() {
+    return this.mode === "local";
+  }
   get hasServer() {
     return this.mode === "server" || this.mode === "both";
   }
   get hasConsole() {
-    return this.mode === "console" || this.mode === "both";
+    return (
+      this.mode === "console" || this.mode === "both" || this.mode === "local"
+    );
   }
   get isSingleView() {
     return this.mode !== "both";
@@ -85,6 +104,7 @@ class SettingsStore {
       serverUrl: this.serverUrl,
       consoleUrl: this.consoleUrl,
       activeTab: this.activeTab,
+      quitBehavior: this.quitBehavior,
     };
   }
 }

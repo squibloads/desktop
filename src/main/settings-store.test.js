@@ -100,3 +100,44 @@ describe("SettingsStore", () => {
     });
   });
 });
+
+describe("SettingsStore local mode", () => {
+  function createLocal(initial = {}) {
+    const data = { mode: "local", quitBehavior: "stop", serverUrl: "http://x:1", consoleUrl: "http://y:2", ...initial };
+    return new SettingsStore({
+      get: (k) => data[k],
+      set: (k, v) => {
+        data[k] = v;
+      },
+    });
+  }
+
+  it("is console-only against the local pod, ignoring saved URLs", () => {
+    const s = createLocal();
+    expect(s.hasConsole).toBe(true);
+    expect(s.hasServer).toBe(false);
+    expect(s.isSingleView).toBe(true);
+    expect(s.isLocal).toBe(true);
+    expect(s.consoleUrl).toBe("http://127.0.0.1:8090");
+  });
+
+  it("keeps the saved consoleUrl for other modes", () => {
+    const s = createLocal({ mode: "both" });
+    expect(s.isLocal).toBe(false);
+    expect(s.consoleUrl).toBe("http://y:2");
+  });
+
+  it("defaults quitBehavior to stop and rejects unknown values", () => {
+    const s = createLocal();
+    expect(s.quitBehavior).toBe("stop");
+    s.quitBehavior = "keep";
+    expect(s.quitBehavior).toBe("keep");
+    expect(() => {
+      s.quitBehavior = "bogus";
+    }).toThrow();
+  });
+
+  it("getAll exposes quitBehavior", () => {
+    expect(createLocal().getAll().quitBehavior).toBe("stop");
+  });
+});
