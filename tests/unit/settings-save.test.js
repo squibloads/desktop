@@ -153,20 +153,22 @@ describe("planSettingsSave valid saves", () => {
 // notifications and reloaded views on a save that only edited a hidden field.
 describe("planSettingsSave URLs the mode does not use", () => {
   // Failure: an edited server field saved in console mode reconnects notifications to a server the mode does not show.
-  it("does not restart notifications in console mode when only the server field changed", () => {
+  it("does not restart notifications or reload the server view in console mode when only the server field changed", () => {
     const result = planSettingsSave(
       { mode: "console", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" },
       { mode: "console", serverUrl: NEW_SERVER_URL, consoleUrl: CONSOLE_URL },
     );
+    expect(result.reloadServer).toBe(false);
     expect(result.restartNotifications).toBe(false);
   });
 
   // Failure: an edited server field saved in local mode reconnects notifications to the remote server saved earlier.
-  it("does not restart notifications in local mode when only the server field changed", () => {
+  it("does not restart notifications or reload the server view in local mode when only the server field changed", () => {
     const result = planSettingsSave(
       { mode: "local", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" },
       { mode: "local", serverUrl: NEW_SERVER_URL },
     );
+    expect(result.reloadServer).toBe(false);
     expect(result.restartNotifications).toBe(false);
   });
 

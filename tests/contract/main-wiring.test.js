@@ -68,4 +68,15 @@ describe("main.js wiring", () => {
     const hits = main.match(/if \(windowOpenAction\(url\)\.open\) \{/g) || [];
     expect(hits.length).toBe(2);
   });
+
+  // Failure: a stopped notification manager stays in its variable, so the save handler restarts it and reconnects to the old server.
+  it("clears the notification manager before the window is rebuilt builds a new one", () => {
+    const fn = main.indexOf("function rebuildWindow() {");
+    const clear = main.indexOf("notifications = null;", fn);
+    const build = main.indexOf("notifications = new NotificationManager(settings);", fn);
+
+    expect(fn).toBeGreaterThan(-1);
+    expect(clear).toBeGreaterThan(fn);
+    expect(build).toBeGreaterThan(clear);
+  });
 });
