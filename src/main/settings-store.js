@@ -1,5 +1,8 @@
+const LOCAL_CONSOLE_URL = "http://127.0.0.1:8090";
+
 const schema = {
-  mode: { type: "string", default: "both" }, // 'server', 'console', 'both'
+  mode: { type: "string", default: "both" }, // 'server', 'console', 'both', 'local'
+  quitBehavior: { type: "string", enum: ["stop", "keep"], default: "stop" }, // local mode: 'stop' | 'keep'
   serverUrl: { type: "string", default: "http://localhost:8080" },
   consoleUrl: { type: "string", default: "http://localhost:8090" },
   windowBounds: {
@@ -41,8 +44,9 @@ class SettingsStore {
     this.store.set("serverUrl", v);
   }
 
+  // Local mode always talks to the pod's published port, whatever was saved.
   get consoleUrl() {
-    return this.store.get("consoleUrl");
+    return this.isLocal ? LOCAL_CONSOLE_URL : this.store.get("consoleUrl");
   }
   set consoleUrl(v) {
     this.store.set("consoleUrl", v);
@@ -69,11 +73,32 @@ class SettingsStore {
     this.store.set("hasLaunched", v);
   }
 
+  // conf fills schema defaults on read, so an absent key reads as "stop".
+  // Anything else that is not stop/keep is a failed read and throws.
+  get quitBehavior() {
+    const raw = this.store.get("quitBehavior");
+    if (raw !== "stop" && raw !== "keep") {
+      throw new Error(`invalid quitBehavior in settings store: ${raw}`);
+    }
+    return raw;
+  }
+  set quitBehavior(v) {
+    if (v !== "stop" && v !== "keep") {
+      throw new Error(`invalid quitBehavior: ${v}`);
+    }
+    this.store.set("quitBehavior", v);
+  }
+
+  get isLocal() {
+    return this.mode === "local";
+  }
   get hasServer() {
     return this.mode === "server" || this.mode === "both";
   }
   get hasConsole() {
-    return this.mode === "console" || this.mode === "both";
+    return (
+      this.mode === "console" || this.mode === "both" || this.mode === "local"
+    );
   }
   get isSingleView() {
     return this.mode !== "both";
@@ -83,8 +108,11 @@ class SettingsStore {
     return {
       mode: this.mode,
       serverUrl: this.serverUrl,
-      consoleUrl: this.consoleUrl,
+      // Raw saved value: the getter returns the local pod URL in local mode,
+      // and saving that back would overwrite the user's remote Console URL.
+      consoleUrl: this.store.get("consoleUrl"),
       activeTab: this.activeTab,
+      quitBehavior: this.quitBehavior,
     };
   }
 }
