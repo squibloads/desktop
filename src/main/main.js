@@ -187,7 +187,10 @@ function recoverView(view, getUrl) {
   // A local start owns the console view while it runs: loading the console
   // now would replace the loading page with one whose node is not up.
   if (localConsole && localRuntime && localRuntime.starting) return;
-  if (recoveryAction(wc.getURL()) === "reload") {
+  // Local mode: a reload of a console the health poller sees as down just
+  // fails again (the pod is stopped), so go through the local start instead.
+  const consoleDown = localConsole && healthPoller && healthPoller.status.console !== "ok";
+  if (recoveryAction(wc.getURL()) === "reload" && !consoleDown) {
     wc.reload();
   } else if (localConsole) {
     // Our own local error/loading page is showing: re-run the local start
