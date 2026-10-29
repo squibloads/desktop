@@ -1,8 +1,9 @@
-const { Notification } = require("electron");
-
+// electron is not required at the top: the tests run under plain Node and inject
+// Notification. The lazy require below only runs in the real app.
 class NotificationManager {
-  constructor(settings) {
+  constructor(settings, { Notification } = {}) {
     this.settings = settings;
+    this._Notification = Notification;
     this.controller = null;
     this.retryDelay = 1000;
     this.running = false;
@@ -99,6 +100,7 @@ class NotificationManager {
   }
 
   _notify(title, body) {
+    const Notification = this._Notification ?? require("electron").Notification;
     if (!Notification.isSupported()) return;
     new Notification({ title: `Turnstone: ${title}`, body }).show();
   }
