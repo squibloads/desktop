@@ -1,7 +1,6 @@
 // External file: the loading page runs under a CSP that blocks inline scripts.
-// The page starts on the first stage because a stage emitted before this
-// listener attaches is not replayed; the start sequence is slow enough that
-// the first visible state is the right one.
+// The page starts on the first stage; the main process replays the current
+// stage once this page has loaded, so a late attach still catches up.
 const STAGE_ORDER = ['machine', 'pod', 'console', 'node'];
 const STAGE_LABELS = {
   machine: 'Starting the Podman machine',

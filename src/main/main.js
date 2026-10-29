@@ -176,11 +176,18 @@ function showLocalLoading(view) {
   const wc = view.webContents;
   // Stages sent before the page attached are lost; replay the current one
   // once this load finishes. A superseded load never fires it.
-  wc.once("did-finish-load", () => {
-    if (wc.isDestroyed() || !localRuntime || !localRuntime.starting) return;
+  // Stay registered across unrelated loads until the loading page itself
+  // finishes (or the start is over), so a stray load cannot eat the replay.
+  const replay = () => {
+    if (wc.isDestroyed() || !localRuntime || !localRuntime.starting) {
+      if (!wc.isDestroyed()) wc.removeListener("did-finish-load", replay);
+      return;
+    }
     if (!wc.getURL().endsWith("local-loading.html")) return;
+    wc.removeListener("did-finish-load", replay);
     if (localRuntime.stage) wc.send("turnstone:local-progress", localRuntime.stage);
-  });
+  };
+  wc.on("did-finish-load", replay);
   // A navigation superseded by a newer one rejects; that is not an error.
   wc.loadFile(LOCAL_LOADING_PAGE).catch(() => {});
 }
@@ -221,6 +228,7 @@ async function startLocalRuntime() {
     // rather than strand the user on an error page for a node that may
     // register moments later.
     if (err.code === "NODE_TIMEOUT") {
+      console.warn(`${err.userMessage} (${err.detail})`);
       loadLocalConsole(view);
       return;
     }

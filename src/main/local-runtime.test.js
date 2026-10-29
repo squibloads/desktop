@@ -423,7 +423,7 @@ describe("LocalRuntimeError messages", () => {
 
   it("NODE_TIMEOUT says the console is up and the node is not", () => {
     expect(new LocalRuntimeError("NODE_TIMEOUT", "x").userMessage).toBe(
-      "Turnstone is running, but its node has not come online yet. Retry in a moment.",
+      "Turnstone is running, but its node has not come online yet; opening the console anyway.",
     );
   });
 });
@@ -580,5 +580,26 @@ describe("LocalRuntime stage", () => {
     await rt.start();
     expect(seen).toEqual(["machine", "pod", "console", "node"]);
     expect(rt.stage).toBe("node");
+  });
+});
+
+describe("LocalRuntime node wait when the console drops", () => {
+  it("reports HEALTH_TIMEOUT, not NODE_TIMEOUT, if the console stops answering", async () => {
+    const fetchHealth = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "ok", nodes: 0 })
+      .mockResolvedValue(null);
+    const { rt } = make(
+      { [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" },
+      {
+        fetchHealth,
+        healthTimeoutMs: 1000,
+        nodeTimeoutMs: 40,
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      },
+    );
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("HEALTH_TIMEOUT");
+    expect(err.detail).toContain("stopped answering");
   });
 });

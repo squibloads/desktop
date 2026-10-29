@@ -21,7 +21,7 @@ const USER_MESSAGES = {
   HEALTH_TIMEOUT:
     "Turnstone started but did not become healthy before the timeout.",
   NODE_TIMEOUT:
-    "Turnstone is running, but its node has not come online yet. Retry in a moment.",
+    "Turnstone is running, but its node has not come online yet; opening the console anyway.",
 };
 
 class LocalRuntimeError extends Error {
@@ -274,6 +274,14 @@ class LocalRuntime {
       }
       last = describeHealth(health);
       if (Date.now() >= deadline) {
+        // The console dropped while we waited: that is a health failure, not
+        // a late node, and must not be mistaken for "console up, nodes=0".
+        if (health === null || health.status !== "ok") {
+          throw new LocalRuntimeError(
+            "HEALTH_TIMEOUT",
+            `${this.healthUrl} stopped answering during the node wait (last seen: ${last})`,
+          );
+        }
         throw new LocalRuntimeError(
           "NODE_TIMEOUT",
           `${this.healthUrl} console ready but node not registered after ${this.nodeTimeoutMs}ms (last seen: ${last})`,

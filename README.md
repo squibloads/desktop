@@ -48,7 +48,7 @@ git push origin v0.1.0
 
 ## Local mode
 
-Local mode runs Turnstone on this PC in a Podman pod and opens its console at `http://127.0.0.1:8090`. On launch the app starts the `turnstone` Podman machine if it is stopped, starts the `turnstone` pod, and waits for `/health` and for its node to register before loading the console. The app shows a loading screen until the node registers.
+Local mode runs Turnstone on this PC in a Podman pod and opens its console at `http://127.0.0.1:8090`. On launch the app starts the `turnstone` Podman machine if it is stopped, starts the `turnstone` pod, and waits for `/health` and for its node to register before loading the console. The app shows a loading screen until the node registers; if the node is still missing after three minutes it opens the console anyway.
 
 **When the app quits** (Settings): *Stop Turnstone* runs `podman pod stop turnstone`; *Keep Turnstone running* leaves the pod up so the next launch is instant.
 
