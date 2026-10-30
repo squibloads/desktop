@@ -51,9 +51,12 @@ class HealthPoller {
   }
 
   async _checkHealth(baseUrl) {
+    // Aborting the request is what closes its connection. Electron's fetch keeps the connection open when only
+    // the body is cancelled.
+    const controller = new AbortController();
     try {
       const resp = await this._fetch(`${baseUrl}/health`, {
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
         // A redirect is not followed: a server answers /health itself, and a redirect would send the check elsewhere.
         redirect: "manual",
       });
@@ -61,13 +64,9 @@ class HealthPoller {
         const data = await resp.json();
         return data.status === "ok" ? "ok" : "degraded";
       }
-      // A non-OK answer, a redirect included, is never read. Its body is cancelled before the answer is
-      // reported, so the next poll never starts while this connection is still open.
-      try {
-        await resp.body?.cancel();
-      } catch {
-        // A body that will not cancel still leaves the answer as an error.
-      }
+      // A non-OK answer, a redirect included, is never read, so its request is aborted before the answer is
+      // reported.
+      controller.abort();
       return "error";
     } catch (err) {
       // A redirect is an answer from the server, so a refused one reads as an error, as the redirect response

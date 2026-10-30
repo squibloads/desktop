@@ -57,13 +57,10 @@ class NotificationManager {
       if (generation !== this.generation) return;
 
       if (!resp.ok || !resp.body) {
-        // Nothing reads a non-OK answer. Each retry replaces the controller that stop() aborts, so the body
-        // is cancelled first, and the retry is scheduled only once that has finished.
-        try {
-          await resp.body?.cancel();
-        } catch {
-          // A body that will not cancel still leaves the answer as a failure.
-        }
+        // Nothing reads a non-OK answer, and the retry replaces the controller that stop() aborts, so the
+        // request is aborted here. That closes its connection, which cancelling the body does not do under
+        // Electron's fetch.
+        controller.abort();
         throw new Error(`HTTP ${resp.status}`);
       }
 
