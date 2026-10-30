@@ -16,8 +16,16 @@ function der(tag, content) {
 
 const sequence = (...items) => der(0x30, Buffer.concat(items));
 const set = (...items) => der(0x31, Buffer.concat(items));
-// A leading zero keeps a value whose top bit is set from reading as negative.
-const integer = (bytes) => der(0x02, bytes[0] & 0x80 ? Buffer.concat([Buffer.from([0]), bytes]) : bytes);
+// DER keeps an integer to its fewest bytes, so a leading zero byte is dropped, except before a byte whose top bit
+// is set: there one zero keeps the value from reading as negative.
+function integer(bytes) {
+  let start = 0;
+  while (start < bytes.length - 1 && bytes[start] === 0 && (bytes[start + 1] & 0x80) === 0) start += 1;
+  const minimal = bytes.subarray(start);
+  return der(0x02, minimal[0] & 0x80 ? Buffer.concat([Buffer.from([0]), minimal]) : minimal);
+}
+// tests/contract/self-signed-cert.test.js checks the encoding byte by byte.
+export { integer as derInteger };
 const objectId = (bytes) => der(0x06, Buffer.from(bytes));
 const utf8 = (text) => der(0x0c, Buffer.from(text, "utf8"));
 const octets = (bytes) => der(0x04, bytes);
