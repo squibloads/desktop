@@ -1,18 +1,22 @@
 // Validation and decision for the save-settings IPC handler. Kept free of
 // Electron so the rules can be tested; the handler performs the side effects.
 
+const { LOOPBACK_HOSTS } = require("./runtime-config.js");
+
 const MODES = ["server", "console", "both", "local"];
 
 /**
- * Only http and https can be shown in a view. Anything else is refused before
- * it reaches loadURL, where a file: or javascript: address would be loaded.
+ * Only https can reach a remote host, and http only reaches this computer. Anything
+ * else is refused before it reaches loadURL, where a file: or javascript: address
+ * would be loaded. Plain http to a remote host would send logins unencrypted.
  */
 function isValidUrl(str) {
   // new URL() turns an array into its text, so a non-string is refused here, before any write.
   if (typeof str !== "string") return false;
   try {
     const u = new URL(str);
-    return u.protocol === "http:" || u.protocol === "https:";
+    if (u.protocol === "https:") return true;
+    return u.protocol === "http:" && LOOPBACK_HOSTS.includes(u.hostname);
   } catch {
     return false;
   }
@@ -38,10 +42,10 @@ function planSettingsSave(current, incoming) {
 
   if (!MODES.includes(mode)) return { error: "Invalid mode" };
   if (needsServer && !isValidUrl(incoming.serverUrl)) {
-    return { error: "Invalid Server URL — must be http:// or https://" };
+    return { error: "Invalid Server URL — must be https:// (http:// only on this computer)" };
   }
   if (needsConsole && !isValidUrl(incoming.consoleUrl)) {
-    return { error: "Invalid Console URL — must be http:// or https://" };
+    return { error: "Invalid Console URL — must be https:// (http:// only on this computer)" };
   }
   if (
     incoming.quitBehavior !== undefined &&

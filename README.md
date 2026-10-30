@@ -29,7 +29,7 @@ Open Settings with `Ctrl+,` (`Cmd+,` on macOS). The dialog has these fields:
 | Field | Default | Shown in | What it does | Rules |
 |---|---|---|---|---|
 | **Mode** | Both | Always | Chooses which views load, which health dots show, and whether notifications run. | One of Server Only, Console Only, Both, Local. |
-| **Server URL** | `http://localhost:8080` | Server Only, Both | Address of the Turnstone server. Loads the Server view, is health-checked, and is the source for notifications. | Required in these modes. Must start with `http://` or `https://`. Trailing slashes are removed. |
+| **Server URL** | `http://localhost:8080` | Server Only, Both | Address of the Turnstone server. Loads the Server view, is health-checked, and is the source for notifications. | Required in these modes. Must start with `https://`, or with `http://` for this computer only (`localhost`, `127.0.0.1` or `[::1]`). Trailing slashes are removed. |
 | **Console URL** | `http://localhost:8090` | Console Only, Both | Address of the Console. Loads the Console view and is health-checked. | Required in these modes. Same rules as Server URL. |
 | **When the app quits** | Stop Turnstone | Local only | Whether the Local pod is stopped when the app quits. See [Local mode](#local-mode). | Stop Turnstone or Keep Turnstone running. |
 

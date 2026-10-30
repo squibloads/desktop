@@ -199,7 +199,7 @@ describe("planSettingsSave refused saves", () => {
       serverUrl: ["http://127.0.0.1:8080"],
       consoleUrl: CONSOLE_URL,
     });
-    expect(result).toEqual({ error: "Invalid Server URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: an unknown mode string is written to the store and the next launch shows a blank window.
@@ -215,7 +215,7 @@ describe("planSettingsSave refused saves", () => {
       serverUrl: "ftp://files.example.com/",
       consoleUrl: CONSOLE_URL,
     });
-    expect(result).toEqual({ error: "Invalid Server URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: a javascript: or file: console address is saved and loaded into the console view.
@@ -225,13 +225,13 @@ describe("planSettingsSave refused saves", () => {
       serverUrl: SERVER_URL,
       consoleUrl: "javascript:alert(1)",
     });
-    expect(result).toEqual({ error: "Invalid Console URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Console URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: server mode saves with the server address blank and the window opens on an empty page.
   it("refuses a missing server URL in server mode", () => {
     const result = planSettingsSave(savedBoth(), { mode: "server" });
-    expect(result).toEqual({ error: "Invalid Server URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: a bad server address in an unused field is reported while the mode itself is unknown.
@@ -273,10 +273,40 @@ describe("isValidUrl", () => {
   );
 
   // Failure: a valid server address is rejected and the user cannot save a working setup.
-  it.each(["http://127.0.0.1:8080/", "https://server.example.com:8443/console", "http://localhost:8090"])(
-    "accepts %s",
+  it.each([
+    "http://127.0.0.1:8080/",
+    "https://server.example.com:8443/console",
+    "http://localhost:8090",
+    "https://192.168.1.20:8443",
+    "http://[::1]:8090/",
+  ])("accepts %s", (url) => {
+    expect(isValidUrl(url)).toBe(true);
+  });
+
+  // Failure: a remote address over plain http is accepted, so the login and the session travel unencrypted.
+  it.each(["http://192.168.1.20:8080", "http://server.example.com:8443/", "http://example.com"])(
+    "rejects plain http to a remote host: %s",
     (url) => {
-      expect(isValidUrl(url)).toBe(true);
+      expect(isValidUrl(url)).toBe(false);
+    },
+  );
+
+  // Failure: a remote host that only contains a loopback name passes as loopback, so plain http reaches the remote server.
+  it.each([
+    "http://localhost.evil.example",
+    "http://evil.example/localhost",
+    "http://localhost@evil.example",
+    "http://127.0.0.1.evil.example",
+    "http://evil.example/?host=127.0.0.1",
+  ])("rejects a loopback look-alike: %s", (url) => {
+    expect(isValidUrl(url)).toBe(false);
+  });
+
+  // Failure: a loopback host on a non-http scheme passes, so the scheme check is lost.
+  it.each(["ftp://localhost:21", "ws://localhost:8080", "file://127.0.0.1/share/x"])(
+    "rejects a non-http scheme on loopback: %s",
+    (url) => {
+      expect(isValidUrl(url)).toBe(false);
     },
   );
 
@@ -291,6 +321,26 @@ describe("isValidUrl", () => {
   // Failure: a missing field from the renderer crashes the save handler instead of returning a message.
   it.each([undefined, null])("rejects a missing value (%s) without throwing", (value) => {
     expect(isValidUrl(value)).toBe(false);
+  });
+});
+
+describe("planSettingsSave plain http", () => {
+  // Failure: a remote server saved over plain http is accepted, so the login crosses the network unencrypted.
+  it("refuses a remote server over plain http", () => {
+    const result = planSettingsSave(savedBoth(), { mode: "server", serverUrl: "http://192.168.1.20:8080" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
+  });
+
+  // Failure: a remote console over plain http is accepted, so the console login crosses the network unencrypted.
+  it("refuses a remote console over plain http", () => {
+    const result = planSettingsSave(savedBoth(), { mode: "console", consoleUrl: "http://console.example.com:8090" });
+    expect(result).toEqual({ error: "Invalid Console URL — must be https:// (http:// only on this computer)" });
+  });
+
+  // Failure: plain http to this computer is refused, so the local server cannot be saved.
+  it("accepts plain http to localhost", () => {
+    const result = planSettingsSave(savedBoth(), { mode: "server", serverUrl: "http://localhost:8080" });
+    expect(result.error).toBeUndefined();
   });
 });
 
