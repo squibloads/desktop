@@ -52,6 +52,11 @@ tier fails it.
   with a settable status and node count. It counts health reads, so a test can
   wait for the app to poll without a fixed delay. A bind refused because the port
   is still in use is retried 20 times, 100 ms apart, before the start fails.
+- `self-signed-cert.js` exports `selfSignedCert()`, a certificate for 127.0.0.1
+  and its key, made at test time with `node:crypto` so none is stored in the
+  repository. Nothing trusts it by default. `tests/e2e/main-requests.test.js`
+  tells the session to accept it, to check that the main process trusts what
+  the session trusts.
 - `launch-app.js` exports `launchApp()`, which seeds a fresh user-data
   directory, launches the app, and returns a handle with `findPage`,
   `windowUrls`, `readPodmanLog`, `setPodmanState`, `clickMenuItem` and `close`.

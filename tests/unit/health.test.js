@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // Import the module under test
 const { HealthPoller } = require("../../src/main/health.js");
 
+// The poller's own fetch goes through Electron's network stack, which these Node tests do not have.
+// The tests stub the global fetch, and each poller is given a fetch that calls it.
+const viaGlobalFetch = (url, init) => fetch(url, init);
+
 describe("HealthPoller", () => {
   let poller;
   let onUpdate;
@@ -35,6 +39,7 @@ describe("HealthPoller", () => {
     poller = new HealthPoller(
       makeSettings({ hasServer: false, serverRefused: true, serverUrl: "http://192.168.1.20:8080", hasConsole: false }),
       onUpdate,
+      { fetch: viaGlobalFetch },
     );
 
     await poller.poll();
@@ -48,7 +53,7 @@ describe("HealthPoller", () => {
   it("does not follow a redirect, and reports it as not healthy", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, json: () => Promise.resolve({}) });
     vi.stubGlobal("fetch", fetchMock);
-    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
 
     await poller.poll();
 
@@ -62,7 +67,7 @@ describe("HealthPoller", () => {
     const cancel = vi.fn().mockResolvedValue(undefined);
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } });
     vi.stubGlobal("fetch", fetchMock);
-    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
 
     await poller.poll();
 
@@ -77,7 +82,7 @@ describe("HealthPoller", () => {
       finishCancel = resolve;
     }));
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } }));
-    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
 
     const polling = poller.poll();
     await vi.advanceTimersByTimeAsync(0);
@@ -98,7 +103,7 @@ describe("HealthPoller", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -119,7 +124,7 @@ describe("HealthPoller", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -133,13 +138,23 @@ describe("HealthPoller", () => {
     );
   });
 
+  // Failure: Electron's fetch fails a redirect it does not follow, so a server that answers with a redirect reads as disconnected, as if it were down.
+  it("reports a refused redirect as an error, not as disconnected", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Redirect was cancelled"));
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: fetchMock });
+
+    await poller.poll();
+
+    expect(poller.status.server).toBe("error");
+  });
+
   it("reports disconnected on fetch error", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(onUpdate).toHaveBeenCalledWith(
@@ -154,7 +169,7 @@ describe("HealthPoller", () => {
       vi.fn().mockResolvedValue({ ok: false, status: 500 }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(onUpdate).toHaveBeenCalledWith(
@@ -172,7 +187,7 @@ describe("HealthPoller", () => {
       }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(onUpdate).toHaveBeenCalledWith(
@@ -190,7 +205,7 @@ describe("HealthPoller", () => {
       }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
     expect(onUpdate).toHaveBeenCalledTimes(1);
 
@@ -214,7 +229,7 @@ describe("HealthPoller", () => {
       }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll(); // ok -> fires
     await poller.poll(); // still ok -> no fire
     await poller.poll(); // disconnected -> fires

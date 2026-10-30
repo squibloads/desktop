@@ -1,7 +1,11 @@
+const { sessionFetch, isRefusedRedirect } = require("./session-fetch.js");
+
 class HealthPoller {
-  constructor(settings, onUpdate) {
+  // The tests pass their own fetch; the app uses the session's network stack.
+  constructor(settings, onUpdate, { fetch = sessionFetch } = {}) {
     this.settings = settings;
     this.onUpdate = onUpdate;
+    this._fetch = fetch;
     this.status = { server: "unknown", console: "unknown" };
     this.interval = null;
   }
@@ -48,7 +52,7 @@ class HealthPoller {
 
   async _checkHealth(baseUrl) {
     try {
-      const resp = await fetch(`${baseUrl}/health`, {
+      const resp = await this._fetch(`${baseUrl}/health`, {
         signal: AbortSignal.timeout(3000),
         // A redirect is not followed: a server answers /health itself, and a redirect would send the check elsewhere.
         redirect: "manual",
@@ -65,8 +69,10 @@ class HealthPoller {
         // A body that will not cancel still leaves the answer as an error.
       }
       return "error";
-    } catch {
-      return "disconnected";
+    } catch (err) {
+      // A redirect is an answer from the server, so a refused one reads as an error, as the redirect response
+      // did when it came back. Any other failure means the server could not be reached.
+      return isRefusedRedirect(err) ? "error" : "disconnected";
     }
   }
 }
