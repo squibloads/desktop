@@ -132,6 +132,19 @@ describe("NotificationManager SSE parser", () => {
     expect(notifySpy.mock.calls).toEqual([]);
   });
 
+  // Failure: a non-OK answer's body is never cancelled, so each retry leaves a connection open that the next stop() cannot abort.
+  it("cancels the body of a non-OK response before it reconnects", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } });
+    vi.stubGlobal("fetch", fetchMock);
+
+    manager = createManager();
+    manager.running = true;
+    await manager._connect(manager.generation);
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   // Failure: a stream redirected to another origin is followed, so alerts arrive from a server the user never configured, over plain http.
   it("does not follow a redirect on the event stream", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: null });

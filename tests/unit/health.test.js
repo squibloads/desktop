@@ -57,6 +57,19 @@ describe("HealthPoller", () => {
     vi.unstubAllGlobals();
   });
 
+  // Failure: a redirect's body is never read or cancelled, so each poll leaves its connection open until garbage collection.
+  it("cancels the body of a redirect response, so its connection is released", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } });
+    vi.stubGlobal("fetch", fetchMock);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+
+    await poller.poll();
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
+  });
+
   it("polls both servers when both enabled", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
