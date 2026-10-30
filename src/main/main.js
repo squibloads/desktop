@@ -43,6 +43,10 @@ let quitting = false;
 
 // ─── Window Creation ─────────────────────────────────────────────────────
 
+/**
+ * Builds the window and the views for the current mode. A configured address the rule refuses
+ * is shown as the refusal page, never loaded (see loadConfigured).
+ */
 function createMainWindow() {
   const bounds = settings.windowBounds;
   const isMac = process.platform === "darwin";
@@ -253,8 +257,11 @@ function setupFailHandler(view, getUrl) {
   );
 }
 
-// A reload repeats the current page, which after a failure is our error page.
-// The decision lives in planRecovery; this only carries it out.
+/**
+ * Brings a view back after its backend returns. A reload repeats the current page, which after a
+ * failure is our error page, so the decision comes from planRecovery and the address is loaded
+ * through loadConfigured. A refused address is never reloaded.
+ */
 function recoverView(view, getUrl) {
   const wc = view.webContents;
   if (wc.isDestroyed()) return;
@@ -335,6 +342,10 @@ function sendLocalProgress(stage) {
   }
 }
 
+/**
+ * Loads the local console into a view that is still alive. The console URL comes from settings
+ * and goes through loadConfigured like every other load, so a refused address is never loaded here.
+ */
 function loadLocalConsole(view) {
   if (view && !view.webContents.isDestroyed()) {
     loadConfigured(view, settings.consoleUrl);
@@ -460,6 +471,10 @@ function openSettings() {
 
 // ─── Rebuild Window ──────────────────────────────────────────────────────
 
+/**
+ * Replaces the window when the mode changes. Notifications are applied before the old window
+ * closes, so the old mode stops alerting even if the rebuild throws halfway.
+ */
 function rebuildWindow() {
   // Apply the new mode's notifications before the window is rebuilt. If the
   // rebuild throws, the new mode is already saved, so its notifications must
@@ -589,6 +604,10 @@ ipcMain.on("turnstone:window-close", () => {
 
 // ─── Health Polling ──────────────────────────────────────────────────────
 
+/**
+ * Starts the health poller on the reachable settings, so a refused address is reported as
+ * refused and never polled.
+ */
 function setupHealthPoller() {
   healthPoller = new HealthPoller(reachable, (status, prev) => {
     // Send to shell renderer
