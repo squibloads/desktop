@@ -310,6 +310,11 @@ ${appOutput || "(none)"}`);
     close,
     windowUrls: () => app.windows().map((w) => w.url()),
     /**
+     * Runs a function in the main process, with Electron's modules as its first argument. Tests use it
+     * to observe main-process state that no page can see, such as a session's downloads.
+     */
+    mainEvaluate: (fn, arg) => app.evaluate(fn, arg),
+    /**
      * Windows the main process holds. A quit app holds none and its connection is gone, so an error
      * is read as zero rather than thrown.
      */
