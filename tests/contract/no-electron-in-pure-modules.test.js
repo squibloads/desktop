@@ -21,6 +21,7 @@ const PURE_MODULES = [
   "notifications.js",
   "runtime-config.js",
   "permissions.js",
+  "redirect-refusals.js",
 ];
 
 // A line starting at column 0 with a require or import of "electron". Indented

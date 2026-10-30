@@ -46,6 +46,8 @@ class NotificationManager {
         {
           headers: { Accept: "text/event-stream" },
           signal: controller.signal,
+          // A redirect is not followed: the stream must come from the configured server, not wherever it points.
+          redirect: "manual",
         },
       );
       // A stale answer must not touch the backoff the live loop is using.

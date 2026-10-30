@@ -13,6 +13,14 @@ if (params.get('reason') === 'insecure') {
   document.getElementById('btn-retry').style.display = 'none';
 }
 
+// A redirect to another site was cancelled. Retry stays, because the address itself may be fine.
+if (params.get('reason') === 'redirect') {
+  document.getElementById('error-title').textContent = 'Redirect refused';
+  document.getElementById('error-detail-text').textContent =
+    'This address redirected to another site, and Turnstone did not follow the redirect.';
+  document.getElementById('error-hint').style.display = 'none';
+}
+
 document.getElementById('btn-retry').addEventListener('click', () => {
   if (failedUrl) window.location.href = failedUrl;
 });

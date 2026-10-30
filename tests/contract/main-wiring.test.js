@@ -47,6 +47,22 @@ const shapes = [
   ["loader checks the address before loading", "if (isValidUrl(url)) {"],
   // Failure: the reload on the refusal page loads the stored address directly, so Ctrl+R goes to the refused address.
   ["recovery loads through the refusal guard", "loadConfigured(view, getUrl());"],
+  // Failure: a main-frame request to another origin is not cancelled, so a redirect loads it in the view.
+  ["session request guard is installed", "session.defaultSession.webRequest.onBeforeRequest("],
+  ["request guard uses the view rule", "requestAllowed(details, viewIds, () => settings)"],
+  // Failure: the server view is recorded with the console's id, so each view is checked against the other's address.
+  ["server view id is the server's", "server: serverView ? serverView.webContents.id : null,"],
+  ["console view id is the console's", "console: consoleView ? consoleView.webContents.id : null,"],
+  ["request guard answers with the decision", "callback({ cancel: !allowed });"],
+  // Failure: a cancelled redirect is shown as a connection error, so the user looks for an outage that is not there.
+  ["cancelled redirect shows the redirect refusal", "redirectRefusals.matches(view.webContents.id, validatedURL)"],
+  // Failure: the cancelled load is not remembered, so the view shows a connection error instead of the redirect refusal.
+  ["cancelled redirect is remembered", "if (!allowed) redirectRefusals.refuse(details.webContentsId, details.url);"],
+  // Failure: a refusal outlives the navigation that caused it, so a later outage of the same address reads as a refused redirect.
+  ["refusals clear when a navigation starts", 'view.webContents.on("did-start-navigation"'],
+  ["a new navigation clears an earlier refusal", "if (isMainFrame) redirectRefusals.navigationStarted(view.webContents.id);"],
+  // Failure: a failure in a subframe with the refused address reads as a refused redirect.
+  ["refusal match is limited to the main frame", "isMainFrame && redirectRefusals.matches("],
 ];
 
 describe("main.js wiring", () => {
@@ -129,7 +145,7 @@ describe("main.js wiring", () => {
 
   // Failure: the install call is moved onto another line or behind a false guard, so the policy is never installed, or is installed after the settings read.
   it("calls the permission policy as its own statement, right before the settings read", () => {
-    expect(main).toMatch(/\n {2}installPermissionPolicy\(\);\r?\n {2}settings = await SettingsStore\.create\(\);/);
+    expect(main).toMatch(/\n {2}installPermissionPolicy\(\);\r?\n {2}installRequestGuard\(\);\r?\n {2}settings = await SettingsStore\.create\(\);/);
   });
 
   // Failure: the two branches of the loader are swapped, or the refusal loses its reason, so a refused address is loaded or the refusal is unexplained.

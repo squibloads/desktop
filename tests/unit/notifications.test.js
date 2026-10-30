@@ -132,6 +132,19 @@ describe("NotificationManager SSE parser", () => {
     expect(notifySpy.mock.calls).toEqual([]);
   });
 
+  // Failure: a stream redirected to another origin is followed, so alerts arrive from a server the user never configured, over plain http.
+  it("does not follow a redirect on the event stream", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: null });
+    vi.stubGlobal("fetch", fetchMock);
+
+    manager = createManager();
+    manager.running = true;
+    await manager._connect(manager.generation);
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+    expect(notifySpy.mock.calls).toEqual([]);
+  });
+
   // Failure: a data payload split over several data: lines is dropped, so the alert is lost.
   it("handles multi-line data fields per SSE spec", async () => {
     const sse = `event: ws_state\ndata: {"state":\ndata: "attention","name":"ws"}\n\n`;
