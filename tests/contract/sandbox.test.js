@@ -20,7 +20,7 @@ function prefsBlocks(source) {
 
 // The block's code with line comments removed, so a commented-out flag cannot satisfy the pin.
 function code(block) {
-  return block.replace(/\/\/.*$/gm, "");
+  return block.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
 // Every value the block assigns to a key. A second key, a spread or a duplicate would add to this list.
@@ -37,13 +37,17 @@ describe("renderer sandbox", () => {
     // Assigning the flag after construction would bypass every block above.
     expect(MAIN).not.toMatch(/\.sandbox\s*=/);
     for (const block of blocks) {
+      // A spread can carry a false flag that no literal in the block shows.
+      expect(code(block)).not.toMatch(/\.\.\./);
       expect(valuesOf(block, "sandbox")).toEqual(["true"]);
     }
   });
 
   // Failure: the sandbox pin is present but a node integration flag turns the renderer back into a Node process, so the pin protects nothing.
   it("keeps node integration off in every web preferences block", () => {
+    expect(MAIN).not.toMatch(/\.nodeIntegration\s*=/);
     for (const block of prefsBlocks(MAIN)) {
+      expect(code(block)).not.toMatch(/\.\.\./);
       expect(valuesOf(block, "nodeIntegration")).toEqual(["false"]);
     }
   });
