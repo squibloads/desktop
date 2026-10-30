@@ -13,7 +13,7 @@ const shapes = [
   // Failure: a wrong tab bar size shifts or clips the whole window.
   ["tab bar bounds", "tabBarBounds(width, TAB_BAR_HEIGHT)"],
   // Failure: a fixed answer lets any window trigger the local start.
-  ["retry sender check", "senderIsConsole: hasConsoleView && isFromWindow(event, consoleView.webContents)"],
+  ["retry sender check", "senderIsConsole: hasConsoleView && isFromAppPage(event, [() => consoleView.webContents], APP_PAGE_ROOT)"],
   // Failure: ignoring the configured URL lets the page navigate anywhere.
   ["navigation setting", "if (!isNavigationAllowed(allowedUrl, url)) {"],
   ["allowed url source", "allowedUrl = settings[settingKey];"],
@@ -64,6 +64,27 @@ const shapes = [
   // Failure: a failure in a subframe with the refused address reads as a refused redirect.
   ["refusal match is limited to the main frame", "isMainFrame && redirectRefusals.matches("],
 ];
+
+// Each bridge handler and the one sender check it must make, with the windows it allows. The check is
+// read from the handler's own block, so a check placed in another handler does not satisfy it.
+const SHELL_ONLY = "isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)";
+const SENDER_CHECKS = {
+  "turnstone:get-settings": "isFromAppPage(event, [() => shellView && shellView.webContents, () => settingsWindow && settingsWindow.webContents], APP_PAGE_ROOT)",
+  "turnstone:save-settings": "isFromAppPage(event, [() => settingsWindow && settingsWindow.webContents], APP_PAGE_ROOT)",
+  "turnstone:switch-tab": SHELL_ONLY,
+  "turnstone:retry-local": "isFromAppPage(event, [() => consoleView.webContents], APP_PAGE_ROOT)",
+  "turnstone:settings-resize": "isFromAppPage(event, [() => settingsWindow.webContents], APP_PAGE_ROOT)",
+  "turnstone:open-settings": "isFromAppPage(event, [() => serverView && serverView.webContents, () => consoleView && consoleView.webContents], APP_PAGE_ROOT)",
+  "turnstone:window-minimize": SHELL_ONLY,
+  "turnstone:window-maximize": SHELL_ONLY,
+  "turnstone:window-close": SHELL_ONLY,
+};
+
+function handlerBlock(text, channel) {
+  const start = text.search(new RegExp(`ipcMain\\.(?:handle|on)\\("${channel}"`));
+  if (start < 0) return null;
+  return text.slice(start, text.indexOf("\n});", start));
+}
 
 describe("main.js wiring", () => {
   it.each(shapes)("keeps the %s call shape", (_name, text) => {
@@ -153,6 +174,25 @@ describe("main.js wiring", () => {
     expect(main).toMatch(/if \(isValidUrl\(url\)\) \{\r?\n\s+view\.webContents\.loadURL\(url\)\.catch\(\(\) => \{\}\);\r?\n\s+return;/);
     expect(main).toContain('query: errorPageQuery(url, "insecure")');
   });
+
+  // Failure: a bridge handler missing from the table is never checked, so a new handler ships without a sender check.
+  it("lists every bridge handler in the sender table", () => {
+    const registered = [...main.matchAll(/ipcMain\.(?:handle|on)\("(turnstone:[a-z-]+)"/g)].map((match) => match[1]);
+    expect(registered.sort()).toEqual(Object.keys(SENDER_CHECKS).sort());
+  });
+
+  // Failure: a bridge handler without its listed check runs for any page that holds the bridge, or checks the wrong windows.
+  it.each(Object.entries(SENDER_CHECKS))("%s makes its listed sender check", (channel, check) => {
+    expect(handlerBlock(main, channel), channel).toContain(check);
+  });
+
+  // Failure: the check is made but its result is ignored, so a refused call still runs. The retry handler reads the check into a flag instead.
+  it.each(Object.entries(SENDER_CHECKS).filter(([channel]) => channel !== "turnstone:retry-local"))(
+    "%s returns when its check fails",
+    (channel, check) => {
+      expect(handlerBlock(main, channel), channel).toContain(`if (!${check})`);
+    },
+  );
 
   // Failure: a details field is dropped or replaced by a constant in one handler, so the decision is made on facts that are not the request's.
   it("maps each Electron details field into the decision, in each handler", () => {

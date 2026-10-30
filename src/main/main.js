@@ -19,7 +19,9 @@ const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 const { planRecovery } = require("./recovery.js");
 const { planSettingsSave, writeSavePlan, isValidUrl, reachableSettings } = require("./settings-save.js");
 const { shouldStopPodOnQuit } = require("./quit-policy.js");
-const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
+const { clampSettingsHeight, isValidHeight } = require("./settings-window.js");
+const { isFromAppPage } = require("./ipc-senders.js");
+const { pathToFileURL } = require("node:url");
 const { isNavigationAllowed, windowOpenAction, requestAllowed } = require("./view-rules.js");
 const { requestDecision, checkDecision, allowedOriginsFrom } = require("./permissions.js");
 const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
@@ -550,11 +552,23 @@ function rebuildWindow() {
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────
 
-ipcMain.handle("turnstone:get-settings", () => {
+// The app's own pages load from this folder. A file: page outside it is not an app page.
+const APP_PAGE_ROOT = pathToFileURL(path.join(__dirname, "../renderer") + path.sep).href;
+
+// A bridge request that does not come from an app page in the window allowed to make it is refused.
+const REFUSED_REQUEST = "Refused: this request did not come from an app page.";
+
+ipcMain.handle("turnstone:get-settings", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents, () => settingsWindow && settingsWindow.webContents], APP_PAGE_ROOT)) {
+    throw new Error(REFUSED_REQUEST);
+  }
   return settings.getAll();
 });
 
-ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
+ipcMain.handle("turnstone:save-settings", (event, newSettings) => {
+  if (!isFromAppPage(event, [() => settingsWindow && settingsWindow.webContents], APP_PAGE_ROOT)) {
+    throw new Error(REFUSED_REQUEST);
+  }
   // quitBehavior is not passed in: reading it can throw on a corrupt store,
   // and this handler never read it.
   const plan = planSettingsSave(
@@ -584,7 +598,8 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
   return { ok: true };
 });
 
-ipcMain.on("turnstone:switch-tab", (_event, tab) => {
+ipcMain.on("turnstone:switch-tab", (event, tab) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   switchTab(tab);
 });
 
@@ -595,7 +610,7 @@ ipcMain.on("turnstone:retry-local", (event) => {
   // A start already in flight owns the loading page; reloading it would
   // blank the stage list until the next stage. The rule lives in ipc-guards.js.
   const allowed = canRetryLocal({
-    senderIsConsole: hasConsoleView && isFromWindow(event, consoleView.webContents),
+    senderIsConsole: hasConsoleView && isFromAppPage(event, [() => consoleView.webContents], APP_PAGE_ROOT),
     hasConsoleView,
     consoleDestroyed,
     starting: Boolean(localRuntime && localRuntime.starting),
@@ -608,7 +623,7 @@ ipcMain.on("turnstone:retry-local", (event) => {
 // The settings dialog sizes itself to its content; only that window may ask.
 ipcMain.on("turnstone:settings-resize", (event, height) => {
   if (!settingsWindow || settingsWindow.isDestroyed()) return;
-  if (!isFromWindow(event, settingsWindow.webContents)) return;
+  if (!isFromAppPage(event, [() => settingsWindow.webContents], APP_PAGE_ROOT)) return;
   // Reject a bad request before touching `screen`, as the handler always did.
   if (!isValidHeight(height)) {
     console.warn("settings-resize: ignoring non-numeric height");
@@ -618,23 +633,28 @@ ipcMain.on("turnstone:settings-resize", (event, height) => {
   settingsWindow.setContentSize(460, h);
 });
 
-ipcMain.on("turnstone:open-settings", () => {
+ipcMain.on("turnstone:open-settings", (event) => {
+  // The error pages in the server and console views ask for Settings.
+  if (!isFromAppPage(event, [() => serverView && serverView.webContents, () => consoleView && consoleView.webContents], APP_PAGE_ROOT)) return;
   openSettings();
 });
 
 // Window controls (custom title bar on Win/Linux)
-ipcMain.on("turnstone:window-minimize", () => {
+ipcMain.on("turnstone:window-minimize", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   if (mainWindow) mainWindow.minimize();
 });
 
-ipcMain.on("turnstone:window-maximize", () => {
+ipcMain.on("turnstone:window-maximize", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   if (mainWindow) {
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     else mainWindow.maximize();
   }
 });
 
-ipcMain.on("turnstone:window-close", () => {
+ipcMain.on("turnstone:window-close", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   if (mainWindow) mainWindow.close();
 });
 

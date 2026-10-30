@@ -123,6 +123,13 @@ async function waitForGone(child) {
 }
 
 async function quitWithGuard(app, describeState = () => "") {
+  let child;
+  try {
+    child = app.process();
+  } catch {
+    // The app quit on its own, for example after its last window closed, and Playwright dropped its connection.
+    return;
+  }
   let guard;
   const hung = new Promise((_, reject) => {
     guard = setTimeout(
@@ -134,7 +141,6 @@ async function quitWithGuard(app, describeState = () => "") {
     // The quit is asked of the app directly and its exit is awaited on the process. Playwright's
     // own close() also tears down its debugger connection while the app is still stopping the
     // pod, and on Linux CI that sometimes left the process alive after the stop had finished.
-    const child = app.process();
     const exited = new Promise((resolveExit) => {
       if (child.exitCode !== null || child.signalCode !== null) resolveExit();
       else child.once("exit", () => resolveExit());
@@ -142,7 +148,6 @@ async function quitWithGuard(app, describeState = () => "") {
     app.evaluate(({ app: electronApp }) => electronApp.quit()).catch(() => {});
     await Promise.race([exited, hung]);
   } catch (err) {
-    const child = app.process();
     killTree(child);
     await waitForGone(child);
     throw err;
@@ -300,6 +305,14 @@ ${appOutput || "(none)"}`);
     findPage,
     close,
     windowUrls: () => app.windows().map((w) => w.url()),
+    // Windows the main process holds. Once the app has quit, none are left.
+    async windowCount() {
+      try {
+        return await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+      } catch {
+        return 0;
+      }
+    },
     // After close(), returns the log as it was when the directory was removed.
     readPodmanLog: () => finalLog ?? readLines(logPath),
     setPodmanState(patch) {
