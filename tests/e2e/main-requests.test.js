@@ -138,4 +138,37 @@ describe("requests the main process makes", () => {
     const followed = seen.filter((path) => path === "/sign-in");
     expect(followed).toEqual([]);
   });
+
+  // Failure: the main process's requests go through the session's HTTP cache, which Node's fetch never had, so a
+  // health answer that allowed caching, such as one a proxy marked, keeps the dot healthy after the server fails.
+  it("ask the server every time, even when an answer allowed caching", async () => {
+    const seen = [];
+    let failing = false;
+    const server = http.createServer((req, res) => {
+      seen.push(req.url);
+      if (req.url === "/health" && failing) {
+        res.writeHead(503);
+        res.end();
+        return;
+      }
+      if (req.url === "/health") {
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "max-age=3600" });
+        res.end(JSON.stringify({ status: "ok", nodes: 1, workstreams: 0 }));
+        return;
+      }
+      turnstoneServer([])(req, res);
+    });
+    const port = await serve(server, 0);
+    const app = await launchApp({ settings: { mode: "server", serverUrl: `http://127.0.0.1:${port}` } });
+    const shell = await app.findPage(urlEndsWith("shell.html"), { description: "shell window" });
+
+    // The server fails once the shell is listening and the app has read the answer that allowed caching.
+    await pollUntil(() => shell.evaluate(() => document.readyState === "complete"), {
+      description: "the shell page to load",
+    });
+    await pollUntil(() => seen.includes("/health"), { description: "a cacheable healthy answer" });
+    failing = true;
+
+    await pollUntil(serverDotHas(shell, "error"), { description: "the server dot to read error" });
+  });
 });
