@@ -66,11 +66,17 @@ function runPodman(args) {
  * "not ready", never as a default state.
  */
 async function fetchHealthJson(baseUrl) {
+  // Aborting the request is what closes its connection. Electron's fetch keeps the connection open while an
+  // answer is left unread.
+  const controller = new AbortController();
   try {
     const resp = await sessionFetch(`${baseUrl}/health`, {
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      controller.abort();
+      return null;
+    }
     const data = await resp.json();
     return data && typeof data === "object" ? data : null;
   } catch {
@@ -296,4 +302,4 @@ class LocalRuntime {
   }
 }
 
-module.exports = { LocalRuntime, LocalRuntimeError };
+module.exports = { LocalRuntime, LocalRuntimeError, fetchHealthJson };
