@@ -94,6 +94,7 @@ The app never stops the Podman machine. If you switch away from Local mode durin
 | Solid red square | **Error**: `/health` returned an error response |
 | Dim red | **Disconnected**: no answer within 3 seconds, or the answer was not JSON |
 | Dim grey | **Unknown**: not checked yet |
+| Solid red square | **Address refused**: the saved address is plain `http://` to another computer, so it is never checked or loaded. Open Settings and change it to `https://`. |
 
 The app checks each service every 5 seconds. When a service changes from not OK to OK, its view recovers on its own: a working page is reloaded, and a view showing an error page loads its address again.
 

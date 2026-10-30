@@ -1,3 +1,5 @@
+const { isValidUrl } = require("./settings-save.js");
+
 /**
  * Whether a view may navigate to targetUrl. Only the same origin as the view's
  * configured URL is allowed. Origin, not host, decides: a different port or
@@ -6,6 +8,8 @@
  * letting it through.
  */
 function isNavigationAllowed(allowedUrl, targetUrl) {
+  // A configured address the rule refuses grants no navigation at all.
+  if (!isValidUrl(allowedUrl)) return false;
   try {
     const allowed = new URL(allowedUrl);
     // Opaque origins (file:, data:, a scheme-less host:port) all read "null" and

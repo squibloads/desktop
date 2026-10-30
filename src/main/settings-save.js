@@ -89,4 +89,38 @@ function writeSavePlan(store, apply) {
   store.mode = apply.mode;
 }
 
-module.exports = { planSettingsSave, isValidUrl, writeSavePlan };
+/**
+ * Settings as the health poller and the notification stream may read them. A stored address
+ * the rule refuses reads as absent, so it is never polled or connected to. The getters read
+ * the store each time, so a later change is seen without rebuilding this object.
+ */
+function reachableSettings(readStore) {
+  return {
+    get hasServer() {
+      const store = readStore();
+      return store.hasServer && isValidUrl(store.serverUrl);
+    },
+    get serverUrl() {
+      return readStore().serverUrl;
+    },
+    get hasConsole() {
+      const store = readStore();
+      return store.hasConsole && isValidUrl(store.consoleUrl);
+    },
+    get consoleUrl() {
+      return readStore().consoleUrl;
+    },
+    // A view the mode uses whose stored address is refused. The status says so, rather than
+    // reading as switched off.
+    get serverRefused() {
+      const store = readStore();
+      return store.hasServer && !isValidUrl(store.serverUrl);
+    },
+    get consoleRefused() {
+      const store = readStore();
+      return store.hasConsole && !isValidUrl(store.consoleUrl);
+    },
+  };
+}
+
+module.exports = { planSettingsSave, isValidUrl, writeSavePlan, reachableSettings };

@@ -83,6 +83,7 @@ const stateLabels = {
   degraded: "degraded",
   disconnected: "disconnected",
   error: "error",
+  refused: "address refused",
 };
 
 const dotNames = {
@@ -104,6 +105,8 @@ function updateDot(id, state) {
   else if (state === "degraded") dot.classList.add("degraded");
   else if (state === "disconnected") dot.classList.add("disconnected");
   else if (state === "error") dot.classList.add("error");
+  // A refused address is a fault, shown in the error colour, not a switched-off service.
+  else if (state === "refused") dot.classList.add("error");
 
   const label = stateLabels[state] || "unknown";
   dot.setAttribute("aria-label", `${dotNames[id]}: ${label}`);

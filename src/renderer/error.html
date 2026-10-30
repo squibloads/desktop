@@ -133,9 +133,9 @@
         <circle cx="10" cy="14" r="1" fill="currentColor"/>
       </svg>
     </div>
-    <h1>Unable to connect</h1>
+    <h1 id="error-title">Unable to connect</h1>
     <div class="error-detail">
-      The server is not reachable. Check that Turnstone is running.
+      <span id="error-detail-text">The server is not reachable. Check that Turnstone is running.</span>
       <br>
       <span class="error-url" id="error-url"></span>
     </div>
@@ -143,7 +143,7 @@
       <button class="btn-secondary" id="btn-settings">Settings</button>
       <button class="btn-primary" id="btn-retry">Retry</button>
     </div>
-    <div class="hint">Will reconnect automatically when the server comes back.</div>
+    <div class="hint" id="error-hint">Will reconnect automatically when the server comes back.</div>
   </div>
   <script src="error.js"></script>
 </body>
