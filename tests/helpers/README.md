@@ -56,7 +56,8 @@ tier fails it.
   and its key, made at test time with `node:crypto` so none is stored in the
   repository. Nothing trusts it by default. `tests/e2e/main-requests.test.js`
   tells the session to accept it, to check that the main process trusts what
-  the session trusts.
+  the session trusts. It also exports `derInteger`, the integer encoder, which
+  `tests/contract/self-signed-cert.test.js` checks byte by byte.
 - `launch-app.js` exports `launchApp()`, which seeds a fresh user-data
   directory, launches the app, and returns a handle with `findPage`,
   `windowUrls`, `readPodmanLog`, `setPodmanState`, `clickMenuItem` and `close`.
