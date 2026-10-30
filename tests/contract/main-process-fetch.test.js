@@ -8,6 +8,10 @@ const MAIN_DIR = join(__dirname, "..", "..", "src", "main");
 // Node's own network modules. Electron's net is required as electron, so it is not one of them.
 const NODE_NETWORK = new Set(["http", "https", "http2", "net", "tls", "undici"]);
 
+// Globals that send requests through Node, plus the global object itself, through which they are reached
+// without being named. EventSource is behind a flag in Node today, so it is named before it can arrive.
+const NODE_GLOBALS = ["fetch", "WebSocket", "EventSource", "global", "globalThis"];
+
 // Each node of the syntax tree, with the node that holds it and the key it is held under.
 function* walk(node, parent = null, key = null) {
   yield { node, parent, key };
@@ -26,26 +30,40 @@ function isPropertyName(parent, key) {
   return false;
 }
 
+// A call that loads a module by name: require(), module.require(), process.getBuiltinModule() or import().
+function loadsModule(node) {
+  if (node.type === "ImportExpression") return true;
+  if (node.type !== "CallExpression") return false;
+  const { callee } = node;
+  if (callee.type === "Identifier") return callee.name === "require";
+  if (callee.type !== "MemberExpression" || callee.computed || callee.object.type !== "Identifier") return false;
+  const name = `${callee.object.name}.${callee.property.name}`;
+  return name === "module.require" || name === "process.getBuiltinModule";
+}
+
+// The module name a load call writes out, as a string or a template with nothing filled in.
+function moduleName(node) {
+  const arg = node.type === "ImportExpression" ? node.source : node.arguments[0];
+  if (arg?.type === "Literal" && typeof arg.value === "string") return arg.value;
+  if (arg?.type === "TemplateLiteral" && arg.expressions.length === 0) return arg.quasis[0].value.cooked;
+  return null;
+}
+
 /**
- * What in a source could reach Node's networking instead of the session's: the name fetch, which here can only
- * be Node's global; the global object, through which fetch is reached without naming it; and a require or
- * import of one of Node's network modules. The source is parsed, so comments and strings never count.
+ * What in a source could reach Node's networking instead of the session's: one of NODE_GLOBALS by name, which
+ * here can only be Node's own; and a load of one of Node's network modules. The source is parsed, so comments
+ * and strings never count.
  */
 function nodeNetworkUses(source) {
   const uses = [];
   const tree = parse(source, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, locations: true });
   for (const { node, parent, key } of walk(tree)) {
-    if (node.type === "Identifier" && ["fetch", "global", "globalThis"].includes(node.name) && !(parent && isPropertyName(parent, key))) {
+    if (node.type === "Identifier" && NODE_GLOBALS.includes(node.name) && !(parent && isPropertyName(parent, key))) {
       uses.push(`${node.loc.start.line}: ${node.name}`);
     }
-    const loaded =
-      node.type === "CallExpression" && node.callee.type === "Identifier" && node.callee.name === "require"
-        ? node.arguments[0]
-        : node.type === "ImportExpression"
-          ? node.source
-          : null;
-    if (loaded?.type === "Literal" && NODE_NETWORK.has(String(loaded.value).replace(/^node:/, ""))) {
-      uses.push(`${node.loc.start.line}: ${loaded.value}`);
+    const name = loadsModule(node) ? moduleName(node) : null;
+    if (name !== null && NODE_NETWORK.has(name.replace(/^node:/, ""))) {
+      uses.push(`${node.loc.start.line}: ${name}`);
     }
   }
   return uses;
@@ -76,6 +94,13 @@ describe("requests from the main process", () => {
     expect(nodeNetworkUses("const { fetch: send } = globalThis;")).toEqual(["1: globalThis"]);
     expect(nodeNetworkUses('require("node:https"); require("undici");')).toEqual(["1: node:https", "1: undici"]);
     expect(nodeNetworkUses('import("http");')).toEqual(["1: http"]);
+    expect(nodeNetworkUses('new WebSocket("wss://example.com");')).toEqual(["1: WebSocket"]);
+    expect(nodeNetworkUses("new EventSource(url);")).toEqual(["1: EventSource"]);
+    expect(nodeNetworkUses('require(`https`); module.require("tls"); process.getBuiltinModule("node:net");')).toEqual([
+      "1: https",
+      "1: tls",
+      "1: node:net",
+    ]);
     expect(nodeNetworkUses('const page = "http://example.com"; fetch(page);')).toEqual(["1: fetch"]);
 
     const clean = [
