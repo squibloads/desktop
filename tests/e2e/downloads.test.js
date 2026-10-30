@@ -43,24 +43,33 @@ describe("downloads from the configured console", () => {
     const app = await launchApp({ settings: { mode: "console", consoleUrl: site } });
     const page = await app.findPage(urlIs(`${site}/`), { description: "console page" });
 
-    await app.mainEvaluate(({ session }) => {
-      session.defaultSession.on("will-download", (_event, item) => {
-        globalThis.__download = item;
-      });
-    });
+    // The wait ends when the download starts, or fails after a bound, so a slow start is not a failure.
+    const started = app.mainEvaluate(
+      ({ session }) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("no download started")), 10_000);
+          session.defaultSession.once("will-download", (_event, item) => {
+            clearTimeout(timer);
+            globalThis.__download = item;
+            resolve();
+          });
+        }),
+    );
 
     await page.click("#get");
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await started;
+    // A download that is still pending after a moment is waiting for the user to choose a location.
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     const seen = await app.mainEvaluate(() => {
       const item = globalThis.__download;
-      if (!item) return null;
       const state = { filename: item.getFilename(), savePath: item.getSavePath(), state: item.getState() };
       item.cancel();
       return state;
     });
-    expect(seen).not.toBeNull();
     expect(seen.filename).toBe("report.txt");
+    // A cancelled dialog is terminal, so the state must still be progressing for the dialog to be open.
+    expect(seen.state).toBe("progressing");
     expect(seen.savePath).toBe("");
   });
 });
