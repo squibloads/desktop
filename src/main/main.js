@@ -80,6 +80,7 @@ function createMainWindow() {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
   mainWindow.contentView.addChildView(shellView);
@@ -91,6 +92,7 @@ function createMainWindow() {
     preload: path.join(__dirname, "../preload/preload.js"),
     contextIsolation: true,
     nodeIntegration: false,
+    sandbox: true,
   };
 
   // --- Server view (if mode includes server) ---
@@ -489,6 +491,7 @@ function openSettings() {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
