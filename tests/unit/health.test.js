@@ -62,37 +62,21 @@ describe("HealthPoller", () => {
     vi.unstubAllGlobals();
   });
 
-  // Failure: a redirect's body is never read or cancelled, so each poll leaves its connection open until garbage collection.
-  it("cancels the body of a redirect response, so its connection is released", async () => {
-    const cancel = vi.fn().mockResolvedValue(undefined);
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } });
+  // Failure: a non-OK answer's body is only cancelled, which under Electron's fetch leaves its connection open until
+  // the three-second timeout aborts the request.
+  it("aborts the request of a non-OK answer before it reports the answer", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: {} });
     vi.stubGlobal("fetch", fetchMock);
+    let abortedWhenReported = null;
+    onUpdate = vi.fn(() => {
+      abortedWhenReported = fetchMock.mock.calls[0][1].signal.aborted;
+    });
     poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
 
     await poller.poll();
 
-    expect(cancel).toHaveBeenCalledTimes(1);
-    vi.unstubAllGlobals();
-  });
-
-  // Failure: the answer is reported before the body is cancelled, so the next poll can start while this connection is still open.
-  it("reports the answer only once the body is cancelled", async () => {
-    let finishCancel;
-    const cancel = vi.fn(() => new Promise((resolve) => {
-      finishCancel = resolve;
-    }));
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } }));
-    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
-
-    const polling = poller.poll();
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(poller.status.server).toBe("unknown");
-
-    finishCancel();
-    await polling;
     expect(poller.status.server).toBe("error");
+    expect(abortedWhenReported).toBe(true);
     vi.unstubAllGlobals();
   });
 

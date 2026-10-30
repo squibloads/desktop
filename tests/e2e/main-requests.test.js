@@ -171,4 +171,32 @@ describe("requests the main process makes", () => {
 
     await pollUntil(serverDotHas(shell, "error"), { description: "the server dot to read error" });
   });
+
+  // Failure: Electron's fetch keeps a connection open after its body is cancelled, so an event stream refused with
+  // an error page that never ends leaves one more connection open on every retry.
+  it("close the connection of a refused event stream before retrying it", async () => {
+    const streams = { refused: 0, open: 0 };
+    const server = http.createServer((req, res) => {
+      if (req.url !== "/v1/api/events/global") {
+        turnstoneServer([])(req, res);
+        return;
+      }
+      streams.refused += 1;
+      streams.open += 1;
+      // The error page never ends, so only the app can close this connection.
+      res.writeHead(503, { "content-type": "text/plain" });
+      const feed = setInterval(() => res.write("unavailable\n".repeat(64)), 20);
+      res.on("close", () => {
+        clearInterval(feed);
+        streams.open -= 1;
+      });
+    });
+    const port = await serve(server, 0);
+    await launchApp({ settings: { mode: "server", serverUrl: `http://127.0.0.1:${port}` } });
+
+    // The retries back off from one second, so the third attempt comes about three seconds after the first.
+    await pollUntil(() => streams.refused >= 3 && streams.open === 0, {
+      description: "three refused event streams, none left open",
+    });
+  });
 });
