@@ -70,7 +70,8 @@ class HealthPoller {
       return "error";
     } catch (err) {
       // A redirect is an answer from the server, so a refused one reads as an error, as the redirect response
-      // did when it came back. Any other failure means the server could not be reached.
+      // did when it came back. Any other failure reads as disconnected: no connection, a refused certificate, a
+      // timeout, or an OK answer whose body is not JSON, such as a sign-in page served in its place.
       return isRefusedRedirect(err) ? "error" : "disconnected";
     }
   }
