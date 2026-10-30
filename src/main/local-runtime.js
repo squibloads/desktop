@@ -1,5 +1,6 @@
 const { execFile } = require("child_process");
 const { podmanCommand, localConsoleUrl } = require("./runtime-config.js");
+const { sessionFetch } = require("./session-fetch.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
@@ -66,7 +67,7 @@ function runPodman(args) {
  */
 async function fetchHealthJson(baseUrl) {
   try {
-    const resp = await fetch(`${baseUrl}/health`, {
+    const resp = await sessionFetch(`${baseUrl}/health`, {
       signal: AbortSignal.timeout(3000),
     });
     if (!resp.ok) return null;

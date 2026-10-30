@@ -1,9 +1,12 @@
+const { sessionFetch } = require("./session-fetch.js");
+
 // electron is not required at the top: the tests run under plain Node and inject
-// Notification. The lazy require below only runs in the real app.
+// Notification and fetch. The lazy require below only runs in the real app.
 class NotificationManager {
-  constructor(settings, { Notification } = {}) {
+  constructor(settings, { Notification, fetch = sessionFetch } = {}) {
     this.settings = settings;
     this._Notification = Notification;
+    this._fetch = fetch;
     this.controller = null;
     this.retryTimer = null;
     this.retryDelay = 1000;
@@ -41,7 +44,7 @@ class NotificationManager {
     const controller = new AbortController();
     this.controller = controller;
     try {
-      const resp = await fetch(
+      const resp = await this._fetch(
         `${this.settings.serverUrl}/v1/api/events/global`,
         {
           headers: { Accept: "text/event-stream" },
