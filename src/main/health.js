@@ -37,7 +37,10 @@ class HealthPoller {
     }
   }
 
-  // A refused address is a fault the user must see, so it is reported and never polled.
+  /**
+   * A refused address is a fault the user must see, so it is reported as refused and never
+   * polled. A switched-off service is not checked at all.
+   */
   _statusOf(refused, enabled, url) {
     if (refused) return Promise.resolve("refused");
     return enabled ? this._checkHealth(url) : Promise.resolve("disabled");

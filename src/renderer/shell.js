@@ -96,6 +96,10 @@ window.electronAPI.onHealthUpdate((status) => {
   updateDot("console-health", status.console);
 });
 
+/**
+ * Colours one health dot and labels it for screen readers. A refused address uses the error
+ * colour, because it is a fault the user must fix, not a service that is switched off.
+ */
 function updateDot(id, state) {
   const dot = document.getElementById(id);
   if (!dot) return;
