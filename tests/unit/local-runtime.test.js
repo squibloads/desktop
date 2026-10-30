@@ -3,8 +3,9 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installSteppedClock } from "../helpers/fake-clock.js";
+import { fakeElectronNet, removeFakeElectron } from "../helpers/fake-electron-net.js";
 
-const { LocalRuntime, LocalRuntimeError } = require("../../src/main/local-runtime.js");
+const { LocalRuntime, LocalRuntimeError, fetchHealthJson } = require("../../src/main/local-runtime.js");
 
 /**
  * Scripted podman: each entry maps a joined argv to a result. An unscripted
@@ -674,5 +675,21 @@ describe("runPodman argv under the TURNSTONE_PODMAN override", () => {
     const out = await rt.run(["machine", "list"]);
 
     expect(JSON.parse(out)).toEqual(["--marker", "machine", "list"]);
+  });
+});
+
+describe("fetchHealthJson", () => {
+  afterEach(removeFakeElectron);
+
+  // Failure: a non-OK answer is left unread with its request open, which under Electron's fetch holds the
+  // connection until the three-second timeout, while the start-up wait asks again every second.
+  it("aborts the request of a non-OK answer and reads it as not ready", async () => {
+    const netFetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    fakeElectronNet(netFetch);
+
+    const health = await fetchHealthJson("http://127.0.0.1:8090");
+
+    expect(health).toBe(null);
+    expect(netFetch.mock.calls[0][1].signal.aborted).toBe(true);
   });
 });

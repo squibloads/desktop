@@ -58,6 +58,10 @@ tier fails it.
   tells the session to accept it, to check that the main process trusts what
   the session trusts. It also exports `derInteger`, the integer encoder, which
   `tests/contract/self-signed-cert.test.js` checks byte by byte.
+- `fake-electron-net.js` exports `fakeElectronNet(fetch)` and
+  `removeFakeElectron()`. A main-process module that requires electron only
+  when it sends a request then gets this `net.fetch`, so its unit test runs
+  under plain Node. Call `removeFakeElectron` in `afterEach`.
 - `launch-app.js` exports `launchApp()`, which seeds a fresh user-data
   directory, launches the app, and returns a handle with `findPage`,
   `windowUrls`, `readPodmanLog`, `setPodmanState`, `clickMenuItem` and `close`.
