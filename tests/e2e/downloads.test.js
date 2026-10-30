@@ -43,13 +43,11 @@ describe("downloads from the configured console", () => {
     const app = await launchApp({ settings: { mode: "console", consoleUrl: site } });
     const page = await app.findPage(urlIs(`${site}/`), { description: "console page" });
 
-    // The listener must be in place before the click, so its registration is awaited first. The start is
-    // awaited after the click, bounded at ten seconds, so a slow start is not a failure.
+    // The listener must be in place before the click, so its registration is awaited first. It never rejects,
+    // so a slow click cannot leave a rejection with no handler in the main process.
     await app.mainEvaluate(({ session }) => {
-      globalThis.__started = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("no download started")), 10_000);
+      globalThis.__started = new Promise((resolve) => {
         session.defaultSession.once("will-download", (_event, item) => {
-          clearTimeout(timer);
           globalThis.__download = item;
           resolve();
         });
@@ -57,7 +55,16 @@ describe("downloads from the configured console", () => {
     });
 
     await page.click("#get");
-    await app.mainEvaluate(() => globalThis.__started);
+    // The bound starts after the click, so the time the click takes does not count against the download.
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("no download started")), 10_000);
+    });
+    try {
+      await Promise.race([app.mainEvaluate(() => globalThis.__started), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
     // A download that is still pending after a moment is waiting for the user to choose a location.
     await new Promise((resolve) => setTimeout(resolve, 300));
 
