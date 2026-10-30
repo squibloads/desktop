@@ -35,7 +35,7 @@ describe("renderer sandbox", () => {
     // The shell, the shared content view options, and Settings. A new block must be added to this count on purpose.
     expect(blocks.length).toBe(3);
     // Assigning the flag after construction would bypass every block above.
-    expect(MAIN).not.toMatch(/\.sandbox\s*=/);
+    expect(MAIN).not.toMatch(/(?:\.\s*sandbox|\[\s*["']sandbox["']\s*\])\s*=/);
     for (const block of blocks) {
       // A spread can carry a false flag that no literal in the block shows.
       expect(code(block)).not.toMatch(/\.\.\./);
@@ -45,7 +45,7 @@ describe("renderer sandbox", () => {
 
   // Failure: the sandbox pin is present but a node integration flag turns the renderer back into a Node process, so the pin protects nothing.
   it("keeps node integration off in every web preferences block", () => {
-    expect(MAIN).not.toMatch(/\.nodeIntegration\s*=/);
+    expect(MAIN).not.toMatch(/(?:\.\s*nodeIntegration|\[\s*["']nodeIntegration["']\s*\])\s*=/);
     for (const block of prefsBlocks(MAIN)) {
       expect(code(block)).not.toMatch(/\.\.\./);
       expect(valuesOf(block, "nodeIntegration")).toEqual(["false"]);
