@@ -1,11 +1,12 @@
 const { sessionFetch, isRefusedRedirect } = require("./session-fetch.js");
 
 class HealthPoller {
-  // The tests pass their own fetch; the app uses the session's network stack.
-  constructor(settings, onUpdate, { fetch = sessionFetch } = {}) {
+  // The tests pass their own fetch; the app uses the session's network stack. It is bound as fetchImpl because
+  // tests/contract/main-process-fetch.test.js refuses the bare name fetch in the main process.
+  constructor(settings, onUpdate, { fetch: fetchImpl = sessionFetch } = {}) {
     this.settings = settings;
     this.onUpdate = onUpdate;
-    this._fetch = fetch;
+    this._fetch = fetchImpl;
     this.status = { server: "unknown", console: "unknown" };
     this.interval = null;
   }
