@@ -92,7 +92,7 @@ describe("NotificationManager SSE parser", () => {
   });
 
   function createManager() {
-    const m = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:makeFakeNotification().Notification });
+    const m = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
     // Spy on _notify to verify what notifications would fire; the real method still runs.
     notifySpy = vi.spyOn(m, "_notify");
     return m;
@@ -249,7 +249,7 @@ describe("NotificationManager SSE frames across chunks", () => {
   });
 
   function createManager() {
-    const m = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:makeFakeNotification().Notification });
+    const m = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
     notifySpy = vi.spyOn(m, "_notify");
     return m;
   }
@@ -303,7 +303,7 @@ describe("NotificationManager notification content", () => {
 
   beforeEach(() => {
     fake = makeFakeNotification();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
   });
 
   afterEach(() => {
@@ -392,7 +392,7 @@ describe("NotificationManager notification content", () => {
   // Failure: on a platform without notification support the app builds one anyway and crashes.
   it("does not construct a notification when isSupported() is false", () => {
     const unsupported = makeFakeNotification({ supported: false });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:unsupported.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: unsupported.Notification });
 
     manager._handleEvent("ws_state", '{"state":"attention","name":"a"}');
     manager._handleEvent("ws_state", '{"state":"error","name":"b"}');
@@ -419,7 +419,7 @@ describe("NotificationManager reconnect and stop", () => {
   it("doubles the retry delay after each failed connect and caps it at 30 seconds", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
     vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:makeFakeNotification().Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
 
     manager.start();
     const attemptsAt = [fetchMock.mock.calls.length];
@@ -444,7 +444,7 @@ describe("NotificationManager reconnect and stop", () => {
   it("stop() aborts the in-flight request and cancels the pending reconnect", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
     vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:makeFakeNotification().Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
 
     manager.start();
     const signal = fetchMock.mock.calls[0][1].signal;
@@ -466,7 +466,7 @@ data: {"state":"attention","name":"x"}
     const fetchMock = vi.fn().mockResolvedValue(bad);
     vi.stubGlobal("fetch", fetchMock);
     const fake = makeFakeNotification();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     await vi.advanceTimersByTimeAsync(1000);
@@ -484,7 +484,7 @@ data: {"state":"attention","name":"x"}
       .mockResolvedValueOnce(makeSSEResponse(""))
       .mockRejectedValue(new Error("down"));
     vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:makeFakeNotification().Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
 
     manager.start();
     // Attempts at 0 (fail, wait 1 s), 1000 (fail, wait 2 s), 3000 (connects, stream ends).
@@ -532,7 +532,7 @@ describe("NotificationManager connection lifecycle", () => {
   // Failure: a save that restarts notifications while a retry is pending starts a second loop, and two streams stay open.
   it("does not open a second connection when a restart runs while a retry is pending", async () => {
     const { fetchMock } = stubStreamingFetch({ failFirst: true });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -547,7 +547,7 @@ describe("NotificationManager connection lifecycle", () => {
   // Failure: after a restart and a stop, a stream left from the earlier loop still raises server alerts in a mode with no server.
   it("delivers no alert from any connection after a restart and a stop", async () => {
     const { connections } = stubStreamingFetch({ failFirst: true });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -565,7 +565,7 @@ describe("NotificationManager connection lifecycle", () => {
   // Failure: calling start() twice runs two loops, and a later stop() reaches only the newer one.
   it("keeps one live connection when start() is called twice", async () => {
     const { fetchMock } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     manager.start();
@@ -576,7 +576,7 @@ describe("NotificationManager connection lifecycle", () => {
   // Failure: an event read just before stop() runs notifies after the user has switched to a mode with no server.
   it("drops an event that was already read when stop() ran", async () => {
     const { connections } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -593,7 +593,7 @@ describe("NotificationManager connection lifecycle", () => {
   it("dials the server URL the settings hold when it connects", async () => {
     const { fetchMock } = stubStreamingFetch();
     const settings = { serverUrl: "http://old.example" };
-    manager = new NotificationManager(settings, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(settings, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     settings.serverUrl = "http://new.example";
     manager.start();
@@ -604,7 +604,7 @@ describe("NotificationManager connection lifecycle", () => {
   // Failure: stop() leaves the retry timer armed, so it fires later and reopens a connection the user turned off.
   it("cancels a pending retry timer when stop() runs", async () => {
     stubStreamingFetch({ failFirst: true });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -616,7 +616,7 @@ describe("NotificationManager connection lifecycle", () => {
   // Failure: a stream from before a restart that ends on its own queues a retry, so the old loop comes back beside the new one.
   it("schedules no retry when a stale stream ends after a restart", async () => {
     const { connections } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     await vi.advanceTimersByTimeAsync(0);
@@ -631,7 +631,7 @@ describe("NotificationManager connection lifecycle", () => {
   // Failure: a connect left over from before a stop opens a connection that stop() can no longer reach.
   it("opens nothing for a connect started under an earlier generation", async () => {
     const { fetchMock } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     const stale = manager.generation;
@@ -647,7 +647,7 @@ describe("NotificationManager connection lifecycle", () => {
   it("retries one second after a restart, not after the backoff the old loop built up", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
     vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     await vi.advanceTimersByTimeAsync(15000);
@@ -670,7 +670,7 @@ describe("NotificationManager connection lifecycle", () => {
       .mockReturnValueOnce(late)
       .mockRejectedValueOnce(new Error("connect refused"));
     vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification:fake.Notification });
+    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
 
     manager.start();
     manager.stop();
