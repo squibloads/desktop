@@ -1,6 +1,5 @@
 import http from "node:http";
 import https from "node:https";
-import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { closeEverything, launchApp, urlEndsWith } from "../helpers/launch-app.js";
 import { pollUntil } from "../helpers/poll.js";
@@ -9,25 +8,16 @@ import { selfSignedCert } from "../helpers/self-signed-cert.js";
 const servers = [];
 
 afterEach(async () => {
-  await closeEverything();
-  for (const { server, sockets } of servers.splice(0)) {
-    // The app holds the event stream open, and close() waits for every connection to end.
-    for (const socket of sockets) socket.destroy();
-    await new Promise((resolve) => server.close(resolve));
+  try {
+    await closeEverything();
+  } finally {
+    for (const { server, sockets } of servers.splice(0)) {
+      // The app holds the event stream open, and close() waits for every connection to end.
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    }
   }
 });
-
-// A loopback port with nothing listening on it yet. The port is bound, read, and released.
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address();
-      probe.close((err) => (err ? reject(err) : resolve(port)));
-    });
-  });
-}
 
 // Listens on the loopback port and returns it. The sockets are kept so afterEach can end them.
 function serve(server, port) {
@@ -74,13 +64,17 @@ describe("requests the main process makes", () => {
   // but shows as disconnected and sends no notifications.
   it("trust the certificates the session trusts, and carry none of its cookies", async () => {
     const { cert, key, certBase64 } = selfSignedCert();
-    const port = await freePort();
+    const seen = [];
+    const port = await serve(https.createServer({ cert, key }, turnstoneServer(seen)), 0);
     const site = `https://127.0.0.1:${port}`;
-    const app = await launchApp({ settings: { mode: "server", serverUrl: site } });
+    // The app starts on another server and is moved to this one only once the session is set up, so every
+    // request it sends here starts after the session accepts the certificate and holds the cookie. Chromium
+    // caches a verification result, and a request carries the cookies that existed when it started.
+    const first = await serve(http.createServer(turnstoneServer([])), 0);
+    const app = await launchApp({ settings: { mode: "server", serverUrl: `http://127.0.0.1:${first}` } });
 
     // The session accepts this one certificate, as it would one signed by a CA installed in the system.
-    // It is set before the server listens: Chromium caches a verification result, so a certificate it had
-    // already refused would stay refused. The cookie stands in for a signed-in user's.
+    // The cookie stands in for a signed-in user's.
     await app.mainEvaluate(
       async ({ session }, { expected, url }) => {
         session.defaultSession.setCertificateVerifyProc((request, callback) => {
@@ -92,15 +86,20 @@ describe("requests the main process makes", () => {
       { expected: certBase64, url: site },
     );
 
-    const seen = [];
-    await serve(https.createServer({ cert, key }, turnstoneServer(seen)), port);
-
     // Control: Node's own fetch refuses this server, so only the session's trust can reach it.
     await expect(fetch(`${site}/health`)).rejects.toThrow();
 
+    await app.clickMenuItem("Settings…");
+    const settingsPage = await app.findPage(urlEndsWith("settings.html"), { description: "settings window" });
+    const saved = await settingsPage.evaluate(
+      (serverUrl) => window.electronAPI.saveSettings({ mode: "server", serverUrl }),
+      site,
+    );
+    expect(saved).toEqual({ ok: true });
+
     await pollUntil(
       () => seen.some((r) => r.path === "/health") && seen.some((r) => r.path === "/v1/api/events/global"),
-      { description: "a health check and the event stream over TLS", timeoutMs: 60_000 },
+      { description: "a health check and the event stream over TLS" },
     );
     const withCookie = seen.filter(
       (r) => (r.path === "/health" || r.path === "/v1/api/events/global") && r.cookie !== null,
