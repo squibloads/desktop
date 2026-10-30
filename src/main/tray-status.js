@@ -8,6 +8,7 @@ function statusLabel(s) {
   if (s === "degraded") return "Degraded";
   if (s === "error") return "Error";
   if (s === "disconnected") return "Disconnected";
+  if (s === "refused") return "Address refused";
   return "Unknown";
 }
 

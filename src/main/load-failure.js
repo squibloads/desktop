@@ -14,9 +14,12 @@ function shouldShowErrorPage(errorCode, isMainFrame, url) {
   return true;
 }
 
-/** loadFile's `query` takes an object; a string is silently dropped. */
-function errorPageQuery(originalUrl) {
-  return { url: originalUrl };
+/**
+ * loadFile's `query` takes an object; a string is silently dropped. A reason tells the error
+ * page which message to show. Without one, the page shows the connection error.
+ */
+function errorPageQuery(originalUrl, reason) {
+  return reason === undefined ? { url: originalUrl } : { url: originalUrl, reason };
 }
 
 /**

@@ -28,7 +28,7 @@ const shapes = [
   // Failure: the mode is written before the URLs, so a URL write that throws leaves a mode switch with no rebuild.
   ["save write order", "writeSavePlan(settings, plan.apply);"],
   // Failure: a URL change in the same mode leaves the connection on the old settings.
-  ["notification restart", "if (plan.restartNotifications) notificationLifecycle.restart();"],
+  ["notification restart", "if (plan.restartNotifications) notificationLifecycle.apply(reachable);"],
   // Failure: quitting leaves a notification connection open.
   ["notification stop on quit", "notificationLifecycle.stop();"],
   // Failure: with no handler, Electron approves every permission a page asks for.
@@ -38,6 +38,15 @@ const shapes = [
   ["permission request decision", "const decision = requestDecision("],
   ["permission request answer", "callback(decision);"],
   ["permission check answer", "return checkDecision("],
+  // Failure: a stored address the rule refuses is loaded anyway, so a plain-http server is connected to.
+  ["server view loads through the refusal guard", "loadConfigured(serverView, settings.serverUrl);"],
+  ["console view loads through the refusal guard", "loadConfigured(consoleView, settings.consoleUrl);"],
+  // Failure: the health poller reads the stored settings, so a refused server is polled over http.
+  ["health poller reads reachable settings", "new HealthPoller(reachable,"],
+  // Failure: the loader drops its check, so a refused stored address is loaded anyway.
+  ["loader checks the address before loading", "if (isValidUrl(url)) {"],
+  // Failure: the reload on the refusal page loads the stored address directly, so Ctrl+R goes to the refused address.
+  ["recovery loads through the refusal guard", "loadConfigured(view, getUrl());"],
 ];
 
 describe("main.js wiring", () => {
@@ -85,7 +94,7 @@ describe("main.js wiring", () => {
   // Failure: the old mode keeps alerting when the rebuild throws half way, because its notifications are applied after the window.
   it("applies the notification mode before the window is closed and rebuilt", () => {
     const fn = main.indexOf("function rebuildWindow() {");
-    const apply = main.indexOf("notificationLifecycle.apply(settings);", fn);
+    const apply = main.indexOf("notificationLifecycle.apply(reachable);", fn);
     const close = main.indexOf("mainWindow.close();", fn);
 
     expect(fn).toBeGreaterThan(-1);
@@ -95,7 +104,7 @@ describe("main.js wiring", () => {
 
   // Failure: a launch or a mode rebuild that skips the apply leaves the mode's notifications unset, or runs them from a stale manager.
   it("applies notifications at launch and on every mode rebuild", () => {
-    expect(main.split("notificationLifecycle.apply(settings);").length - 1).toBe(2);
+    expect(main.split("notificationLifecycle.apply(reachable);").length - 1).toBe(3);
   });
 
   // Failure: the permission policy is not imported from electron, so the install call throws before any window is built.
@@ -121,6 +130,12 @@ describe("main.js wiring", () => {
   // Failure: the install call is moved onto another line or behind a false guard, so the policy is never installed, or is installed after the settings read.
   it("calls the permission policy as its own statement, right before the settings read", () => {
     expect(main).toMatch(/\n {2}installPermissionPolicy\(\);\r?\n {2}settings = await SettingsStore\.create\(\);/);
+  });
+
+  // Failure: the two branches of the loader are swapped, or the refusal loses its reason, so a refused address is loaded or the refusal is unexplained.
+  it("loads a valid address in one branch and shows the refusal with its reason in the other", () => {
+    expect(main).toMatch(/if \(isValidUrl\(url\)\) \{\r?\n\s+view\.webContents\.loadURL\(url\)\.catch\(\(\) => \{\}\);\r?\n\s+return;/);
+    expect(main).toContain('query: errorPageQuery(url, "insecure")');
   });
 
   // Failure: a details field is dropped or replaced by a constant in one handler, so the decision is made on facts that are not the request's.

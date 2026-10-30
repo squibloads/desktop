@@ -18,6 +18,16 @@ describe("isNavigationAllowed", () => {
     expect(isNavigationAllowed("https://example.com/", "http://example.com/")).toBe(false);
   });
 
+  // Failure: a configured remote plain-http address still allows navigation, so the page moves on over http.
+  it("refuses navigation when the configured URL is a remote plain-http address", () => {
+    expect(isNavigationAllowed("http://192.168.1.20:8080/", "http://192.168.1.20:8080/next")).toBe(false);
+  });
+
+  // Failure: loopback http is refused as a configured URL, so the local server cannot be navigated within.
+  it("allows navigation within a loopback http address", () => {
+    expect(isNavigationAllowed("http://localhost:8090/", "http://localhost:8090/next")).toBe(true);
+  });
+
   // Failure: a link to a different host is loaded inside the app view with the app's preload attached.
   it("blocks a different host", () => {
     expect(isNavigationAllowed("https://example.com/", "https://other.example.com/")).toBe(false);

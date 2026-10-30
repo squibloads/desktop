@@ -116,6 +116,19 @@ describe("allowedOriginsFrom", () => {
   });
 });
 
+describe("allowedOriginsFrom refusals", () => {
+  // Failure: a stored remote plain-http server keeps its permissions, so a page loaded from it could get the microphone.
+  it("drops a remote plain-http origin", () => {
+    const settings = {
+      hasServer: true,
+      serverUrl: "http://192.168.1.20:8080",
+      hasConsole: true,
+      consoleUrl: CONSOLE_PAGE,
+    };
+    expect(allowedOriginsFrom(settings)).toEqual([CONSOLE]);
+  });
+});
+
 describe("requestDecision", () => {
   const request = (overrides) => ({
     permission: "media",

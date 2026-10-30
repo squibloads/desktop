@@ -2,6 +2,19 @@ import { describe, it, expect, vi } from "vitest";
 
 const { statusLabel, trayIconName, buildTrayMenuTemplate } = require("../../src/main/tray-status.js");
 
+// Failure: a refused server reads as switched off, so the tray stays green while the server is refused.
+describe("refused status in the tray", () => {
+  it("labels it, keeps it in the icon decision, and lists it in the menu", () => {
+    expect(statusLabel("refused")).toBe("Address refused");
+    expect(trayIconName("refused", "ok")).toBe("yellow");
+    expect(trayIconName("refused", "disabled")).toBe("red");
+    const labels = buildTrayMenuTemplate("refused", "disabled", makeActions())
+      .map((item) => item.label)
+      .filter(Boolean);
+    expect(labels).toContain("Server: Address refused");
+  });
+});
+
 function makeActions() {
   return {
     showWindow: vi.fn(),
