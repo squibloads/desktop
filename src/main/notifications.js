@@ -1,12 +1,14 @@
 const { sessionFetch } = require("./session-fetch.js");
 
 // electron is not required at the top: the tests run under plain Node and inject
-// Notification and fetch. The lazy require below only runs in the real app.
+// Notification and fetch. The lazy require below only runs in the real app. fetch is
+// bound as fetchImpl because tests/contract/main-process-fetch.test.js refuses the
+// bare name fetch in the main process.
 class NotificationManager {
-  constructor(settings, { Notification, fetch = sessionFetch } = {}) {
+  constructor(settings, { Notification, fetch: fetchImpl = sessionFetch } = {}) {
     this.settings = settings;
     this._Notification = Notification;
-    this._fetch = fetch;
+    this._fetch = fetchImpl;
     this.controller = null;
     this.retryTimer = null;
     this.retryDelay = 1000;
