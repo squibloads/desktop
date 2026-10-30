@@ -6,7 +6,9 @@ const ROOT = "file:///C:/app/renderer/";
 const SHELL = "file:///C:/app/renderer/shell.html";
 const SETTINGS = "file:///C:/app/renderer/settings.html";
 
-// A web contents as the rule sees it: its main frame, its current URL, and whether it is alive.
+/**
+ * A web contents as the rule sees it: its main frame, its current URL, and whether it is alive.
+ */
 function page(url, { destroyed = false } = {}) {
   return { getURL: () => url, isDestroyed: () => destroyed, mainFrame: { name: "main" } };
 }

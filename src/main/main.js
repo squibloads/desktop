@@ -260,8 +260,10 @@ function installRequestGuard() {
   });
 }
 
-// The web contents ids of the two views, null for a view that does not exist. Read on each
-// request, so a rebuilt window is judged by its own views and not by the ones it replaced.
+/**
+ * The web contents ids of the two views, null for a view that does not exist. Read on each request,
+ * so a rebuilt window is judged by its own views and not by the ones it replaced.
+ */
 function viewIds() {
   return {
     server: serverView ? serverView.webContents.id : null,

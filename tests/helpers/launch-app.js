@@ -122,6 +122,10 @@ async function waitForGone(child) {
   throw new Error(`app process ${child.pid} still running ${KILL_WAIT_MS} ms after the kill`);
 }
 
+/**
+ * Quits the app and waits for its process to exit, killing it if the quit hangs. An app that already
+ * quit on its own is not an error: its process and connection are gone, so there is nothing to wait for.
+ */
 async function quitWithGuard(app, describeState = () => "") {
   let child;
   try {
@@ -305,7 +309,10 @@ ${appOutput || "(none)"}`);
     findPage,
     close,
     windowUrls: () => app.windows().map((w) => w.url()),
-    // Windows the main process holds. Once the app has quit, none are left.
+    /**
+     * Windows the main process holds. A quit app holds none and its connection is gone, so an error
+     * is read as zero rather than thrown.
+     */
     async windowCount() {
       try {
         return await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
