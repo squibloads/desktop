@@ -26,6 +26,19 @@ describe("connection error page", () => {
     expect(doc.getElementById("error-hint").style.display).toBe("none");
   });
 
+  // Failure: a cancelled redirect reads as an unreachable server, so the user looks for a server outage that is not there.
+  it("shows a redirect refusal and keeps Retry, when the reason is redirect", () => {
+    const page = loadPage("error", {
+      ...createFakeBridge(),
+      query: { url: "https://console.example.com:8443/", reason: "redirect" },
+    });
+    const doc = page.document;
+
+    expect(doc.getElementById("error-title").textContent).toBe("Redirect refused");
+    expect(doc.getElementById("btn-retry").style.display).not.toBe("none");
+    expect(doc.getElementById("error-hint").style.display).toBe("none");
+  });
+
   // Failure: the failed URL is not shown, so the user cannot tell which server is unreachable.
   it("shows the failed URL from the query string as text", () => {
     const page = loadPage("error", { ...createFakeBridge(), query: { url: "http://server.example.test:8080/" } });

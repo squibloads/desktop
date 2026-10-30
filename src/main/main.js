@@ -20,15 +20,18 @@ const { planRecovery } = require("./recovery.js");
 const { planSettingsSave, writeSavePlan, isValidUrl, reachableSettings } = require("./settings-save.js");
 const { shouldStopPodOnQuit } = require("./quit-policy.js");
 const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
-const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
+const { isNavigationAllowed, windowOpenAction, requestAllowed } = require("./view-rules.js");
 const { requestDecision, checkDecision, allowedOriginsFrom } = require("./permissions.js");
 const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
 const { canRetryLocal } = require("./ipc-guards.js");
 const { firstConfigError } = require("./runtime-config.js");
+const { createRedirectRefusals } = require("./redirect-refusals.js");
 
 let settings = null;
 // What the poller and the notification stream may read: a refused address reads as absent.
 const reachable = reachableSettings(() => settings);
+// Redirects the request guard cancelled, so a failed load can say so. See redirect-refusals.js.
+const redirectRefusals = createRedirectRefusals();
 let mainWindow = null;
 let shellView = null;
 let serverView = null;
@@ -242,12 +245,45 @@ function setupViewSecurity(view, settingKey) {
   });
 }
 
+/**
+ * Every request the session makes goes through requestAllowed, so a main-frame request from a
+ * view to another site is cancelled before it loads, including each redirect hop. The cancelled
+ * load is remembered, so the view shows the redirect refusal rather than a connection error.
+ */
+function installRequestGuard() {
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    const allowed = requestAllowed(details, viewIds, () => settings);
+    if (!allowed) redirectRefusals.refuse(details.webContentsId, details.url);
+    callback({ cancel: !allowed });
+  });
+}
+
+// The web contents ids of the two views, null for a view that does not exist. Read on each
+// request, so a rebuilt window is judged by its own views and not by the ones it replaced.
+function viewIds() {
+  return {
+    server: serverView ? serverView.webContents.id : null,
+    console: consoleView ? consoleView.webContents.id : null,
+  };
+}
+
 // getUrl is read at failure time so the error page and its Retry follow a
 // serverUrl/consoleUrl change made in Settings after the window was built.
 function setupFailHandler(view, getUrl) {
+  // A new navigation supersedes a refusal left by an earlier one (see redirect-refusals.js).
+  view.webContents.on("did-start-navigation", (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) redirectRefusals.navigationStarted(view.webContents.id);
+  });
   view.webContents.on(
     "did-fail-load",
     (_event, code, _desc, validatedURL, isMainFrame) => {
+      // A redirect the request guard cancelled: say so, rather than report an unreachable server.
+      if (isMainFrame && redirectRefusals.matches(view.webContents.id, validatedURL)) {
+        view.webContents
+          .loadFile(path.join(__dirname, "../renderer/error.html"), { query: errorPageQuery(getUrl(), "redirect") })
+          .catch(() => {});
+        return;
+      }
       if (!shouldShowErrorPage(code, isMainFrame, validatedURL)) return;
       const errorPage = path.join(__dirname, "../renderer/error.html");
       view.webContents.loadFile(errorPage, {
@@ -658,6 +694,7 @@ app.whenReady().then(async () => {
     return;
   }
   installPermissionPolicy();
+  installRequestGuard();
   settings = await SettingsStore.create();
   activeTab = settings.activeTab || "server";
 

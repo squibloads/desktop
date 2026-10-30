@@ -44,6 +44,19 @@ describe("HealthPoller", () => {
     vi.unstubAllGlobals();
   });
 
+  // Failure: a server's redirect is followed to another origin, so the health check travels over plain http to the target.
+  it("does not follow a redirect, and reports it as not healthy", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, json: () => Promise.resolve({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+
+    await poller.poll();
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+    expect(poller.status.server).not.toBe("ok");
+    vi.unstubAllGlobals();
+  });
+
   it("polls both servers when both enabled", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

@@ -50,6 +50,8 @@ class HealthPoller {
     try {
       const resp = await fetch(`${baseUrl}/health`, {
         signal: AbortSignal.timeout(3000),
+        // A redirect is not followed: a server answers /health itself, and a redirect would send the check elsewhere.
+        redirect: "manual",
       });
       if (resp.ok) {
         const data = await resp.json();
