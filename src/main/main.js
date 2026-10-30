@@ -152,6 +152,9 @@ function createMainWindow() {
 
 // Pages in the server and console views get only what permissions.js allows, and only
 // for the origins the user configured. Electron approves every request when no handler is set.
+// Each request is decided when it arrives, so a changed URL applies from then on. A changed URL
+// also reloads its view, which ends any capture that page was running; a mode switch rebuilds
+// the windows, which does the same.
 function installPermissionPolicy() {
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
     const decision = requestDecision(
