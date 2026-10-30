@@ -5,7 +5,10 @@ import { waitForText } from "../helpers/poll.js";
 
 afterEach(closeEverything);
 
-// A stopped console gives the error page in the console view: a file page that holds the bridge.
+/**
+ * A stopped console gives the error page in the console view: a file page that holds the bridge.
+ * Returns the app and that page, once the page shows the console's address.
+ */
 async function openErrorPageInConsoleView() {
   const fake = registerConsole(createFakeConsole({ nodes: 1, health: "ok" }));
   await fake.start();

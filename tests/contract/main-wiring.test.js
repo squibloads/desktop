@@ -80,6 +80,10 @@ const SENDER_CHECKS = {
   "turnstone:window-close": SHELL_ONLY,
 };
 
+/**
+ * One handler's text, from its registration to the end of its block. A check outside that block does
+ * not count for the handler, so a check placed in another handler cannot satisfy the pin.
+ */
 function handlerBlock(text, channel) {
   const start = text.search(new RegExp(`ipcMain\\.(?:handle|on)\\("${channel}"`));
   if (start < 0) return null;
