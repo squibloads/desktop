@@ -73,10 +73,14 @@ window.electronAPI.getSettings().then((settings) => {
 
 // ─── URL validation ──────────────────────────────────────────────────────
 
+// Mirrors isValidUrl in src/main/settings-save.js: https for any host, http only for this computer.
+const LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"];
+
 function isValidUrl(str) {
   try {
     const url = new URL(str);
-    return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol === "https:") return true;
+    return url.protocol === "http:" && LOCAL_HOSTS.includes(url.hostname);
   } catch {
     return false;
   }
