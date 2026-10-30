@@ -54,6 +54,8 @@ class NotificationManager {
       if (generation !== this.generation) return;
 
       if (!resp.ok || !resp.body) {
+        // Nothing reads a non-OK answer. Each retry replaces the controller that stop() aborts, so an unread body would stay open.
+        resp.body?.cancel().catch(() => {});
         throw new Error(`HTTP ${resp.status}`);
       }
 

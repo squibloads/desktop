@@ -57,6 +57,8 @@ class HealthPoller {
         const data = await resp.json();
         return data.status === "ok" ? "ok" : "degraded";
       }
+      // A non-OK answer, a redirect included, is never read: cancel its body, or its connection stays busy.
+      resp.body?.cancel().catch(() => {});
       return "error";
     } catch {
       return "disconnected";
