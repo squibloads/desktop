@@ -132,6 +132,30 @@ describe("NotificationManager SSE parser", () => {
     expect(notifySpy.mock.calls).toEqual([]);
   });
 
+  // Failure: the retry is scheduled before the old body is cancelled, so the next request can start while the old connection is still being released.
+  it("waits for the body to be cancelled before it schedules the retry", async () => {
+    let finishCancel;
+    const cancel = vi.fn(() => new Promise((resolve) => {
+      finishCancel = resolve;
+    }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } }));
+
+    manager = createManager();
+    manager.running = true;
+    let finished = false;
+    const connecting = manager._connect(manager.generation).then(() => {
+      finished = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(finished).toBe(false);
+
+    finishCancel();
+    await connecting;
+    expect(finished).toBe(true);
+  });
+
   // Failure: a non-OK answer's body is never cancelled, so each retry leaves a connection open that the next stop() cannot abort.
   it("cancels the body of a non-OK response before it reconnects", async () => {
     const cancel = vi.fn().mockResolvedValue(undefined);

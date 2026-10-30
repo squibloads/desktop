@@ -70,6 +70,27 @@ describe("HealthPoller", () => {
     vi.unstubAllGlobals();
   });
 
+  // Failure: the answer is reported before the body is cancelled, so the next poll can start while this connection is still open.
+  it("reports the answer only once the body is cancelled", async () => {
+    let finishCancel;
+    const cancel = vi.fn(() => new Promise((resolve) => {
+      finishCancel = resolve;
+    }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 302, body: { cancel } }));
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+
+    const polling = poller.poll();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(poller.status.server).toBe("unknown");
+
+    finishCancel();
+    await polling;
+    expect(poller.status.server).toBe("error");
+    vi.unstubAllGlobals();
+  });
+
   it("polls both servers when both enabled", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

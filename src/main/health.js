@@ -57,8 +57,13 @@ class HealthPoller {
         const data = await resp.json();
         return data.status === "ok" ? "ok" : "degraded";
       }
-      // A non-OK answer, a redirect included, is never read: cancel its body, or its connection stays busy.
-      resp.body?.cancel().catch(() => {});
+      // A non-OK answer, a redirect included, is never read. Its body is cancelled before the answer is
+      // reported, so the next poll never starts while this connection is still open.
+      try {
+        await resp.body?.cancel();
+      } catch {
+        // A body that will not cancel still leaves the answer as an error.
+      }
       return "error";
     } catch {
       return "disconnected";
