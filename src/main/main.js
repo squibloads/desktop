@@ -6,6 +6,7 @@ const {
   shell,
   screen,
   dialog,
+  session,
 } = require("electron");
 const path = require("path");
 const { SettingsStore } = require("./settings-store.js");
@@ -20,6 +21,7 @@ const { planSettingsSave, writeSavePlan } = require("./settings-save.js");
 const { shouldStopPodOnQuit } = require("./quit-policy.js");
 const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
 const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
+const { requestDecision, checkDecision, allowedOriginsFrom } = require("./permissions.js");
 const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
 const { canRetryLocal } = require("./ipc-guards.js");
 const { firstConfigError } = require("./runtime-config.js");
@@ -146,6 +148,55 @@ function createMainWindow() {
     serverView = null;
     consoleView = null;
   });
+}
+
+// Pages in the server and console views get only what permissions.js allows, and only
+// for the origins the user configured. Electron approves every request when no handler is set.
+// Each request is decided when it arrives, so a changed URL applies from then on. A changed URL
+// also reloads its view, which ends any capture that page was running; a mode switch rebuilds
+// the windows, which does the same.
+function installPermissionPolicy() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const decision = requestDecision(
+      {
+        permission,
+        requestingUrl: details.requestingUrl,
+        topUrl: topUrlOf(webContents),
+        isMainFrame: details.isMainFrame,
+        mediaTypes: details.mediaTypes,
+      },
+      configuredOrigins,
+    );
+    callback(decision);
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    return checkDecision(
+      {
+        permission,
+        requestingOrigin,
+        topUrl: topUrlOf(webContents),
+        isMainFrame: details.isMainFrame,
+        mediaType: details.mediaType,
+      },
+      configuredOrigins,
+    );
+  });
+}
+
+// The top-level page of a view. Electron can pass a null web contents to a check; for a frame
+// inside another page, "" matches no configured origin, so the rules refuse it.
+function topUrlOf(webContents) {
+  return webContents ? webContents.getURL() : "";
+}
+
+// Read only once a request passes the permission name, and again on each request, so a
+// changed URL or a mode switch applies without a restart.
+function configuredOrigins() {
+  try {
+    return allowedOriginsFrom(settings);
+  } catch {
+    return [];
+  }
 }
 
 function setupViewSecurity(view, settingKey) {
@@ -569,6 +620,7 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
+  installPermissionPolicy();
   settings = await SettingsStore.create();
   activeTab = settings.activeTab || "server";
 

@@ -31,6 +31,13 @@ const shapes = [
   ["notification restart", "if (plan.restartNotifications) notificationLifecycle.restart();"],
   // Failure: quitting leaves a notification connection open.
   ["notification stop on quit", "notificationLifecycle.stop();"],
+  // Failure: with no handler, Electron approves every permission a page asks for.
+  ["permission request policy", "session.defaultSession.setPermissionRequestHandler("],
+  ["permission check policy", "session.defaultSession.setPermissionCheckHandler("],
+  // Failure: the handler answers with a constant, so the decision in permissions.js is never used.
+  ["permission request decision", "const decision = requestDecision("],
+  ["permission request answer", "callback(decision);"],
+  ["permission check answer", "return checkDecision("],
 ];
 
 describe("main.js wiring", () => {
@@ -89,5 +96,46 @@ describe("main.js wiring", () => {
   // Failure: a launch or a mode rebuild that skips the apply leaves the mode's notifications unset, or runs them from a stale manager.
   it("applies notifications at launch and on every mode rebuild", () => {
     expect(main.split("notificationLifecycle.apply(settings);").length - 1).toBe(2);
+  });
+
+  // Failure: the permission policy is not imported from electron, so the install call throws before any window is built.
+  it("imports session from electron", () => {
+    expect(main).toMatch(/^\s*session,\r?$/m);
+  });
+
+  // Failure: a page loads before the permission policy is installed, so it is granted whatever it asks for.
+  it("installs the permission policy after the app is ready and before the first window is built", () => {
+    const ready = main.indexOf("app.whenReady()");
+    const install = main.indexOf("installPermissionPolicy();");
+    const build = main.indexOf("createMainWindow();", ready);
+
+    expect(install).toBeGreaterThan(ready);
+    expect(build).toBeGreaterThan(install);
+  });
+
+  // Failure: a handler calls configuredOrigins() eagerly, so every request reads the settings file, even refused ones.
+  it("passes configuredOrigins to both handlers as a getter, not a call", () => {
+    expect(main.match(/^ {6}configuredOrigins,\r?$/gm) || []).toHaveLength(2);
+  });
+
+  // Failure: the install call is moved onto another line or behind a false guard, so the policy is never installed, or is installed after the settings read.
+  it("calls the permission policy as its own statement, right before the settings read", () => {
+    expect(main).toMatch(/\n {2}installPermissionPolicy\(\);\r?\n {2}settings = await SettingsStore\.create\(\);/);
+  });
+
+  // Failure: a details field is dropped or replaced by a constant in one handler, so the decision is made on facts that are not the request's.
+  it("maps each Electron details field into the decision, in each handler", () => {
+    const fields = [
+      [/^ {8}permission,\r?$/gm, 2],
+      [/^ {8}requestingOrigin,\r?$/gm, 1],
+      [/^ {8}requestingUrl: details\.requestingUrl,\r?$/gm, 1],
+      [/^ {8}topUrl: topUrlOf\(webContents\),\r?$/gm, 2],
+      [/^ {8}isMainFrame: details\.isMainFrame,\r?$/gm, 2],
+      [/^ {8}mediaTypes: details\.mediaTypes,\r?$/gm, 1],
+      [/^ {8}mediaType: details\.mediaType,\r?$/gm, 1],
+    ];
+    for (const [pattern, expected] of fields) {
+      expect((main.match(pattern) || []).length, String(pattern)).toBe(expected);
+    }
   });
 });
