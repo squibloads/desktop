@@ -214,6 +214,19 @@ npm run make
 
 Produces platform-specific distributables in `out/make/`.
 
+On Windows, the installer is `out/make/squirrel.windows/x64/Turnstone-<version> Setup.exe`. It installs for the current user, with no admin prompt.
+
+Squirrel makes no shortcuts for this app. Instead it starts the app once for each event and waits for it: up to 15 seconds for install and update, 10 for uninstall. The app answers each event without opening a window:
+
+- **Install:** creates the desktop shortcut and the Start menu shortcut, under Turnstone Labs.
+  - Running a newer Setup.exe over an installed app is also an install, not an update.
+  - Squirrel first ends a running copy, without the app's quit steps, so a Local mode pod is not stopped.
+- **Update:** `Update.exe --update`. The app has no auto-updater and never runs it itself.
+  - Refreshes both shortcuts.
+  - Brings back a desktop shortcut the user deleted. Update.exe has no option that refreshes only the shortcuts that exist.
+- **Uninstall:** removes both shortcuts. What stays: the empty Turnstone Labs folder; `%LOCALAPPDATA%\turnstone-desktop`, with the last version's folder; and the app's data in `%APPDATA%`.
+- **An older version that an update is about to delete:** exits.
+
 ## Releases
 
 Pushing a version tag triggers CI builds for macOS, Windows, and Linux. The workflow publishes a GitHub Release. A tag containing a hyphen is marked a prerelease.

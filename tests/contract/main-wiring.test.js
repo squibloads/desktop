@@ -44,6 +44,35 @@ function dropLoopPlacement(source) {
   };
 }
 
+// How main.js answers a Squirrel install event: whether the plan is read at the top level, from the real command line
+// and exe, before whenReady is registered; whether the guard is the first statement of the whenReady callback; whether
+// its body is exactly the run, with app.exit as its exit, then a bare return; and whether that callback is the only
+// thing the file runs on ready, since another ready handler would start the app beside the guard.
+function installEventGuard(source) {
+  const program = parse(source, { ecmaVersion: "latest", sourceType: "script" });
+  const text = (node) => source.slice(node.start, node.end);
+  const planAt = program.body.findIndex(
+    (node) => text(node) === "const installEvent = installEventPlan(process.argv, process.execPath);",
+  );
+  const readyAt = program.body.findIndex(
+    (node) => node.type === "ExpressionStatement" && text(node).startsWith("app.whenReady().then("),
+  );
+  const callback = readyAt >= 0 ? program.body[readyAt].expression.arguments[0] : null;
+  const first = callback?.body?.body?.[0];
+  const isGuard = first?.type === "IfStatement" && first.test.type === "Identifier" && first.test.name === "installEvent";
+  const guarded = isGuard && first.consequent.type === "BlockStatement" ? first.consequent.body : [];
+  return {
+    planReadFirst: planAt >= 0 && planAt < readyAt,
+    firstInReady: isGuard,
+    runsThePlan:
+      guarded.length > 0 && text(guarded[0]) === "runInstallEvent(installEvent, { spawn, exit: (code) => app.exit(code) });",
+    returns: guarded.length === 2 && guarded[1].type === "ReturnStatement" && guarded[1].argument === null,
+    onlyReadyHandler:
+      (source.match(/\bwhenReady\(/g) || []).length === 1 &&
+      !/\.(?:on|once|addListener|prependListener|prependOnceListener)\(\s*["'`]ready["'`]/.test(source),
+  };
+}
+
 const shapes = [
   // Failure: swapped width and height put the page in the wrong place.
   ["content bounds", "contentBounds(width, height, TAB_BAR_HEIGHT)"],
@@ -163,6 +192,44 @@ describe("main.js wiring", () => {
     expect(dropLoopPlacement(`${requires}const { HealthPoller } = require("./health.js");\n${loop}`).onlyRequiresBefore).toBe(false);
     const noRemove = "for (const name of switchesToDrop(app.commandLine)) {\n  console.warn(name);\n}";
     expect(dropLoopPlacement(`${requires}${noRemove}`).removesEachSwitch).toBe(false);
+  });
+
+  // Failure: a Squirrel install, update or uninstall opens the full app, starting Local mode or connecting to the
+  // server, and gives it no shortcut, because main.js never reads the event, reads it after the window is built, or
+  // makes the shortcut call and goes on starting.
+  it("answers a Squirrel install event first in whenReady, and starts nothing else", () => {
+    expect(main).toMatch(/const \{ installEventPlan, runInstallEvent \} = require\("\.\/install-events\.js"\);/);
+    expect(main).toMatch(/const \{ spawn \} = require\("node:child_process"\);/);
+    expect(installEventGuard(main)).toEqual({
+      planReadFirst: true,
+      firstInReady: true,
+      runsThePlan: true,
+      returns: true,
+      onlyReadyHandler: true,
+    });
+  });
+
+  // Failure: the guard check above passes a guard that is not first, does not return, or runs a plan of its own.
+  it("finds the install-event guard only where it runs first and returns", () => {
+    const plan = "const installEvent = installEventPlan(process.argv, process.execPath);\n";
+    const run = "    runInstallEvent(installEvent, { spawn, exit: (code) => app.exit(code) });\n";
+    const ready = (body) => `app.whenReady().then(async () => {\n${body}  createMainWindow();\n});\n`;
+    const guard = `  if (installEvent) {\n${run}    return;\n  }\n`;
+    const all = { planReadFirst: true, firstInReady: true, runsThePlan: true, returns: true, onlyReadyHandler: true };
+
+    expect(installEventGuard(`${plan}${ready(guard)}`)).toEqual(all);
+    expect(installEventGuard(`${ready(guard)}${plan}`).planReadFirst).toBe(false);
+    expect(installEventGuard(`${plan.replace("process.argv", "[]")}${ready(guard)}`).planReadFirst).toBe(false);
+    expect(installEventGuard(`function later() {\n${plan}}\n${ready(guard)}`).planReadFirst).toBe(false);
+    expect(installEventGuard(`${plan}${ready(`  installPermissionPolicy();\n${guard}`)}`).firstInReady).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard.replace("    return;\n", ""))}`).returns).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard.replace("app.exit(code)", "app.quit()"))}`).runsThePlan).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard.replace("(installEvent,", "({ update: null },"))}`).runsThePlan).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard.replace("return;", "return startLocalRuntime();"))}`).returns).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard.replace("    return;\n", "    createMainWindow();\n    return;\n"))}`).returns).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard)}app.on("ready", () => {\n  createMainWindow();\n});\n`).onlyReadyHandler).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard)}app.once('ready', start);\n`).onlyReadyHandler).toBe(false);
+    expect(installEventGuard(`${plan}${ready(guard)}app.whenReady().then(start);\n`).onlyReadyHandler).toBe(false);
   });
 
   // Failure: a bad override reaches SettingsStore or the windows before it is seen, so the error shows up later as a broken Local mode instead of a startup error.

@@ -39,6 +39,12 @@ const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./la
 const { canRetryLocal } = require("./ipc-guards.js");
 const { firstConfigError } = require("./runtime-config.js");
 const { createRedirectRefusals } = require("./redirect-refusals.js");
+const { installEventPlan, runInstallEvent } = require("./install-events.js");
+const { spawn } = require("node:child_process");
+
+// Set when Squirrel started this run for an install, update or uninstall, which whenReady answers instead of starting
+// the app; see install-events.js.
+const installEvent = installEventPlan(process.argv, process.execPath);
 
 let settings = null;
 // What the health poller and the notification poll may read: a refused address reads as absent.
@@ -734,6 +740,11 @@ function getActiveView() {
 // ─── App Lifecycle ───────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // A Squirrel event: make its shortcut call and exit, with no window, settings read or Local mode start.
+  if (installEvent) {
+    runInstallEvent(installEvent, { spawn, exit: (code) => app.exit(code) });
+    return;
+  }
   // Checked in every mode, before anything reads the overrides: a bad value stops the app here
   // with a message, instead of failing later inside Local mode.
   const configError = firstConfigError();
