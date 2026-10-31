@@ -3,9 +3,13 @@ name: Build & Release
 on:
   push:
     tags: ['v*']
+  # Builds and checks a ref by hand. It publishes nothing: the release job and the Apple credentials are for a pushed
+  # tag only, even when the ref chosen is a tag.
+  workflow_dispatch:
 
+# The event is part of the group, so a run started by hand never cancels a tag's release in progress.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -39,9 +43,32 @@ jobs:
       - name: Build distributables
         run: npx electron-forge make
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ github.event_name == 'push' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && secrets.APPLE_TEAM_ID || '' }}
+
+      # The same libraries the smoke tier installs: the check below opens the packaged app's window.
+      - name: Install Xvfb and Electron libraries
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          command -v xvfb-run || sudo apt-get install -y --no-install-recommends xvfb
+          sudo apt-get install -y --no-install-recommends libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libxkbcommon0
+
+      # Reads the binary's fuses and starts the packaged build with launch switches it must drop, beside an unpackaged
+      # control that keeps them: see tests/helpers/check-packaged-build.mjs. A failure stops this OS's upload, and with
+      # it the release. Linux has no display, so it runs under Xvfb there.
+      - name: Check the packaged build
+        timeout-minutes: 10
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          if [ "$PLATFORM" = linux ]; then
+            xvfb-run -a npm run test:packaged
+          else
+            npm run test:packaged
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -59,7 +86,7 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
