@@ -558,6 +558,22 @@ describe("NotificationManager start and stop", () => {
     expect(vi.getTimerCount()).toBe(1);
   });
 
+  // Failure: a restart for a new Server URL compares the new server's workstreams with the states recorded for the
+  // old one, so it announces workstreams that differ only because the server did.
+  it("starts from where things stand after a restart", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention")];
+    manager.stop();
+    manager.start();
+    await settle();
+
+    expect(fake.constructed).toEqual([]);
+  });
+
   // Failure: a restart waits out the interval before it asks, so a corrected URL shows nothing for 10 seconds.
   it("asks at once after a restart", async () => {
     const { fetch } = fakeServer();
