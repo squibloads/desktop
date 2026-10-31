@@ -8,6 +8,16 @@ const {
   dialog,
   session,
 } = require("electron");
+const { switchesToDrop } = require("./debug-switches.js");
+
+// A packaged build drops the launch switches that reach its signed-in views; see debug-switches.js. This runs first,
+// before any other module loads: Electron reads them once this file's top level has run, even if something here throws.
+// The line goes to the console that started the app, if any.
+for (const name of switchesToDrop(app.commandLine)) {
+  app.commandLine.removeSwitch(name);
+  console.warn(`Ignored --${name}: a packaged build does not accept it.`);
+}
+
 const path = require("path");
 const { SettingsStore } = require("./settings-store.js");
 const { HealthPoller } = require("./health.js");
