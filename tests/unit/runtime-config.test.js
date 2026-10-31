@@ -1,6 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const { podmanCommand, localConsoleUrl, firstConfigError } = require("../../src/main/runtime-config.js");
+const { podmanCommand, localConsoleUrl, firstConfigError, isPackagedApp } = require("../../src/main/runtime-config.js");
 
 // Every call passes its environment explicitly, so the shell that runs the suite cannot change a result.
 // Returns the message of the error the function throws, or "" when it returns normally.
@@ -170,5 +174,77 @@ describe("firstConfigError", () => {
     expect(firstConfigError({ TURNSTONE_LOCAL_CONSOLE_URL: "ftp://127.0.0.1" })).toBe(
       "TURNSTONE_LOCAL_CONSOLE_URL must use the http: scheme",
     );
+  });
+});
+
+describe("a packaged build", () => {
+  const OVERRIDES = { TURNSTONE_PODMAN: '["other-program.exe"]', TURNSTONE_LOCAL_CONSOLE_URL: "http://127.0.0.1:9191" };
+
+  // Failure: a release reads TURNSTONE_PODMAN, so whoever can set the user's environment swaps podman for any program;
+  // or it reads TURNSTONE_LOCAL_CONSOLE_URL and moves Local mode to another port.
+  it("ignores both overrides, and runs podman against the README address", () => {
+    expect(podmanCommand(OVERRIDES, true)).toEqual({ file: "podman", prefixArgs: [] });
+    expect(localConsoleUrl(OVERRIDES, true)).toBe("http://127.0.0.1:8090");
+  });
+
+  // Failure: a malformed override stops a release at start, though the release never reads it.
+  it("starts with malformed values, which it never reads", () => {
+    expect(firstConfigError({ TURNSTONE_PODMAN: "not json", TURNSTONE_LOCAL_CONSOLE_URL: "http://example.com" }, true)).toBeNull();
+  });
+
+  // Failure: an unpackaged run, as the smoke tier is, ignores the overrides too, so it reaches the real podman.
+  it("is the only kind of run that ignores them", () => {
+    expect(podmanCommand(OVERRIDES, false)).toEqual({ file: "other-program.exe", prefixArgs: [] });
+    expect(localConsoleUrl(OVERRIDES, false)).toBe("http://127.0.0.1:9191");
+  });
+});
+
+describe("isPackagedApp", () => {
+  // Failure: a release, which runs this module from inside app.asar on every platform Forge builds for, reads the
+  // overrides.
+  it.each([
+    ["C:\\Users\\u\\AppData\\Local\\turnstone_desktop\\app-0.1.1\\resources\\app.asar\\src\\main\\runtime-config.js"],
+    ["/usr/lib/turnstone-desktop/resources/app.asar/src/main/runtime-config.js"],
+    ["/Applications/Turnstone.app/Contents/Resources/app.asar/src/main/runtime-config.js"],
+    ["/tmp/.mount_TurnstXYZ/resources/app.asar.unpacked/src/main/runtime-config.js"],
+  ])("is true for a file inside app.asar: %s", (filename) => {
+    expect(isPackagedApp(filename)).toBe(true);
+  });
+
+  // Failure: a checkout, which npm start and the smoke tier run from, counts as packaged, so the smoke tier ignores its
+  // fakes and reaches the real podman; or a directory whose name only contains app.asar does.
+  it.each([
+    ["E:\\Git_repos\\turnstone-desktop\\src\\main\\runtime-config.js"],
+    ["/home/u/myapp.asar/src/main/runtime-config.js"],
+    ["/home/u/app.asar-notes/src/main/runtime-config.js"],
+  ])("is false for a file outside app.asar: %s", (filename) => {
+    expect(isPackagedApp(filename)).toBe(false);
+  });
+
+  // Failure: the unit tier, which runs this module from the checkout, counts as packaged, so the override tests above
+  // stop reading the overrides.
+  it("is false for this module in the checkout", () => {
+    expect(isPackagedApp()).toBe(false);
+  });
+
+  describe("for a copy of the module inside app.asar", () => {
+    let root;
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    // Failure: a function reads the overrides unless its caller says the app is packaged, and the app's callers never
+    // say so, so a release still reads them.
+    it("is what every function asks when its caller does not say", () => {
+      root = mkdtempSync(join(tmpdir(), "runtime-config-"));
+      const dir = join(root, "resources", "app.asar", "src", "main");
+      mkdirSync(dir, { recursive: true });
+      copyFileSync(require.resolve("../../src/main/runtime-config.js"), join(dir, "runtime-config.js"));
+      const packaged = createRequire(join(dir, "index.js"))("./runtime-config.js");
+      const env = { TURNSTONE_PODMAN: "not json", TURNSTONE_LOCAL_CONSOLE_URL: "http://example.com" };
+
+      expect(packaged.isPackagedApp()).toBe(true);
+      expect(packaged.podmanCommand(env)).toEqual({ file: "podman", prefixArgs: [] });
+      expect(packaged.localConsoleUrl(env)).toBe("http://127.0.0.1:8090");
+      expect(packaged.firstConfigError(env)).toBeNull();
+    });
   });
 });

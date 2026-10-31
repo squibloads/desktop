@@ -285,4 +285,12 @@ describe("README developer note for the smoke-test overrides", () => {
     expect(note).toContain("keeps only the origin");
     expect(note).toContain("stops the app at start");
   });
+
+  // Failure: the note does not say a packaged build ignores the variables, so a developer testing a release build
+  // sets them and is misled when nothing changes.
+  it("says a packaged build ignores both", () => {
+    const note = readmeMatch(/(\*\*For developers: smoke-test overrides\.\*\*[^\n]*)/);
+
+    expect(note).toContain("A packaged build ignores both");
+  });
 });
