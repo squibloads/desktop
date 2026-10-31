@@ -13,6 +13,7 @@ const { SettingsStore } = require("./settings-store.js");
 const { HealthPoller } = require("./health.js");
 const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
+const { notificationLabel } = require("./tray-status.js");
 const { NotificationManager, createNotificationLifecycle } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
 const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
@@ -42,7 +43,9 @@ let settingsWindow = null;
 let activeTab = "server";
 let healthPoller = null;
 let tray = null;
-const notificationLifecycle = createNotificationLifecycle((s) => new NotificationManager(s));
+const notificationLifecycle = createNotificationLifecycle(
+  (s) => new NotificationManager(s, { onStatus: showNotificationStatus }),
+);
 let localRuntime = null;
 let quitting = false;
 
@@ -695,6 +698,18 @@ function setupHealthPoller() {
   });
 
   healthPoller.start();
+}
+
+// ─── Notification Status ─────────────────────────────────────────────────
+
+/**
+ * Shows in the tray whether notifications work, and logs each change, so a server that refuses them is not
+ * silent. A stopped manager reports null, which removes the tray line.
+ */
+function showNotificationStatus(status) {
+  if (tray) tray.updateNotifications(status);
+  const label = notificationLabel(status);
+  if (label) console.log(label);
 }
 
 // ─── Menu Actions ────────────────────────────────────────────────────────

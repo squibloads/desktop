@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-const { statusLabel, trayIconName, buildTrayMenuTemplate } = require("../../src/main/tray-status.js");
+const { statusLabel, trayIconName, buildTrayMenuTemplate, notificationLabel } = require("../../src/main/tray-status.js");
 
 // Failure: a refused server reads as switched off, so the tray stays green while the server is refused.
 describe("refused status in the tray", () => {
@@ -37,6 +37,23 @@ describe("statusLabel", () => {
   // Failure: an unrecognised or not-yet-reported status shows blank or crashes the menu build.
   it.each(["unknown", "", "bogus"])("maps unrecognised status %j to Unknown", (status) => {
     expect(statusLabel(status)).toEqual("Unknown");
+  });
+});
+
+describe("notificationLabel", () => {
+  // Failure: the tray shows a raw status word, or says notifications work while the server refuses them.
+  it.each([
+    ["on", "Notifications: On"],
+    ["signed-out", "Notifications: Sign in to the server"],
+    ["refused", "Notifications: Refused by the server"],
+    ["waiting", "Notifications: Waiting for the server"],
+  ])("labels %s as %s", (status, label) => {
+    expect(notificationLabel(status)).toEqual(label);
+  });
+
+  // Failure: a stopped manager, or a status the tray does not know, shows a line that says nothing true.
+  it.each([null, undefined, "", "bogus"])("gives no line for %j", (status) => {
+    expect(notificationLabel(status)).toBe(null);
   });
 });
 
@@ -156,6 +173,28 @@ describe("buildTrayMenuTemplate", () => {
 
     expect(items[0]).toEqual({ label: "Server: Unknown", enabled: false });
     expect(items[1]).toEqual({ label: "Console: Disconnected", enabled: false });
+  });
+
+  // Failure: the tray hides why no notification arrives, or shows the notifications line as something to click.
+  it("lists the notifications line after the status rows, disabled", () => {
+    const actions = makeActions();
+
+    expect(buildTrayMenuTemplate("ok", "disabled", actions, "signed-out")).toEqual([
+      { label: "Server: Connected", enabled: false },
+      { label: "Notifications: Sign in to the server", enabled: false },
+      { type: "separator" },
+      { label: "Show Window", click: actions.showWindow },
+      { label: "Settings…", click: actions.openSettings },
+      { type: "separator" },
+      { label: "Quit", click: actions.quit },
+    ]);
+  });
+
+  // Failure: a mode without notifications, or a poll that has not answered yet, shows a notifications line.
+  it("has no notifications line without a notification status", () => {
+    const labels = buildTrayMenuTemplate("ok", "ok", makeActions(), null).map((item) => item.label);
+
+    expect(labels.filter((label) => label?.startsWith("Notifications"))).toEqual([]);
   });
 
   // Failure: a menu item runs a wrapper or a stale function instead of the action the caller supplied.

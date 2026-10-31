@@ -31,6 +31,10 @@ const shapes = [
   ["notification restart", "if (plan.restartNotifications) notificationLifecycle.apply(reachable);"],
   // Failure: quitting leaves a notification connection open.
   ["notification stop on quit", "notificationLifecycle.stop();"],
+  // Failure: the manager's status goes nowhere, so a server that refuses notifications is silent again.
+  ["notification status is reported", "new NotificationManager(s, { onStatus: showNotificationStatus })"],
+  ["notification status reaches the tray", "if (tray) tray.updateNotifications(status);"],
+  ["notification status is logged", "if (label) console.log(label);"],
   // Failure: with no handler, Electron approves every permission a page asks for.
   ["permission request policy", "session.defaultSession.setPermissionRequestHandler("],
   ["permission check policy", "session.defaultSession.setPermissionCheckHandler("],
