@@ -54,6 +54,23 @@ function turnstoneServer(seen) {
   };
 }
 
+// Loads a path of the server in the Server view, once the view has finished loading the server. A load started
+// before then aborts the first one, and on CI the new load was rejected with that one's ERR_ABORTED.
+async function loadInServerView(app, origin, path) {
+  const serverViewLoaded = ({ webContents }, origin) =>
+    webContents.getAllWebContents().some((c) => c.getURL().startsWith(origin) && !c.isLoading());
+  await pollUntil(() => app.mainEvaluate(serverViewLoaded, origin), {
+    description: "the Server view loaded from the server",
+  });
+  await app.mainEvaluate(
+    ({ webContents }, { origin, path }) => {
+      const view = webContents.getAllWebContents().find((c) => c.getURL().startsWith(origin));
+      return view.loadURL(`${origin}${path}`);
+    },
+    { origin, path },
+  );
+}
+
 // The shell's health dot for the server. shell.js sets the state as a class on this element.
 function serverDotHas(shell, state) {
   return () => shell.evaluate((cls) => document.getElementById("server-health").classList.contains(cls), state);
@@ -160,13 +177,7 @@ describe("requests the main process makes", () => {
     });
 
     // The user signs in through the Server view, which receives the server's cookie.
-    await app.mainEvaluate(
-      ({ webContents }, origin) => {
-        const view = webContents.getAllWebContents().find((c) => c.getURL().startsWith(origin));
-        return view.loadURL(`${origin}/sign-in`);
-      },
-      site,
-    );
+    await loadInServerView(app, site, "/sign-in");
     await pollUntil(() => seen.some((r) => r.path === "/v1/api/workstreams" && r.cookie?.includes(TOKEN)), {
       description: "a poll that carries the sign-in cookie",
     });
@@ -234,19 +245,7 @@ describe("requests the main process makes", () => {
       return Notification.prototype.show.toString().includes("shownNotifications") && Notification.isSupported();
     });
     expect(patched).toBe(true);
-    // Signs in through the Server view, once it has loaded the server.
-    const signInAs = async (user) => {
-      const serverView = ({ webContents }, origin) =>
-        webContents.getAllWebContents().some((c) => c.getURL().startsWith(origin));
-      await pollUntil(() => app.mainEvaluate(serverView, site), { description: "the Server view on the server" });
-      await app.mainEvaluate(
-        ({ webContents }, { origin, path }) => {
-          const view = webContents.getAllWebContents().find((c) => c.getURL().startsWith(origin));
-          return view.loadURL(`${origin}${path}`);
-        },
-        { origin: site, path: `/sign-in/${user}` },
-      );
-    };
+    const signInAs = (user) => loadInServerView(app, site, `/sign-in/${user}`);
 
     // u1 signs in, and the first list answered for u1 records w1 as running.
     await signInAs("u1");
