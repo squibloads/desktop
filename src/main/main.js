@@ -31,7 +31,7 @@ const { firstConfigError } = require("./runtime-config.js");
 const { createRedirectRefusals } = require("./redirect-refusals.js");
 
 let settings = null;
-// What the poller and the notification stream may read: a refused address reads as absent.
+// What the health poller and the notification poll may read: a refused address reads as absent.
 const reachable = reachableSettings(() => settings);
 // Redirects the request guard cancelled, so a failed load can say so. See redirect-refusals.js.
 const redirectRefusals = createRedirectRefusals();

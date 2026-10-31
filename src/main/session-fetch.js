@@ -1,6 +1,6 @@
 // Requests the main process makes go through Electron's network stack, the one the views use. Node's own
 // fetch trusts only the certificate authorities bundled with Node, so a server behind a private CA that the
-// system trusts would load in the views and still fail every health check and event stream. Through
+// system trusts would load in the views and still fail every health check and notification poll. Through
 // Electron, these requests trust what the views trust and use the same proxy settings.
 //
 // electron is required inside the function, so the modules that use this one still load under plain Node
