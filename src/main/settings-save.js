@@ -90,7 +90,7 @@ function writeSavePlan(store, apply) {
 }
 
 /**
- * Settings as the health poller and the notification stream may read them. A stored address
+ * Settings as the health poller and the notification poll may read them. A stored address
  * the rule refuses reads as absent, so it is never polled or connected to. The getters read
  * the store each time, so a later change is seen without rebuilding this object.
  */
