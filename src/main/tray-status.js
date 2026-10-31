@@ -24,6 +24,7 @@ function notificationLabel(status) {
   if (status === "signed-out") return "Notifications: Sign in to the server";
   if (status === "refused") return "Notifications: Refused by the server";
   if (status === "waiting") return "Notifications: Waiting for the server";
+  if (status === "unsupported") return "Notifications: Not supported by this server";
   return null;
 }
 
