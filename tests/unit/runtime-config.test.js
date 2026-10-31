@@ -229,7 +229,10 @@ describe("isPackagedApp", () => {
 
   describe("for a copy of the module inside app.asar", () => {
     let root;
-    afterEach(() => rmSync(root, { recursive: true, force: true }));
+    afterEach(() => {
+      if (root) rmSync(root, { recursive: true, force: true });
+      root = undefined;
+    });
 
     // Failure: a function reads the overrides unless its caller says the app is packaged, and the app's callers never
     // say so, so a release still reads them.

@@ -1,11 +1,48 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { parse } from "acorn";
 
 // main.js is not run by the tests, so these pin the call shapes that feed the
 // pure modules. A wiring slip (swapped arguments, a hard-coded flag, a dropped
 // sender check) would pass every unit test of the modules themselves.
 const main = readFileSync(join(__dirname, "..", "..", "src", "main", "main.js"), "utf8");
+
+// The modules main.js may load before it drops the switches: electron, for app.commandLine, and the rule itself, which
+// loads only the pure runtime-config.js. Any other module could throw first and leave the switches in.
+const LOADED_BEFORE_THE_DROP = ["electron", "./debug-switches.js"];
+
+// Whether a declaration only binds what one of LOADED_BEFORE_THE_DROP exports, as `const { a } = require("...")`.
+function isEarlyRequire(statement) {
+  return (
+    statement.type === "VariableDeclaration" &&
+    statement.declarations.every(
+      ({ init }) =>
+        init?.type === "CallExpression" &&
+        init.callee.type === "Identifier" &&
+        init.callee.name === "require" &&
+        LOADED_BEFORE_THE_DROP.includes(init.arguments[0]?.value),
+    )
+  );
+}
+
+// Where main.js drops the switches: whether the `for (const name of switchesToDrop(app.commandLine))` loop is a
+// statement of the program itself, whether only the early requires come before it, and whether its body calls
+// app.commandLine.removeSwitch(name).
+function dropLoopPlacement(source) {
+  const program = parse(source, { ecmaVersion: "latest", sourceType: "script" });
+  const isDropLoop = (node) =>
+    node?.type === "ForOfStatement" &&
+    source.slice(node.right.start, node.right.end) === "switchesToDrop(app.commandLine)";
+  const index = program.body.findIndex(isDropLoop);
+  const loop = program.body[index];
+  return {
+    topLevel: index >= 0,
+    onlyRequiresBefore: index >= 0 && program.body.slice(0, index).every(isEarlyRequire),
+    removesEachSwitch:
+      index >= 0 && source.slice(loop.body.start, loop.body.end).includes("app.commandLine.removeSwitch(name);"),
+  };
+}
 
 const shapes = [
   // Failure: swapped width and height put the page in the wrong place.
@@ -103,6 +140,29 @@ describe("main.js wiring", () => {
   it("imports firstConfigError from runtime-config.js and dialog from electron", () => {
     expect(main).toMatch(/const \{ firstConfigError \} = require\("\.\/runtime-config\.js"\);/);
     expect(main).toMatch(/^\s*dialog,\r?$/m);
+  });
+
+  // Failure: a packaged build keeps the switches debug-switches.js drops, because main.js drops them inside a callback,
+  // a condition or a function, or after another module that could throw first: Electron starts its DevTools server and
+  // network service once main.js's top level has run, even after an error there.
+  it("drops the switches in a top-level loop, right after loading electron and the rule", () => {
+    expect(main).toMatch(/const \{ switchesToDrop \} = require\("\.\/debug-switches\.js"\);/);
+    expect(dropLoopPlacement(main)).toEqual({ topLevel: true, onlyRequiresBefore: true, removesEachSwitch: true });
+  });
+
+  // Failure: the placement check above passes a loop that never runs at the top level, so it proves nothing.
+  it("finds the loop only where it runs at the top level, first", () => {
+    const loop = "for (const name of switchesToDrop(app.commandLine)) {\n  app.commandLine.removeSwitch(name);\n}";
+    const requires = 'const { app } = require("electron");\nconst { switchesToDrop } = require("./debug-switches.js");\n';
+
+    expect(dropLoopPlacement(`${requires}${loop}`)).toEqual({ topLevel: true, onlyRequiresBefore: true, removesEachSwitch: true });
+    expect(dropLoopPlacement(`${requires}app.on("will-finish-launching", () => {\n${loop}\n});`).topLevel).toBe(false);
+    expect(dropLoopPlacement(`${requires}if (process.env.NEVER) {\n${loop}\n}`).topLevel).toBe(false);
+    expect(dropLoopPlacement(`${requires}function later() {\n${loop}\n}`).topLevel).toBe(false);
+    expect(dropLoopPlacement(`${requires}setUp();\n${loop}`).onlyRequiresBefore).toBe(false);
+    expect(dropLoopPlacement(`${requires}const { HealthPoller } = require("./health.js");\n${loop}`).onlyRequiresBefore).toBe(false);
+    const noRemove = "for (const name of switchesToDrop(app.commandLine)) {\n  console.warn(name);\n}";
+    expect(dropLoopPlacement(`${requires}${noRemove}`).removesEachSwitch).toBe(false);
   });
 
   // Failure: a bad override reaches SettingsStore or the windows before it is seen, so the error shows up later as a broken Local mode instead of a startup error.
