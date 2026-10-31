@@ -7,17 +7,17 @@ const POLL_INTERVAL_MS = 10000;
 const REQUEST_TIMEOUT_MS = 5000;
 
 // What a non-OK answer says about notifications. 401 is the server asking for a sign-in. Any other refusal of
-// the request lasts until something changes, while a server error or a rate limit passes.
+// the request lasts until something changes, while a server error, a rate limit or a request timeout passes.
 function refusalStatus(code) {
   if (code === 401) return "signed-out";
-  if (code >= 400 && code < 500 && code !== 429) return "refused";
+  if (code >= 400 && code < 500 && code !== 408 && code !== 429) return "refused";
   return "waiting";
 }
 
 // The server's global event stream needs a service token, which the server gives no signed-in user, so the app
 // cannot use it. Instead it asks, as the user signed in to the Server view, for the workstreams that user may
 // see, and notifies when one of the user's own comes into a state that needs them. The status it reports says
-// whether that works: "on", "signed-out", "refused" or "waiting", and null once stopped.
+// whether that works: "on", "signed-out", "refused", "unsupported" or "waiting", and null once stopped.
 //
 // electron is not required at the top: the tests run under plain Node and inject
 // Notification and fetch. The lazy require below only runs in the real app. fetch is
@@ -40,6 +40,8 @@ class NotificationManager {
     // answer arrives, so the first one only records where things stand.
     this.known = null;
     this.userId = null;
+    // Why the last poll failed, as text, or null when it got an answer. A cause is logged when it first appears.
+    this.failure = null;
   }
 
   start() {
@@ -69,24 +71,30 @@ class NotificationManager {
     const controller = new AbortController();
     this.controller = controller;
     let answer;
+    let failure = null;
     try {
       answer = await this._ask(controller);
-    } catch {
-      // No connection, no answer in time, or an OK answer that is not JSON. The next poll asks again.
+    } catch (err) {
+      // No connection, no answer in time, an OK answer that is not JSON, or a fault here. The next poll asks again.
       answer = { status: "waiting" };
+      failure = err;
     }
     // stop() has run since this poll began, and the loop it started owns the shared state.
     if (generation !== this.generation) return;
 
-    // Armed first, so a notification that fails to show cannot end the loop.
     this.timer = setTimeout(() => this._poll(generation), POLL_INTERVAL_MS);
-    try {
-      if (answer.status === "on") this._compare(answer.userId, answer.workstreams);
-      else if (answer.status !== "waiting") this._forget();
-      this._report(answer.status);
-    } catch (err) {
-      console.error("notifications:", err);
-    }
+    this._noteFailure(failure);
+    if (answer.status === "on") this._compare(answer.userId, answer.workstreams);
+    else if (answer.status !== "waiting") this._forget();
+    this._report(answer.status);
+  }
+
+  // The tray says only "Waiting for the server" for a poll that failed, so the cause is logged, once while it lasts:
+  // a cause that never passes, such as a certificate the session does not trust, can then be found.
+  _noteFailure(err) {
+    const failure = err === null ? null : String(err);
+    if (failure !== null && failure !== this.failure) console.error("notifications:", err);
+    this.failure = failure;
   }
 
   // One poll: who is signed in, then the workstreams they may see. Returns the status the poll ends in, and with
@@ -99,7 +107,12 @@ class NotificationManager {
     if (!userId) return { status: "refused" };
     const list = await this._get("/v1/api/workstreams", controller);
     if (list.status) return list;
-    return { status: "on", userId, workstreams: list.body?.workstreams };
+    const workstreams = list.body?.workstreams;
+    // A list in another shape, such as an older server's, would never notify while the tray said notifications work.
+    if (!Array.isArray(workstreams) || !workstreams.every((ws) => typeof ws?.ws_id === "string")) {
+      return { status: "unsupported" };
+    }
+    return { status: "on", userId, workstreams };
   }
 
   // One request as the signed-in user. Returns { body } for an OK answer, or { status } for what a refusal means.
@@ -136,16 +149,23 @@ class NotificationManager {
     const known = userId === this.userId ? this.known : null;
     const states = new Map();
     const changed = [];
-    for (const ws of Array.isArray(workstreams) ? workstreams : []) {
+    for (const ws of workstreams) {
       // The server lists every workstream the user may see, so another user's are skipped here.
-      if (!ws || ws.user_id !== userId || typeof ws.ws_id !== "string") continue;
+      if (ws.user_id !== userId) continue;
       states.set(ws.ws_id, ws.state);
       if (known && known.get(ws.ws_id) !== ws.state) changed.push(ws);
     }
     // Recorded before anything is shown, so a notification that fails is not shown again on every poll.
     this.known = states;
     this.userId = userId;
-    for (const ws of changed) this._announce(ws);
+    for (const ws of changed) {
+      // One that fails to show does not keep the others from showing.
+      try {
+        this._announce(ws);
+      } catch (err) {
+        console.error("notifications:", err);
+      }
+    }
   }
 
   // Whoever signs in next starts from where things stand, not from the states recorded for the last user.
@@ -157,7 +177,12 @@ class NotificationManager {
   _report(status) {
     if (status === this.status) return;
     this.status = status;
-    this._onStatus(status);
+    // A tray that fails to show it must not end the poll, or stop() on the way to quitting.
+    try {
+      this._onStatus(status);
+    } catch (err) {
+      console.error("notifications:", err);
+    }
   }
 
   _announce(ws) {

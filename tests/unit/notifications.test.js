@@ -43,15 +43,17 @@ const ws = (id, state, fields = {}) => ({ ws_id: id, name: id, state, user_id: "
 /**
  * A Turnstone server as the poll sees it: whoami names the signed-in user, and the workstream list holds every
  * workstream that user may see, whoever owns it. A test changes the fields between polls. With refuse set, every
- * request is answered with that status, or rejected with it when it is an Error.
+ * request is answered with that status, or rejected with it when it is an Error. With refuseList set, only the
+ * workstream list is answered with that status.
  */
 function fakeServer() {
-  const server = { userId: "u1", workstreams: [], refuse: null };
+  const server = { userId: "u1", workstreams: [], refuse: null, refuseList: null };
   const fetch = vi.fn(async (url) => {
     if (server.refuse instanceof Error) throw server.refuse;
     if (server.refuse !== null) return { ok: false, status: server.refuse };
     const { pathname } = new URL(url);
     if (pathname === "/v1/api/auth/whoami") return json({ user_id: server.userId });
+    if (pathname === "/v1/api/workstreams" && server.refuseList !== null) return { ok: false, status: server.refuseList };
     if (pathname === "/v1/api/workstreams") return json({ workstreams: server.workstreams });
     return { ok: false, status: 404 };
   });
@@ -65,14 +67,20 @@ const whoamiCount = (fetch) => paths(fetch).filter((p) => p === "/v1/api/auth/wh
 let manager;
 let fake;
 let statuses;
+// console.error, which the manager logs to. Replaced in every test, so a test that expects nothing logged can say so.
+let errors;
 
-function makeManager(fetch, { settings = SETTINGS, ...notification } = {}) {
+// onStatus, when given, also runs for each status, after it is recorded in statuses.
+function makeManager(fetch, { settings = SETTINGS, onStatus, ...notification } = {}) {
   fake = makeFakeNotification(notification);
   statuses = [];
   manager = new NotificationManager(settings, {
     fetch,
     Notification: fake.Notification,
-    onStatus: (status) => statuses.push(status),
+    onStatus: (status) => {
+      statuses.push(status);
+      onStatus?.(status);
+    },
   });
   return manager;
 }
@@ -84,12 +92,14 @@ const nextPoll = (count = 1) => vi.advanceTimersByTimeAsync(POLL_MS * count);
 
 beforeEach(() => {
   vi.useFakeTimers();
+  errors = vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
   if (manager) manager.stop();
   manager = undefined;
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("NotificationManager asks as the signed-in user", () => {
@@ -241,25 +251,26 @@ describe("NotificationManager notifies", () => {
     expect(fake.constructed).toEqual([]);
   });
 
-  // Failure: a list that is not the shape asked for throws out of the poll and stops it.
-  it("reads a list it does not recognise as no workstreams, and keeps polling", async () => {
-    const fetch = vi.fn(async (url) =>
-      new URL(url).pathname === "/v1/api/auth/whoami"
-        ? json({ user_id: "u1" })
-        : json({ workstreams: [null, 7, { state: "attention", user_id: "u1" }] }),
-    );
+  // Failure: a list in a shape the app cannot read, such as an older server's, never notifies while the tray says
+  // notifications are on; or it throws out of the poll and stops it.
+  it.each([
+    ["no list", {}],
+    ["a list that is not an array", { workstreams: "w1" }],
+    ["a row that is not a workstream", { workstreams: [ws("w1", "running"), null] }],
+    ["rows with no ws_id", { workstreams: [{ id: "w1", state: "attention", user_id: "u1" }] }],
+  ])("reports %s as not supported, and keeps polling", async (_name, body) => {
+    const fetch = vi.fn(async (url) => json(new URL(url).pathname === "/v1/api/auth/whoami" ? { user_id: "u1" } : body));
     makeManager(fetch).start();
     await settle();
     await nextPoll();
 
     expect(fake.constructed).toEqual([]);
-    expect(statuses).toEqual(["on"]);
+    expect(statuses).toEqual(["unsupported"]);
     expect(whoamiCount(fetch)).toEqual(2);
   });
 
   // Failure: a notification that fails to show throws out of the poll, and no later notification arrives.
   it("keeps polling after a notification fails to show", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const { server, fetch } = fakeServer();
     server.workstreams = [ws("w1", "running"), ws("w2", "running")];
     makeManager(fetch, { failFirstShow: true }).start();
@@ -271,7 +282,25 @@ describe("NotificationManager notifies", () => {
     await nextPoll();
 
     expect(fake.shown).toEqual([{ title: "Turnstone: Attention Needed", body: "w2 requires your input" }]);
-    expect(error).toHaveBeenCalledTimes(1);
+    expect(errors).toHaveBeenCalledTimes(1);
+  });
+
+  // Failure: one notification that fails to show drops the others due from the same answer, for good, since the next
+  // answer finds them in the same state; and the status that answer brings is never reported.
+  it("shows the rest of an answer's notifications, and reports its status, when one fails to show", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running"), ws("w2", "running")];
+    makeManager(fetch, { failFirstShow: true }).start();
+    await settle();
+    server.refuse = new Error("connect ECONNREFUSED");
+    await nextPoll();
+
+    server.refuse = null;
+    server.workstreams = [ws("w1", "attention"), ws("w2", "attention")];
+    await nextPoll();
+
+    expect(fake.shown).toEqual([{ title: "Turnstone: Attention Needed", body: "w2 requires your input" }]);
+    expect(statuses).toEqual(["on", "waiting", "on"]);
   });
 });
 
@@ -365,6 +394,7 @@ describe("NotificationManager reports whether notifications work", () => {
     ["a server error", 500],
     ["a server that is unavailable", 503],
     ["a rate limit", 429],
+    ["a request timeout", 408],
   ])("reports %s as waiting", async (_name, refuse) => {
     const { server, fetch } = fakeServer();
     server.refuse = refuse;
@@ -419,6 +449,75 @@ describe("NotificationManager reports whether notifications work", () => {
 
     expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
   });
+
+  // Failure: a refusal of the list, after whoami named the user, reads differently from the same refusal of whoami,
+  // or leaves its request open.
+  it.each([
+    [401, "signed-out"],
+    [403, "refused"],
+    [503, "waiting"],
+  ])("reports a %i answer to the list as %s, and aborts its request", async (status, expected) => {
+    const { server, fetch } = fakeServer();
+    server.refuseList = status;
+    makeManager(fetch).start();
+    await settle();
+
+    expect(statuses).toEqual([expected]);
+    expect(paths(fetch)).toEqual(["/v1/api/auth/whoami", "/v1/api/workstreams"]);
+    expect(fetch.mock.calls[1][1].signal.aborted).toBe(true);
+  });
+
+  // Failure: a poll that keeps failing for a cause the app does not report, such as a certificate the session does not
+  // trust or a fault in the app, shows only "Waiting for the server", and nothing says why; or the cause is logged on
+  // every poll.
+  it("logs why a poll failed, once for each new cause", async () => {
+    const { server, fetch } = fakeServer();
+    const untrusted = new TypeError("net::ERR_CERT_AUTHORITY_INVALID");
+    server.refuse = untrusted;
+    makeManager(fetch).start();
+    await settle();
+    await nextPoll(2);
+    expect(errors.mock.calls).toEqual([["notifications:", untrusted]]);
+
+    server.refuse = null;
+    await nextPoll();
+    server.refuse = untrusted;
+    await nextPoll();
+    expect(errors.mock.calls.length).toEqual(2);
+  });
+
+  // Failure: every stop or restart logs the abort of the poll it ended as if the poll had failed.
+  it("logs nothing for a poll that stop() ended", async () => {
+    const fetch = vi.fn(
+      (url, { signal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }),
+    );
+    makeManager(fetch).start();
+    manager.stop();
+    await settle();
+
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  // Failure: a tray that fails to show a status throws out of the poll, which then never polls again, or out of
+  // stop(), so quitting skips what follows it.
+  it("keeps polling, and stops, when a status fails to show", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch, {
+      onStatus: () => {
+        throw new Error("tray destroyed");
+      },
+    }).start();
+    await settle();
+    await nextPoll();
+
+    expect(() => manager.stop()).not.toThrow();
+    expect(whoamiCount(fetch)).toEqual(2);
+    expect(statuses).toEqual(["on", null]);
+    expect(errors.mock.calls.length).toEqual(2);
+  });
 });
 
 describe("NotificationManager after a sign-out or an outage", () => {
@@ -433,6 +532,26 @@ describe("NotificationManager after a sign-out or an outage", () => {
     server.refuse = 401;
     await nextPoll();
     server.refuse = null;
+    server.workstreams = [ws("w1", "attention")];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([]);
+  });
+
+  // Failure: a list the server refuses, or cannot be read, leaves the states recorded before it to decide what the
+  // next answer announces.
+  it.each([
+    ["the list is refused", (server) => (server.refuseList = 403)],
+    ["the list cannot be read", (server) => (server.workstreams = [null])],
+  ])("forgets the workstreams it knew when %s", async (_name, spoil) => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch).start();
+    await settle();
+
+    spoil(server);
+    await nextPoll();
+    server.refuseList = null;
     server.workstreams = [ws("w1", "attention")];
     await nextPoll();
 

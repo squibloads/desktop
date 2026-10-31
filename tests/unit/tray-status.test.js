@@ -47,6 +47,7 @@ describe("notificationLabel", () => {
     ["signed-out", "Notifications: Sign in to the server"],
     ["refused", "Notifications: Refused by the server"],
     ["waiting", "Notifications: Waiting for the server"],
+    ["unsupported", "Notifications: Not supported by this server"],
   ])("labels %s as %s", (status, label) => {
     expect(notificationLabel(status)).toEqual(label);
   });
