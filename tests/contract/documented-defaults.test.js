@@ -12,6 +12,7 @@ const readme = read("README.md");
 const settingsStore = read("src/main/settings-store.js");
 const localRuntime = read("src/main/local-runtime.js");
 const healthJs = read("src/main/health.js");
+const notificationsJs = read("src/main/notifications.js");
 const runtimeConfig = read("src/main/runtime-config.js");
 
 // The first capture group of `pattern` in `text`. A missing match fails with `what` named,
@@ -158,6 +159,17 @@ describe("README timing claims match the code", () => {
     expect(readmeSeconds).toEqual("5");
     expect(Number(readmeSeconds) * 1000).toEqual(codeMs);
     expect(codeMs).toEqual(5000);
+  });
+
+  // Failure: the README says the app asks for the workstreams every 10 seconds, but the poll runs at another
+  // interval, so a notification comes later than the user was told, or the server is asked more often.
+  it("the README's notification check every 10 seconds equals POLL_INTERVAL_MS 10000", () => {
+    const readmeSeconds = readmeMatch(/Every (\d+) seconds the app asks the server for the workstreams/);
+    const codeMs = Number(capture(/const POLL_INTERVAL_MS = (\d+);/, notificationsJs, "POLL_INTERVAL_MS"));
+
+    expect(readmeSeconds).toEqual("10");
+    expect(Number(readmeSeconds) * 1000).toEqual(codeMs);
+    expect(codeMs).toEqual(10000);
   });
 
   // Failure: the README says a health check gives up after 3 seconds, but the status poll or the Local probe uses another limit, so a slow Console is shown as down in one place and up in another.

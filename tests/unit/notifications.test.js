@@ -5,23 +5,27 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // and its binary out of every test here.
 const { NotificationManager, createNotificationLifecycle } = require("../../src/main/notifications.js");
 
-// The manager's own fetch goes through Electron's network stack, which these tests do not have.
-// The tests stub the global fetch, and each manager is given a fetch that calls it.
-const viaGlobalFetch = (url, init) => fetch(url, init);
-
 const SETTINGS = { serverUrl: "http://127.0.0.1" };
+// How often the manager asks: POLL_INTERVAL_MS in notifications.js.
+const POLL_MS = 10000;
 
 // Records each Notification constructed and each show() call, with an
-// isSupported() answer chosen by the test.
-function makeFakeNotification({ supported = true } = {}) {
+// isSupported() answer chosen by the test. With failFirstShow, the first show()
+// throws, as it can where the system has no notification service.
+function makeFakeNotification({ supported = true, failFirstShow = false } = {}) {
   const constructed = [];
   const shown = [];
+  let failNext = failFirstShow;
   class FakeNotification {
     constructor(options) {
       this.options = options;
       constructed.push(options);
     }
     show() {
+      if (failNext) {
+        failNext = false;
+        throw new Error("no notification service");
+      }
       shown.push(this.options);
     }
     static isSupported() {
@@ -31,657 +35,540 @@ function makeFakeNotification({ supported = true } = {}) {
   return { Notification: FakeNotification, constructed, shown };
 }
 
-function makeSSEResponse(text) {
-  const encoder = new TextEncoder();
-  const bytes = encoder.encode(text);
-  let read = false;
-  return {
-    ok: true,
-    body: {
-      getReader: () => ({
-        read: () => {
-          if (!read) {
-            read = true;
-            return Promise.resolve({ done: false, value: bytes });
-          }
-          return Promise.resolve({ done: true });
-        },
-      }),
-    },
-  };
+const json = (body) => ({ ok: true, status: 200, json: () => Promise.resolve(body) });
+
+// A workstream as the server lists it, owned by the signed-in user unless the fields say otherwise.
+const ws = (id, state, fields = {}) => ({ ws_id: id, name: id, state, user_id: "u1", ...fields });
+
+/**
+ * A Turnstone server as the poll sees it: whoami names the signed-in user, and the workstream list holds every
+ * workstream that user may see, whoever owns it. A test changes the fields between polls. With refuse set, every
+ * request is answered with that status, or rejected with it when it is an Error.
+ */
+function fakeServer() {
+  const server = { userId: "u1", workstreams: [], refuse: null };
+  const fetch = vi.fn(async (url) => {
+    if (server.refuse instanceof Error) throw server.refuse;
+    if (server.refuse !== null) return { ok: false, status: server.refuse };
+    const { pathname } = new URL(url);
+    if (pathname === "/v1/api/auth/whoami") return json({ user_id: server.userId });
+    if (pathname === "/v1/api/workstreams") return json({ workstreams: server.workstreams });
+    return { ok: false, status: 404 };
+  });
+  return { server, fetch };
 }
 
-// A response whose body the test feeds by hand. Like a real fetch, the body
-// errors when the request is aborted, so a stream the manager has stopped
-// delivers nothing more.
-function controlledStream(signal) {
-  let open = true;
-  let streamController;
-  const body = new ReadableStream({
-    start(c) {
-      streamController = c;
-      signal.addEventListener("abort", () => {
-        open = false;
-        c.error(new DOMException("aborted", "AbortError"));
-      });
-    },
+// The paths a fetch mock was asked for, in order.
+const paths = (fetch) => fetch.mock.calls.map(([url]) => new URL(url).pathname);
+const whoamiCount = (fetch) => paths(fetch).filter((p) => p === "/v1/api/auth/whoami").length;
+
+let manager;
+let fake;
+let statuses;
+
+function makeManager(fetch, { settings = SETTINGS, ...notification } = {}) {
+  fake = makeFakeNotification(notification);
+  statuses = [];
+  manager = new NotificationManager(settings, {
+    fetch,
+    Notification: fake.Notification,
+    onStatus: (status) => statuses.push(status),
   });
-  return {
-    response: { ok: true, body },
-    push(text) {
-      if (open) streamController.enqueue(new TextEncoder().encode(text));
-    },
-    close() {
-      streamController.close();
-    },
-  };
+  return manager;
 }
 
-// Connections the mock fetch opened that no abort has reached yet.
-function liveConnections(fetchMock) {
-  return fetchMock.mock.calls.filter(([, init]) => !init.signal.aborted).length;
-}
+// Lets a poll that has started finish.
+const settle = () => vi.advanceTimersByTimeAsync(0);
+// Runs the next polls.
+const nextPoll = (count = 1) => vi.advanceTimersByTimeAsync(POLL_MS * count);
 
-describe("NotificationManager SSE parser", () => {
-  let manager;
-  let notifySpy;
-
-  afterEach(() => {
-    if (manager) manager.stop();
-    manager = undefined;
-  });
-
-  function createManager() {
-    const m = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
-    // Spy on _notify to verify what notifications would fire; the real method still runs.
-    notifySpy = vi.spyOn(m, "_notify");
-    return m;
-  }
-
-  // Failure: an attention event in the global SSE stream raises no alert.
-  it("calls _notify on attention event", async () => {
-    const sse = `event: ws_state\ndata: {"state":"attention","name":"my-ws"}\n\n`;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse(sse)));
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(notifySpy.mock.calls).toEqual([["Attention Needed", "my-ws requires your input"]]);
-  });
-
-  // Failure: a workstream that errors out raises no alert.
-  it("calls _notify on error event", async () => {
-    const sse = `event: ws_state\ndata: {"state":"error","name":"broken"}\n\n`;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse(sse)));
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(notifySpy.mock.calls).toEqual([["Error", "broken encountered an error"]]);
-  });
-
-  // Failure: routine running or idle transitions notify the user and bury real alerts.
-  it("ignores running/idle states", async () => {
-    const sse = `event: ws_state\ndata: {"state":"running","name":"ws1"}\n\nevent: ws_state\ndata: {"state":"idle","name":"ws2"}\n\n`;
-    const fetchMock = vi.fn().mockResolvedValue(makeSSEResponse(sse));
-    vi.stubGlobal("fetch", fetchMock);
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(notifySpy.mock.calls).toEqual([]);
-  });
-
-  // Failure: a non-OK answer's body is only cancelled, which under Electron's fetch leaves its connection open, and
-  // the retry replaces the controller that stop() aborts, so every retry leaves one more connection open.
-  it("aborts the request of a non-OK answer before it schedules the retry", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503, body: {} });
-    vi.stubGlobal("fetch", fetchMock);
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(liveConnections(fetchMock)).toBe(0);
-    expect(manager.retryTimer).not.toBe(null);
-  });
-
-  // Failure: a stream redirected to another origin is followed, so alerts arrive from a server the user never configured, over plain http.
-  it("does not follow a redirect on the event stream", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: null });
-    vi.stubGlobal("fetch", fetchMock);
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
-    expect(notifySpy.mock.calls).toEqual([]);
-  });
-
-  // Failure: a data payload split over several data: lines is dropped, so the alert is lost.
-  it("handles multi-line data fields per SSE spec", async () => {
-    const sse = `event: ws_state\ndata: {"state":\ndata: "attention","name":"ws"}\n\n`;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse(sse)));
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(notifySpy.mock.calls).toEqual([["Attention Needed", "ws requires your input"]]);
-  });
-
-  // Failure: a corrupt SSE frame throws out of the read loop and kills the stream.
-  it("ignores malformed JSON", async () => {
-    const sse = `event: ws_state\ndata: not-json\n\n`;
-    const fetchMock = vi.fn().mockResolvedValue(makeSSEResponse(sse));
-    vi.stubGlobal("fetch", fetchMock);
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(notifySpy.mock.calls).toEqual([]);
-  });
-
-  // Failure: an event with only a ws_id produces an alert with no workstream name.
-  it("uses ws_id as fallback name", async () => {
-    const sse = `event: ws_state\ndata: {"state":"attention","ws_id":"abc123"}\n\n`;
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeSSEResponse(sse)));
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(notifySpy.mock.calls).toEqual([["Attention Needed", "abc123 requires your input"]]);
-  });
-
-  // Failure: heartbeat or connected events are treated as workstream state and notify.
-  it("ignores unrelated event types", async () => {
-    const sse = `event: heartbeat\ndata: {}\n\nevent: connected\ndata: {"model":"test"}\n\n`;
-    const fetchMock = vi.fn().mockResolvedValue(makeSSEResponse(sse));
-    vi.stubGlobal("fetch", fetchMock);
-
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(notifySpy.mock.calls).toEqual([]);
-  });
+beforeEach(() => {
+  vi.useFakeTimers();
 });
 
-// Like makeSSEResponse, but each string is one network chunk, so a test can put a
-// chunk boundary anywhere in a frame.
-function makeChunkedSSEResponse(chunks) {
-  const encoder = new TextEncoder();
-  let next = 0;
-  return {
-    ok: true,
-    body: {
-      getReader: () => ({
-        read: () => {
-          if (next < chunks.length) {
-            return Promise.resolve({ done: false, value: encoder.encode(chunks[next++]) });
-          }
-          return Promise.resolve({ done: true });
-        },
-      }),
-    },
-  };
-}
-
-// An SSE frame can arrive split anywhere across network chunks, and every split
-// must still produce its alert.
-describe("NotificationManager SSE frames across chunks", () => {
-  const FRAME = 'event: ws_state\ndata: {"state":"attention","name":"ws"}\n\n';
-  let manager;
-  let notifySpy;
-
-  afterEach(() => {
-    if (manager) manager.stop();
-    manager = undefined;
-  });
-
-  function createManager() {
-    const m = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
-    notifySpy = vi.spyOn(m, "_notify");
-    return m;
-  }
-
-  // Failure: a chunk that ends inside an event drops the event's fields before its blank line arrives, so the alert is lost.
-  it.each(Array.from({ length: FRAME.length - 1 }, (_, i) => i + 1))(
-    "keeps the alert when the frame is split after byte %i",
-    async (split) => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn().mockResolvedValue(makeChunkedSSEResponse([FRAME.slice(0, split), FRAME.slice(split)])),
-      );
-      manager = createManager();
-      manager.running = true;
-      await manager._connect(manager.generation);
-
-      expect(notifySpy.mock.calls).toEqual([["Attention Needed", "ws requires your input"]]);
-    },
-  );
-
-  // Failure: a frame that arrives whole stops alerting when the split handling changes.
-  it("keeps the alert when the frame arrives in one chunk", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(makeChunkedSSEResponse([FRAME])));
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-
-    expect(notifySpy.mock.calls).toEqual([["Attention Needed", "ws requires your input"]]);
-  });
-
-  // Failure: an unfinished event from one connection fires when the next connection's blank line arrives, so a reconnect raises an alert nobody sent.
-  it("does not carry an unfinished event into a new connection", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(makeChunkedSSEResponse([FRAME.slice(0, -1)]))
-      .mockResolvedValueOnce(makeChunkedSSEResponse(["\n"]));
-    vi.stubGlobal("fetch", fetchMock);
-    manager = createManager();
-    manager.running = true;
-    await manager._connect(manager.generation);
-    await manager._connect(manager.generation);
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(notifySpy.mock.calls).toEqual([]);
-  });
+afterEach(() => {
+  if (manager) manager.stop();
+  manager = undefined;
+  vi.useRealTimers();
 });
 
-describe("NotificationManager notification content", () => {
-  let manager;
-  let fake;
+describe("NotificationManager asks as the signed-in user", () => {
+  // Failure: the poll asks a server other than the configured one, or follows a redirect, so the user's workstreams
+  // are read from a server they never chose.
+  it("asks the configured server who is signed in, then for the workstreams, and follows no redirect", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
 
-  beforeEach(() => {
-    fake = makeFakeNotification();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-  });
-
-  afterEach(() => {
-    manager.stop();
-  });
-
-  // Failure: an attention event shows a title or body the user cannot tell apart from other alerts.
-  it("shows 'Turnstone: Attention Needed' with the workstream name", () => {
-    manager._handleEvent("ws_state", '{"state":"attention","name":"my-ws"}');
-
-    expect(fake.constructed).toEqual([
-      { title: "Turnstone: Attention Needed", body: "my-ws requires your input" },
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1/v1/api/auth/whoami",
+      "http://127.0.0.1/v1/api/workstreams",
     ]);
-    expect(fake.shown.length).toEqual(1);
+    for (const [, init] of fetch.mock.calls) expect(init).toMatchObject({ redirect: "manual" });
   });
 
-  // Failure: an error event is shown under the attention title, so the user misses the failure.
-  it("shows 'Turnstone: Error' with the workstream name", () => {
-    manager._handleEvent("ws_state", '{"state":"error","name":"broken"}');
-
-    expect(fake.constructed).toEqual([
-      { title: "Turnstone: Error", body: "broken encountered an error" },
-    ]);
-    expect(fake.shown.length).toEqual(1);
-  });
-
-  // Failure: a workstream with no name shows "undefined requires your input".
-  it("falls back to ws_id when name is absent", () => {
-    manager._handleEvent("ws_state", '{"state":"attention","ws_id":"abc123"}');
-
-    expect(fake.constructed).toEqual([
-      { title: "Turnstone: Attention Needed", body: "abc123 requires your input" },
-    ]);
-  });
-
-  // Failure: a workstream with neither name nor ws_id shows a blank subject.
-  it("falls back to 'Workstream' when neither name nor ws_id is set", () => {
-    manager._handleEvent("ws_state", '{"state":"error"}');
-
-    expect(fake.constructed).toEqual([
-      { title: "Turnstone: Error", body: "Workstream encountered an error" },
-    ]);
-  });
-
-  // Failure: an empty name string blocks the ws_id fallback and shows " requires your input".
-  it("treats an empty name as absent and uses ws_id", () => {
-    manager._handleEvent("ws_state", '{"state":"attention","name":"","ws_id":"abc"}');
-
-    expect(fake.constructed).toEqual([
-      { title: "Turnstone: Attention Needed", body: "abc requires your input" },
-    ]);
-  });
-
-  // Failure: a cluster that needs attention stays silent because only ws_state is handled.
-  it("notifies for cluster_state attention events", () => {
-    manager._handleEvent("cluster_state", '{"state":"attention","name":"cluster-a"}');
-
-    expect(fake.constructed).toEqual([
-      { title: "Turnstone: Attention Needed", body: "cluster-a requires your input" },
-    ]);
-  });
-
-  // Failure: non-attention, non-error states such as completed produce an alert.
-  it("ignores states other than attention and error", () => {
-    manager._handleEvent("ws_state", '{"state":"running","name":"a"}');
-    manager._handleEvent("ws_state", '{"state":"idle","name":"b"}');
-    manager._handleEvent("ws_state", '{"state":"completed","name":"c"}');
-
-    expect(fake.constructed).toEqual([]);
-  });
-
-  // Failure: an unrelated event type with an attention state raises an alert.
-  it("ignores event types other than ws_state and cluster_state", () => {
-    manager._handleEvent("heartbeat", '{"state":"attention","name":"a"}');
-
-    expect(fake.constructed).toEqual([]);
-  });
-
-  // Failure: a malformed payload throws out of the handler instead of being ignored.
-  it("ignores malformed JSON without constructing a notification", () => {
-    manager._handleEvent("ws_state", "not-json");
-
-    expect(fake.constructed).toEqual([]);
-  });
-
-  // Failure: on a platform without notification support the app builds one anyway and crashes.
-  it("does not construct a notification when isSupported() is false", () => {
-    const unsupported = makeFakeNotification({ supported: false });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: unsupported.Notification });
-
-    manager._handleEvent("ws_state", '{"state":"attention","name":"a"}');
-    manager._handleEvent("ws_state", '{"state":"error","name":"b"}');
-
-    expect(unsupported.constructed).toEqual([]);
-    expect(unsupported.shown).toEqual([]);
-  });
-});
-
-describe("NotificationManager reconnect and stop", () => {
-  let manager;
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    if (manager) manager.stop();
-    manager = undefined;
-    vi.useRealTimers();
-  });
-
-  // Failure: a server that stays down is retried in a tight loop, or the delay never caps and the app goes silent for hours.
-  it("doubles the retry delay after each failed connect and caps it at 30 seconds", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
-    vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
-
-    manager.start();
-    const attemptsAt = [fetchMock.mock.calls.length];
-    // Attempt times with a 1 s start, doubling, capped at 30 s: 0, 1000, 3000, 7000, 15000, 31000, 61000.
-    await vi.advanceTimersByTimeAsync(1000);
-    attemptsAt.push(fetchMock.mock.calls.length);
-    await vi.advanceTimersByTimeAsync(2000);
-    attemptsAt.push(fetchMock.mock.calls.length);
-    await vi.advanceTimersByTimeAsync(4000);
-    attemptsAt.push(fetchMock.mock.calls.length);
-    await vi.advanceTimersByTimeAsync(8000);
-    attemptsAt.push(fetchMock.mock.calls.length);
-    await vi.advanceTimersByTimeAsync(16000);
-    attemptsAt.push(fetchMock.mock.calls.length);
-    await vi.advanceTimersByTimeAsync(30000);
-    attemptsAt.push(fetchMock.mock.calls.length);
-
-    expect(attemptsAt).toEqual([1, 2, 3, 4, 5, 6, 7]);
-  });
-
-  // Failure: stop() on quit leaves a request open or a reconnect timer that reopens the stream.
-  it("stop() aborts the in-flight request and cancels the pending reconnect", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
-    vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
-
-    manager.start();
-    const signal = fetchMock.mock.calls[0][1].signal;
-    manager.stop();
-    await vi.advanceTimersByTimeAsync(60000);
-
-    expect(signal.aborted).toEqual(true);
-    expect(fetchMock.mock.calls.length).toEqual(1);
-  });
-
-  // Failure: a non-2xx answer is read as an event stream, so an error page raises alerts or the retry never happens.
-  it("treats a non-2xx response as a failed connect and retries", async () => {
-    const bad = makeSSEResponse(`event: ws_state
-data: {"state":"attention","name":"x"}
-
-`);
-    bad.ok = false;
-    bad.status = 500;
-    const fetchMock = vi.fn().mockResolvedValue(bad);
-    vi.stubGlobal("fetch", fetchMock);
-    const fake = makeFakeNotification();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
-    manager.start();
-    await vi.advanceTimersByTimeAsync(1000);
-
-    expect(fake.shown).toEqual([]);
-    expect(fetchMock.mock.calls.length).toEqual(2);
-  });
-
-  // Failure: after a good connection the delay stays at its old backed-off value, so a later drop waits far too long.
-  it("resets the retry delay to one second after a successful connect", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("down"))
-      .mockRejectedValueOnce(new Error("down"))
-      .mockResolvedValueOnce(makeSSEResponse(""))
-      .mockRejectedValue(new Error("down"));
-    vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: makeFakeNotification().Notification });
-
-    manager.start();
-    // Attempts at 0 (fail, wait 1 s), 1000 (fail, wait 2 s), 3000 (connects, stream ends).
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(fetchMock.mock.calls.length).toEqual(3);
-    // With the reset the next attempt is 1 s later; without it, 4 s later.
-    await vi.advanceTimersByTimeAsync(1000);
-
-    expect(fetchMock.mock.calls.length).toEqual(4);
-  });
-});
-
-describe("NotificationManager connection lifecycle", () => {
-  let manager;
-  let fake;
-
-  const ATTENTION = `event: ws_state\ndata: {"state":"attention","name":"ws"}\n\n`;
-
-  // With failFirst the first connect fails, so a retry is pending. Every other
-  // connect opens a stream the test controls.
-  function stubStreamingFetch({ failFirst = false } = {}) {
-    const connections = [];
-    const fetchMock = vi.fn();
-    if (failFirst) fetchMock.mockRejectedValueOnce(new Error("connect refused"));
-    fetchMock.mockImplementation((url, { signal }) => {
-      const conn = controlledStream(signal);
-      connections.push(conn);
-      return Promise.resolve(conn.response);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    return { fetchMock, connections };
-  }
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    fake = makeFakeNotification();
-  });
-
-  afterEach(() => {
-    if (manager) manager.stop();
-    manager = undefined;
-    vi.useRealTimers();
-  });
-
-  // Failure: a save that restarts notifications while a retry is pending starts a second loop, and two streams stay open.
-  it("does not open a second connection when a restart runs while a retry is pending", async () => {
-    const { fetchMock } = stubStreamingFetch({ failFirst: true });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
-    manager.start();
-    await vi.advanceTimersByTimeAsync(0);
-    manager.stop();
-    manager.start();
-    await vi.advanceTimersByTimeAsync(1000);
-
-    expect(fetchMock.mock.calls.length).toEqual(2);
-    expect(liveConnections(fetchMock)).toEqual(1);
-  });
-
-  // Failure: after a restart and a stop, a stream left from the earlier loop still raises server alerts in a mode with no server.
-  it("delivers no alert from any connection after a restart and a stop", async () => {
-    const { connections } = stubStreamingFetch({ failFirst: true });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
-    manager.start();
-    await vi.advanceTimersByTimeAsync(0);
-    manager.stop();
-    manager.start();
-    await vi.advanceTimersByTimeAsync(1000);
-    manager.stop();
-    expect(connections.length).toEqual(1);
-    for (const conn of connections) conn.push(ATTENTION);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(fake.constructed).toEqual([]);
-  });
-
-  // Failure: calling start() twice runs two loops, and a later stop() reaches only the newer one.
-  it("keeps one live connection when start() is called twice", async () => {
-    const { fetchMock } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
-    manager.start();
-    manager.start();
-
-    expect(liveConnections(fetchMock)).toEqual(1);
-  });
-
-  // Failure: an event read just before stop() runs notifies after the user has switched to a mode with no server.
-  it("drops an event that was already read when stop() ran", async () => {
-    const { connections } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
-    manager.start();
-    await vi.advanceTimersByTimeAsync(0);
-    connections[0].push(ATTENTION);
-    manager.stop();
-    // The save handler restarts right after a stop, so a check on running alone would pass here.
-    manager.start();
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(fake.constructed).toEqual([]);
-  });
-
-  // Failure: the manager dials a URL fixed when it was built, so a URL edit that restarts it still reaches the old server.
-  it("dials the server URL the settings hold when it connects", async () => {
-    const { fetchMock } = stubStreamingFetch();
+  // Failure: the manager asks a URL fixed when it was built, so a URL edit that restarts it still reaches the old server.
+  it("asks the server URL the settings hold when it polls", async () => {
+    const { fetch } = fakeServer();
     const settings = { serverUrl: "http://old.example" };
-    manager = new NotificationManager(settings, { fetch: viaGlobalFetch, Notification: fake.Notification });
+    makeManager(fetch, { settings });
 
     settings.serverUrl = "http://new.example";
     manager.start();
+    await settle();
 
-    expect(fetchMock.mock.calls[0][0]).toEqual("http://new.example/v1/api/events/global");
+    expect(fetch.mock.calls[0][0]).toEqual("http://new.example/v1/api/auth/whoami");
   });
 
-  // Failure: stop() leaves the retry timer armed, so it fires later and reopens a connection the user turned off.
-  it("cancels a pending retry timer when stop() runs", async () => {
-    stubStreamingFetch({ failFirst: true });
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
+  // Failure: the poll runs in a tight loop and loads the server, or so rarely that a waiting workstream goes unnoticed.
+  it("asks again every 10 seconds", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
 
-    manager.start();
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(POLL_MS - 1);
+    const beforeInterval = whoamiCount(fetch);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect([beforeInterval, whoamiCount(fetch)]).toEqual([1, 2]);
+  });
+});
+
+describe("NotificationManager notifies", () => {
+  // Failure: every workstream that already waits is announced at start, so each launch floods the user.
+  it("only records where things stand on the first answer", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "attention"), ws("w2", "error")];
+    makeManager(fetch).start();
+    await settle();
+
+    expect(fake.constructed).toEqual([]);
+    expect(statuses).toEqual(["on"]);
+  });
+
+  // Failure: a workstream that starts waiting for the user raises no alert.
+  it("notifies when one of the user's workstreams starts needing their input", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running", { name: "Build" })];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention", { name: "Build" })];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "Build requires your input" }]);
+    expect(fake.shown.length).toEqual(1);
+  });
+
+  // Failure: a workstream that fails raises no alert, or one under the attention title.
+  it("notifies when one of them fails", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running", { name: "Build" })];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "error", { name: "Build" })];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "Build encountered an error" }]);
+  });
+
+  // Failure: a workstream started and blocked between two polls is never announced, because it was not in the last answer.
+  it("notifies for a workstream that is new since the last answer and already needs the user", async () => {
+    const { server, fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w2", "attention")];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w2 requires your input" }]);
+  });
+
+  // Failure: a workstream that keeps waiting is announced again on every poll.
+  it("notifies once while a workstream stays in the same state", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention")];
+    await nextPoll(3);
+
+    expect(fake.constructed.length).toEqual(1);
+  });
+
+  // Failure: a workstream that needs the user a second time is not announced again.
+  it("notifies again when a workstream comes back to a state that needs the user", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch).start();
+    await settle();
+
+    for (const state of ["attention", "running", "attention"]) {
+      server.workstreams = [ws("w1", state)];
+      await nextPoll();
+    }
+
+    expect(fake.constructed.map((n) => n.body)).toEqual(["w1 requires your input", "w1 requires your input"]);
+  });
+
+  // Failure: on a shared server, every other user's waiting workstream reaches this user's desktop.
+  it("ignores workstreams that belong to other users", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w2", "running", { user_id: "u2" }), ws("w3", "running", { user_id: "" })];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w2", "attention", { user_id: "u2" }), ws("w3", "error", { user_id: "" })];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([]);
+  });
+
+  // Failure: routine progress notifies the user and buries real alerts.
+  it("ignores states other than attention and error", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "idle")];
+    makeManager(fetch).start();
+    await settle();
+
+    for (const state of ["thinking", "running", "evaluation", "idle", "closed"]) {
+      server.workstreams = [ws("w1", state)];
+      await nextPoll();
+    }
+
+    expect(fake.constructed).toEqual([]);
+  });
+
+  // Failure: a list that is not the shape asked for throws out of the poll and stops it.
+  it("reads a list it does not recognise as no workstreams, and keeps polling", async () => {
+    const fetch = vi.fn(async (url) =>
+      new URL(url).pathname === "/v1/api/auth/whoami"
+        ? json({ user_id: "u1" })
+        : json({ workstreams: [null, 7, { state: "attention", user_id: "u1" }] }),
+    );
+    makeManager(fetch).start();
+    await settle();
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([]);
+    expect(statuses).toEqual(["on"]);
+    expect(whoamiCount(fetch)).toEqual(2);
+  });
+
+  // Failure: a notification that fails to show throws out of the poll, and no later notification arrives.
+  it("keeps polling after a notification fails to show", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running"), ws("w2", "running")];
+    makeManager(fetch, { failFirstShow: true }).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention"), ws("w2", "running")];
+    await nextPoll();
+    server.workstreams = [ws("w1", "attention"), ws("w2", "attention")];
+    await nextPoll();
+
+    expect(fake.shown).toEqual([{ title: "Turnstone: Attention Needed", body: "w2 requires your input" }]);
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("NotificationManager names the workstream", () => {
+  // Failure: a workstream with an empty or missing name shows " requires your input" or "undefined requires your input".
+  it("falls back to the ws_id when the name is empty or missing", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w8", "idle", { name: "" }), ws("w9", "idle", { name: undefined })];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w8", "attention", { name: "" }), ws("w9", "attention", { name: undefined })];
+    await nextPoll();
+
+    expect(fake.constructed.map((n) => n.body)).toEqual(["w8 requires your input", "w9 requires your input"]);
+  });
+
+  // Failure: a workstream with neither a name nor an ID shows a blank subject.
+  it("falls back to Workstream when there is neither", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("", "idle", { name: "" })];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("", "error", { name: "" })];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "Workstream encountered an error" }]);
+  });
+
+  // Failure: on a platform without notification support the app builds one anyway and crashes.
+  it("builds no notification where notifications are not supported", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch, { supported: false }).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention")];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([]);
+    expect(fake.shown).toEqual([]);
+  });
+});
+
+describe("NotificationManager reports whether notifications work", () => {
+  // Failure: a server that wants a sign-in is polled silently, so the user never learns why no notification arrives.
+  it("reports a server that asks for a sign-in as signed out, and asks it for nothing more", async () => {
+    const { server, fetch } = fakeServer();
+    server.refuse = 401;
+    makeManager(fetch).start();
+    await settle();
+
+    expect(statuses).toEqual(["signed-out"]);
+    expect(paths(fetch)).toEqual(["/v1/api/auth/whoami"]);
+  });
+
+  // Failure: a server's lasting refusal reads as a server that is down, or as notifications that work.
+  it.each([400, 403, 404])("reports a %i as refused", async (status) => {
+    const { server, fetch } = fakeServer();
+    server.refuse = status;
+    makeManager(fetch).start();
+    await settle();
+
+    expect(statuses).toEqual(["refused"]);
+  });
+
+  // Failure: a redirect, which Electron's fetch fails instead of returning, reads as a server that is down.
+  it("reports a redirect as refused", async () => {
+    const { server, fetch } = fakeServer();
+    server.refuse = new Error("Redirect was cancelled");
+    makeManager(fetch).start();
+    await settle();
+
+    expect(statuses).toEqual(["refused"]);
+  });
+
+  // Failure: a whoami answer with no user matches every workstream that has no owner, or throws.
+  it("reports a whoami answer that names no user as refused, and asks for no workstreams", async () => {
+    const fetch = vi.fn(async () => json({}));
+    makeManager(fetch).start();
+    await settle();
+
+    expect(statuses).toEqual(["refused"]);
+    expect(paths(fetch)).toEqual(["/v1/api/auth/whoami"]);
+  });
+
+  // Failure: a server that is down or busy reads as a refusal, so the tray tells the user to sign in again.
+  it.each([
+    ["no connection", new Error("connect ECONNREFUSED")],
+    ["a server error", 500],
+    ["a server that is unavailable", 503],
+    ["a rate limit", 429],
+  ])("reports %s as waiting", async (_name, refuse) => {
+    const { server, fetch } = fakeServer();
+    server.refuse = refuse;
+    makeManager(fetch).start();
+    await settle();
+
+    expect(statuses).toEqual(["waiting"]);
+  });
+
+  // Failure: an OK answer that is not JSON, such as a sign-in page served in its place, throws out of the poll and stops it.
+  it("reports an OK answer that is not JSON as waiting, and polls again", async () => {
+    const fetch = vi.fn(async () => ({ ok: true, status: 200, json: () => Promise.reject(new SyntaxError("Unexpected token <")) }));
+    makeManager(fetch).start();
+    await settle();
+    await nextPoll();
+
+    expect(statuses).toEqual(["waiting"]);
+    expect(whoamiCount(fetch)).toEqual(2);
+  });
+
+  // Failure: a status that has not changed is reported on every poll, so the log gains a line every 10 seconds.
+  it("reports a status only when it changes", async () => {
+    const { server, fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+    await nextPoll();
+    server.refuse = 401;
+    await nextPoll(2);
+    server.refuse = null;
+    await nextPoll();
+
+    expect(statuses).toEqual(["on", "signed-out", "on"]);
+  });
+
+  // Failure: the tray still says notifications are on after a switch to a mode with no server.
+  it("reports no status once stopped", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
     manager.stop();
 
-    expect(vi.getTimerCount()).toEqual(0);
+    expect(statuses).toEqual(["on", null]);
   });
 
-  // Failure: a stream from before a restart that ends on its own queues a retry, so the old loop comes back beside the new one.
-  it("schedules no retry when a stale stream ends after a restart", async () => {
-    const { connections } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
+  // Failure: a refused answer's request is left open, which under Electron's fetch keeps its connection open, so every
+  // poll leaves one more.
+  it.each([401, 503])("aborts the request of a %i answer", async (status) => {
+    const { server, fetch } = fakeServer();
+    server.refuse = status;
+    makeManager(fetch).start();
+    await settle();
 
-    manager.start();
-    await vi.advanceTimersByTimeAsync(0);
-    connections[0].close();
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+});
+
+describe("NotificationManager after a sign-out or an outage", () => {
+  // Failure: after a sign-out and a new sign-in, the states recorded before decide what is announced, so a workstream
+  // that waited all along is announced as if it had just started waiting.
+  it("forgets the workstreams it knew when the server asks for a sign-in", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch).start();
+    await settle();
+
+    server.refuse = 401;
+    await nextPoll();
+    server.refuse = null;
+    server.workstreams = [ws("w1", "attention")];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([]);
+  });
+
+  // Failure: when another user signs in, the states recorded for the last user decide what is announced to the new one.
+  it("starts from where things stand when another user signs in", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running"), ws("w2", "running", { user_id: "u2" })];
+    makeManager(fetch).start();
+    await settle();
+
+    server.userId = "u2";
+    server.workstreams = [ws("w1", "running"), ws("w2", "attention", { user_id: "u2" })];
+    await nextPoll();
+    expect(fake.constructed).toEqual([]);
+
+    server.workstreams = [ws("w1", "running"), ws("w2", "error", { user_id: "u2" })];
+    await nextPoll();
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "w2 encountered an error" }]);
+  });
+
+  // Failure: an outage makes the manager forget the states it knew, so a workstream that started waiting during it
+  // is never announced.
+  it("keeps the workstreams it knew through an outage, and announces what changed during it", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch).start();
+    await settle();
+
+    server.refuse = new Error("connect ECONNREFUSED");
+    await nextPoll();
+    server.refuse = null;
+    server.workstreams = [ws("w1", "attention")];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w1 requires your input" }]);
+  });
+});
+
+describe("NotificationManager start and stop", () => {
+  // Failure: stop() on quit or a mode switch leaves the request open, or a timer that polls again.
+  it("stop() aborts the request in flight and asks nothing more", async () => {
+    const fetch = vi.fn(
+      (url, { signal }) =>
+        new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }),
+    );
+    makeManager(fetch).start();
+    const { signal } = fetch.mock.calls[0][1];
     manager.stop();
-    manager.start();
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(60000);
 
-    expect(vi.getTimerCount()).toEqual(0);
+    expect(signal.aborted).toBe(true);
+    expect(fetch.mock.calls.length).toBe(1);
   });
 
-  // Failure: a connect left over from before a stop opens a connection that stop() can no longer reach.
-  it("opens nothing for a connect started under an earlier generation", async () => {
-    const { fetchMock } = stubStreamingFetch();
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
-    manager.start();
-    const stale = manager.generation;
+  // Failure: stop() leaves the next poll armed, so it fires later and polls a server the user turned off.
+  it("stop() cancels the next poll", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
     manager.stop();
-    manager.start();
-    const before = fetchMock.mock.calls.length;
-    await manager._connect(stale);
 
-    expect(fetchMock.mock.calls.length).toEqual(before);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  // Failure: a restart after a long outage waits out the old 30 s backoff before it tries again.
-  it("retries one second after a restart, not after the backoff the old loop built up", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
-    vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
+  // Failure: a poll that stop() ended goes on to its next request, so a stopped loop still reaches the server.
+  it("makes no further request for a poll that a restart ended between its requests", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch);
     manager.start();
-    await vi.advanceTimersByTimeAsync(15000);
-    manager.stop();
     manager.start();
-    const afterRestart = fetchMock.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
 
-    expect(fetchMock.mock.calls.length - afterRestart).toEqual(1);
+    expect(paths(fetch)).toEqual(["/v1/api/auth/whoami", "/v1/api/auth/whoami", "/v1/api/workstreams"]);
   });
 
-  // Failure: a connect from before a restart that answers late resets the backoff the live loop is using, so its next retry comes too soon.
-  it("leaves the live backoff alone when a stale connect answers late", async () => {
-    let answerFirst;
+  // Failure: calling start() twice runs two loops, which poll twice as often, and a later stop() reaches only one.
+  it("keeps one loop when start() is called twice", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch);
+    manager.start();
+    manager.start();
+    await settle();
+
+    const afterStart = fetch.mock.calls.length;
+    await nextPoll();
+
+    expect(fetch.mock.calls.length - afterStart).toBe(2);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  // Failure: an answer to a poll from before a restart is announced, or replaces the states the live loop knows.
+  it("drops a late answer to a poll from before a restart", async () => {
+    const { server, fetch } = fakeServer();
+    let answerLate;
     const late = new Promise((resolve) => {
-      answerFirst = resolve;
+      answerLate = resolve;
     });
-    const fetchMock = vi
-      .fn()
-      .mockReturnValueOnce(late)
-      .mockRejectedValueOnce(new Error("connect refused"));
-    vi.stubGlobal("fetch", fetchMock);
-    manager = new NotificationManager(SETTINGS, { fetch: viaGlobalFetch, Notification: fake.Notification });
-
-    manager.start();
+    let lists = 0;
+    const firstListIsLate = vi.fn((url, init) => {
+      if (new URL(url).pathname === "/v1/api/workstreams" && lists++ === 0) return late;
+      return fetch(url, init);
+    });
+    server.workstreams = [ws("w1", "running")];
+    makeManager(firstListIsLate).start();
+    await settle();
     manager.stop();
     manager.start();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(manager.retryDelay).toEqual(2000);
+    await settle();
 
-    answerFirst(makeSSEResponse(""));
-    await vi.advanceTimersByTimeAsync(0);
+    answerLate(json({ workstreams: [ws("w1", "attention")] }));
+    await settle();
+    expect(fake.constructed).toEqual([]);
 
-    expect(manager.retryDelay).toEqual(2000);
+    server.workstreams = [ws("w1", "attention")];
+    await nextPoll();
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w1 requires your input" }]);
+    expect(statuses).toEqual(["on"]);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  // Failure: a restart waits out the interval before it asks, so a corrected URL shows nothing for 10 seconds.
+  it("asks at once after a restart", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+    await vi.advanceTimersByTimeAsync(POLL_MS / 2);
+
+    manager.stop();
+    manager.start();
+
+    expect(whoamiCount(fetch)).toBe(2);
   });
 });
 
