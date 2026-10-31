@@ -250,8 +250,8 @@ describe("requests the main process makes", () => {
   });
 
   // Failure: Electron's fetch keeps a connection open after its body is cancelled, so a poll refused with an error
-  // page that never ends leaves one more connection open every 10 seconds.
-  it("close the connection of a refused poll before asking again", async () => {
+  // page that never ends holds its connection until the 5-second timeout, and the server feeds it all that time.
+  it("close the connection of a refused poll at once, not when its timeout fires", async () => {
     const polls = { refused: 0, open: 0 };
     const server = http.createServer((req, res) => {
       if (req.url !== "/v1/api/auth/whoami") {
@@ -271,9 +271,11 @@ describe("requests the main process makes", () => {
     const port = await serve(server, 0);
     await launchApp({ settings: { mode: "server", serverUrl: `http://127.0.0.1:${port}` } });
 
-    // Polls come every 10 seconds, so the second comes about 10 seconds after the first.
-    await pollUntil(() => polls.refused >= 2 && polls.open === 0, {
-      description: "two refused polls, none left open",
+    await pollUntil(() => polls.refused >= 1, { description: "a refused poll" });
+    // Well inside the poll's 5-second timeout, so only the app's own abort can close it in time.
+    await pollUntil(() => polls.open === 0, {
+      description: "the refused poll's connection to close",
+      timeoutMs: 3000,
     });
   });
 
