@@ -12,7 +12,7 @@ afterEach(async () => {
     await closeEverything();
   } finally {
     for (const { server, sockets } of servers.splice(0)) {
-      // The app holds the event stream open, and close() waits for every connection to end.
+      // A test can leave a request unanswered, and close() waits for every connection to end.
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
     }
@@ -33,21 +33,22 @@ function serve(server, port) {
   });
 }
 
-// A Turnstone server as the main process sees it: a healthy /health and an event stream that stays
-// open. Every request is recorded with the cookie it carried.
+function sendJson(res, body, status = 200) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+// The notification poll: who is signed in, then the workstreams.
+const POLL_PATHS = ["/v1/api/auth/whoami", "/v1/api/workstreams"];
+
+// A Turnstone server as the main process sees it: a healthy /health, and a poll answered for a signed-in user with
+// no workstreams. Every request is recorded with the cookie it carried.
 function turnstoneServer(seen) {
   return (req, res) => {
     seen.push({ path: req.url, cookie: req.headers.cookie ?? null });
-    if (req.url === "/health") {
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ status: "ok", nodes: 1, workstreams: 0 }));
-      return;
-    }
-    if (req.url === "/v1/api/events/global") {
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.write(": connected\n\n");
-      return;
-    }
+    if (req.url === "/health") return sendJson(res, { status: "ok", nodes: 1, workstreams: 0 });
+    if (req.url === "/v1/api/auth/whoami") return sendJson(res, { user_id: "u1" });
+    if (req.url === "/v1/api/workstreams") return sendJson(res, { workstreams: [] });
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.end("<!doctype html><title>server</title>");
   };
@@ -59,10 +60,10 @@ function serverDotHas(shell, state) {
 }
 
 describe("requests the main process makes", () => {
-  // Failure: the health checks and the event stream use Node's fetch, which trusts only the certificate
-  // authorities bundled with Node, so a server behind a private CA the system trusts loads in the views
-  // but shows as disconnected and sends no notifications.
-  it("trust the certificates the session trusts, and carry none of its cookies", async () => {
+  // Failure: the health checks and the notification poll use Node's fetch, which trusts only the certificate
+  // authorities bundled with Node, so a server behind a private CA the system trusts loads in the views but shows
+  // as disconnected and sends no notifications. Or a health check carries the signed-in user's cookies.
+  it("trust the certificates the session trusts, and carry its cookies only on the notification poll", async () => {
     const { cert, key, certBase64 } = selfSignedCert();
     const seen = [];
     const port = await serve(https.createServer({ cert, key }, turnstoneServer(seen)), 0);
@@ -98,13 +99,90 @@ describe("requests the main process makes", () => {
     expect(saved).toEqual({ ok: true });
 
     await pollUntil(
-      () => seen.some((r) => r.path === "/health") && seen.some((r) => r.path === "/v1/api/events/global"),
-      { description: "a health check and the event stream over TLS" },
+      () => seen.some((r) => r.path === "/health") && seen.some((r) => r.path === "/v1/api/workstreams"),
+      { description: "a health check and a notification poll over TLS" },
     );
-    const withCookie = seen.filter(
-      (r) => (r.path === "/health" || r.path === "/v1/api/events/global") && r.cookie !== null,
+    const healthWithCookie = seen.filter((r) => r.path === "/health" && r.cookie !== null);
+    const pollWithoutCookie = seen.filter((r) => POLL_PATHS.includes(r.path) && r.cookie !== "session=signed-in");
+    expect(healthWithCookie).toEqual([]);
+    expect(pollWithoutCookie).toEqual([]);
+  });
+
+  // Failure: notifications need a token no signed-in user has, so none arrives after the user signs in through the
+  // Server view; or another user's workstream notifies; or the poll sends the user's cookie before it was set.
+  it("deliver notifications once the user signs in through the server view", async () => {
+    const seen = [];
+    const TOKEN = "turnstone_auth_server=signed-in-token";
+    const states = { w1: "running", w2: "running" };
+    const server = http.createServer((req, res) => {
+      const cookie = req.headers.cookie ?? null;
+      seen.push({ path: req.url, cookie });
+      if (req.url === "/sign-in") {
+        // The server's own sign-in sets its cookie the same way.
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "set-cookie": `${TOKEN}; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600`,
+        });
+        res.end("<!doctype html><title>signed in</title>");
+        return;
+      }
+      if (POLL_PATHS.includes(req.url)) {
+        const signedIn = cookie !== null && cookie.split("; ").includes(TOKEN);
+        if (!signedIn) return sendJson(res, { error: "Unauthorized: missing or invalid token" }, 401);
+        if (req.url === "/v1/api/auth/whoami") return sendJson(res, { user_id: "u1" });
+        return sendJson(res, {
+          workstreams: [
+            { ws_id: "w1", name: "Build", state: states.w1, user_id: "u1" },
+            { ws_id: "w2", name: "Someone else's", state: states.w2, user_id: "u2" },
+          ],
+        });
+      }
+      turnstoneServer([])(req, res);
+    });
+    const port = await serve(server, 0);
+    const site = `http://127.0.0.1:${port}`;
+    const app = await launchApp({ settings: { mode: "server", serverUrl: site } });
+
+    // Notifications are recorded instead of shown, and count as supported on a system without a notification service.
+    const patched = await app.mainEvaluate(({ Notification }) => {
+      globalThis.shownNotifications = [];
+      Notification.isSupported = () => true;
+      Notification.prototype.show = function show() {
+        globalThis.shownNotifications.push({ title: this.title, body: this.body });
+      };
+      return Notification.prototype.show.toString().includes("shownNotifications") && Notification.isSupported();
+    });
+    expect(patched).toBe(true);
+    const shown = () => app.mainEvaluate(() => globalThis.shownNotifications);
+
+    await pollUntil(() => seen.some((r) => r.path === "/v1/api/auth/whoami"), {
+      description: "a poll before the sign-in",
+    });
+
+    // The user signs in through the Server view, which receives the server's cookie.
+    await app.mainEvaluate(
+      ({ webContents }, origin) => {
+        const view = webContents.getAllWebContents().find((c) => c.getURL().startsWith(origin));
+        return view.loadURL(`${origin}/sign-in`);
+      },
+      site,
     );
-    expect(withCookie).toEqual([]);
+    await pollUntil(() => seen.some((r) => r.path === "/v1/api/workstreams" && r.cookie?.includes(TOKEN)), {
+      description: "a poll that carries the sign-in cookie",
+    });
+
+    states.w1 = "attention";
+    states.w2 = "attention";
+    await pollUntil(async () => (await shown()).length > 0, { description: "a notification" });
+
+    expect(await shown()).toEqual([{ title: "Turnstone: Attention Needed", body: "Build requires your input" }]);
+    const signInAt = seen.findIndex((r) => r.path === "/sign-in");
+    const cookieBeforeSignIn = seen.slice(0, signInAt).filter((r) => r.cookie !== null);
+    const listBeforeSignIn = seen.slice(0, signInAt).filter((r) => r.path === "/v1/api/workstreams");
+    const healthWithCookie = seen.filter((r) => r.path === "/health" && r.cookie !== null);
+    expect(cookieBeforeSignIn).toEqual([]);
+    expect(listBeforeSignIn).toEqual([]);
+    expect(healthWithCookie).toEqual([]);
   });
 
   // Failure: Electron's fetch fails a redirect instead of returning it, so a server that answers its health
@@ -171,31 +249,55 @@ describe("requests the main process makes", () => {
     await pollUntil(serverDotHas(shell, "error"), { description: "the server dot to read error" });
   });
 
-  // Failure: Electron's fetch keeps a connection open after its body is cancelled, so an event stream refused with
-  // an error page that never ends leaves one more connection open on every retry.
-  it("close the connection of a refused event stream before retrying it", async () => {
-    const streams = { refused: 0, open: 0 };
+  // Failure: Electron's fetch keeps a connection open after its body is cancelled, so a poll refused with an error
+  // page that never ends leaves one more connection open every 10 seconds.
+  it("close the connection of a refused poll before asking again", async () => {
+    const polls = { refused: 0, open: 0 };
     const server = http.createServer((req, res) => {
-      if (req.url !== "/v1/api/events/global") {
+      if (req.url !== "/v1/api/auth/whoami") {
         turnstoneServer([])(req, res);
         return;
       }
-      streams.refused += 1;
-      streams.open += 1;
+      polls.refused += 1;
+      polls.open += 1;
       // The error page never ends, so only the app can close this connection.
       res.writeHead(503, { "content-type": "text/plain" });
       const feed = setInterval(() => res.write("unavailable\n".repeat(64)), 20);
       res.on("close", () => {
         clearInterval(feed);
-        streams.open -= 1;
+        polls.open -= 1;
       });
     });
     const port = await serve(server, 0);
     await launchApp({ settings: { mode: "server", serverUrl: `http://127.0.0.1:${port}` } });
 
-    // The retries back off from one second, so the third attempt comes about three seconds after the first.
-    await pollUntil(() => streams.refused >= 3 && streams.open === 0, {
-      description: "three refused event streams, none left open",
+    // Polls come every 10 seconds, so the second comes about 10 seconds after the first.
+    await pollUntil(() => polls.refused >= 2 && polls.open === 0, {
+      description: "two refused polls, none left open",
+    });
+  });
+
+  // Failure: a poll whose answer never comes is waited on for ever, so one stalled request ends notifications until
+  // the app restarts.
+  it("give up on a poll that gets no answer, and close its connection", async () => {
+    const polls = { started: 0, open: 0 };
+    const server = http.createServer((req, res) => {
+      if (req.url !== "/v1/api/auth/whoami") {
+        turnstoneServer([])(req, res);
+        return;
+      }
+      polls.started += 1;
+      polls.open += 1;
+      // No answer is ever sent, so only the app can end this request.
+      res.on("close", () => {
+        polls.open -= 1;
+      });
+    });
+    const port = await serve(server, 0);
+    await launchApp({ settings: { mode: "server", serverUrl: `http://127.0.0.1:${port}` } });
+
+    await pollUntil(() => polls.started >= 1 && polls.open === 0, {
+      description: "a poll with no answer, given up",
     });
   });
 });

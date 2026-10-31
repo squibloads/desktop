@@ -69,6 +69,22 @@ function nodeNetworkUses(source) {
   return uses;
 }
 
+// Every name a source writes as a variable, a property or a string. A module that reaches something by name, by
+// any route, names it, while a comment that mentions it does not count.
+function namesIn(source) {
+  const names = new Set();
+  const tree = parse(source, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true });
+  for (const { node } of walk(tree)) {
+    if (node.type === "Identifier") names.add(node.name);
+    if (node.type === "Literal" && typeof node.value === "string") names.add(node.value);
+  }
+  return names;
+}
+
+// What reaches past the rules session-fetch.js sets: the fetch that sends the signed-in user's cookies, and
+// Electron's net itself, which takes whatever cookie and cache options it is given.
+const PAST_THE_RULES = ["signedInFetch", "net"];
+
 describe("requests from the main process", () => {
   // Failure: a main-process module reaches Node's fetch or its network modules, which trust only the certificate
   // authorities bundled with Node, so a server behind a CA the system trusts loads in the views but fails the
@@ -113,5 +129,30 @@ describe("requests from the main process", () => {
       "const stream = `${base}/v1/api/events/global`;",
     ].join("\n");
     expect(nodeNetworkUses(clean)).toEqual([]);
+  });
+
+  // Failure: a request that needs no sign-in, such as a health check, is sent with the signed-in user's cookies,
+  // or a module calls Electron's net itself and skips the rules for cookies and the cache.
+  it("send the user's cookies only from the notification poll, and reach Electron's net only in session-fetch.js", () => {
+    const reach = {};
+    for (const name of readdirSync(MAIN_DIR).filter((file) => file.endsWith(".js") && file !== "session-fetch.js")) {
+      const names = namesIn(readFileSync(join(MAIN_DIR, name), "utf8"));
+      const found = PAST_THE_RULES.filter((target) => names.has(target));
+      if (found.length > 0) reach[name] = found;
+    }
+
+    expect(reach).toEqual({ "notifications.js": ["signedInFetch"] });
+  });
+
+  // Failure: the name check misses a route to the signed-in fetch or to Electron's net, or counts a comment, so
+  // the check above proves nothing.
+  it("finds a name however it is reached, and not in a comment", () => {
+    expect(namesIn('require("./session-fetch.js").signedInFetch(url);').has("signedInFetch")).toBe(true);
+    expect(namesIn('const { signedInFetch: send } = require("./session-fetch.js");').has("signedInFetch")).toBe(true);
+    expect(namesIn('const { net } = require("electron");').has("net")).toBe(true);
+    expect(namesIn('require("electron").net.fetch(url);').has("net")).toBe(true);
+    expect(namesIn('require("electron")["net"].fetch(url);').has("net")).toBe(true);
+    expect(namesIn("// signedInFetch and net in a comment\nconst network = 1;").has("signedInFetch")).toBe(false);
+    expect(namesIn("// signedInFetch and net in a comment\nconst network = 1;").has("net")).toBe(false);
   });
 });

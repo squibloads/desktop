@@ -107,13 +107,17 @@ The app checks each service every 5 seconds. When a service changes from not OK 
 
 ### Notifications
 
-Notifications come from the server's global event stream. They run in **Server Only** and **Both** modes only.
+Notifications run in **Server Only** and **Both** modes only. Every 10 seconds the app asks the server for the workstreams of the user signed in to the Server view, and notifies when one of that user's workstreams comes into a state that needs them.
 
-- **Turnstone: Attention Needed**, with the text `<name> requires your input`, when a workstream or cluster reports that it needs attention.
-- **Turnstone: Error**, with the text `<name> encountered an error`, when one reports an error.
+- **Turnstone: Attention Needed**, with the text `<name> requires your input`, when one of your workstreams starts waiting for you.
+- **Turnstone: Error**, with the text `<name> encountered an error`, when one of them fails.
 - The name is the workstream's name, otherwise its ID, otherwise `Workstream`.
+- Only your own workstreams notify, even on a server where you can see other users' workstreams.
+- A workstream that already needed you when the app started, or when you signed in, does not notify.
 
-The app does not check whether the window has focus before it shows a notification. If the event stream drops, the app reconnects, waiting up to 30 seconds between attempts.
+These requests carry the sign-in cookie the Server view holds, so notifications need no setting of their own. They are the only requests the app itself sends with that cookie: health checks carry none. They go only to the Server URL, and a redirect is not followed.
+
+The app does not check whether the window has focus before it shows a notification. A workstream that needs you and is answered within 10 seconds may not notify. The server's global event stream is not used: it needs a service token, which the server gives no signed-in user.
 
 ### Reload and developer tools
 
