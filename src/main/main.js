@@ -17,7 +17,7 @@ const { NotificationManager, createNotificationLifecycle } = require("./notifica
 const { LocalRuntime } = require("./local-runtime.js");
 const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 const { planRecovery } = require("./recovery.js");
-const { planSettingsSave, writeSavePlan } = require("./settings-save.js");
+const { planSettingsSave, writeSavePlan, isValidUrl, reachableSettings } = require("./settings-save.js");
 const { shouldStopPodOnQuit } = require("./quit-policy.js");
 const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
 const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
@@ -27,6 +27,8 @@ const { canRetryLocal } = require("./ipc-guards.js");
 const { firstConfigError } = require("./runtime-config.js");
 
 let settings = null;
+// What the poller and the notification stream may read: a refused address reads as absent.
+const reachable = reachableSettings(() => settings);
 let mainWindow = null;
 let shellView = null;
 let serverView = null;
@@ -41,6 +43,10 @@ let quitting = false;
 
 // ─── Window Creation ─────────────────────────────────────────────────────
 
+/**
+ * Builds the window and the views for the current mode. A configured address the rule refuses
+ * is shown as the refusal page, never loaded (see loadConfigured).
+ */
 function createMainWindow() {
   const bounds = settings.windowBounds;
   const isMac = process.platform === "darwin";
@@ -85,7 +91,7 @@ function createMainWindow() {
   // --- Server view (if mode includes server) ---
   if (settings.hasServer) {
     serverView = new WebContentsView({ webPreferences: contentViewPrefs });
-    serverView.webContents.loadURL(settings.serverUrl);
+    loadConfigured(serverView, settings.serverUrl);
     setupViewSecurity(serverView, "serverUrl");
     setupFailHandler(serverView, () => settings.serverUrl);
   }
@@ -96,7 +102,7 @@ function createMainWindow() {
     // Local mode shows the loading page until the pod and its node are up
     // (startLocalRuntime), so the view is never blank while starting.
     if (settings.isLocal) showLocalLoading(consoleView);
-    else consoleView.webContents.loadURL(settings.consoleUrl);
+    else loadConfigured(consoleView, settings.consoleUrl);
     setupViewSecurity(consoleView, "consoleUrl");
     setupFailHandler(consoleView, () => settings.consoleUrl);
   }
@@ -148,6 +154,21 @@ function createMainWindow() {
     serverView = null;
     consoleView = null;
   });
+}
+
+/**
+ * A stored address the rule refuses is never loaded. The view shows the refusal page instead,
+ * and Settings is the way to change the address. Every load of a configured address goes
+ * through here, so the refusal cannot be skipped by a new call site.
+ */
+function loadConfigured(view, url) {
+  if (isValidUrl(url)) {
+    view.webContents.loadURL(url).catch(() => {});
+    return;
+  }
+  view.webContents
+    .loadFile(path.join(__dirname, "../renderer/error.html"), { query: errorPageQuery(url, "insecure") })
+    .catch(() => {});
 }
 
 // Pages in the server and console views get only what permissions.js allows, and only
@@ -236,8 +257,11 @@ function setupFailHandler(view, getUrl) {
   );
 }
 
-// A reload repeats the current page, which after a failure is our error page.
-// The decision lives in planRecovery; this only carries it out.
+/**
+ * Brings a view back after its backend returns. A reload repeats the current page, which after a
+ * failure is our error page, so the decision comes from planRecovery and the address is loaded
+ * through loadConfigured. A refused address is never reloaded.
+ */
 function recoverView(view, getUrl) {
   const wc = view.webContents;
   if (wc.isDestroyed()) return;
@@ -267,7 +291,7 @@ function recoverView(view, getUrl) {
     showLocalLoading(view);
     startLocalRuntime();
   } else {
-    wc.loadURL(getUrl()).catch(() => {});
+    loadConfigured(view, getUrl());
   }
 }
 
@@ -318,9 +342,13 @@ function sendLocalProgress(stage) {
   }
 }
 
+/**
+ * Loads the local console into a view that is still alive. The console URL comes from settings
+ * and goes through loadConfigured like every other load, so a refused address is never loaded here.
+ */
 function loadLocalConsole(view) {
   if (view && !view.webContents.isDestroyed()) {
-    view.webContents.loadURL(settings.consoleUrl).catch(() => {});
+    loadConfigured(view, settings.consoleUrl);
   }
 }
 
@@ -443,11 +471,15 @@ function openSettings() {
 
 // ─── Rebuild Window ──────────────────────────────────────────────────────
 
+/**
+ * Replaces the window when the mode changes. Notifications are applied before the old window
+ * closes, so the old mode stops alerting even if the rebuild throws halfway.
+ */
 function rebuildWindow() {
   // Apply the new mode's notifications before the window is rebuilt. If the
   // rebuild throws, the new mode is already saved, so its notifications must
   // already match it.
-  notificationLifecycle.apply(settings);
+  notificationLifecycle.apply(reachable);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.close();
@@ -509,7 +541,8 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
       consoleView.webContents.loadURL(settings.consoleUrl);
     }
     if (healthPoller) healthPoller.poll();
-    if (plan.restartNotifications) notificationLifecycle.restart();
+    // apply rather than restart: a refused address that was just fixed has no manager to restart.
+    if (plan.restartNotifications) notificationLifecycle.apply(reachable);
   }
 
   return { ok: true };
@@ -571,8 +604,12 @@ ipcMain.on("turnstone:window-close", () => {
 
 // ─── Health Polling ──────────────────────────────────────────────────────
 
+/**
+ * Starts the health poller on the reachable settings, so a refused address is reported as
+ * refused and never polled.
+ */
 function setupHealthPoller() {
-  healthPoller = new HealthPoller(settings, (status, prev) => {
+  healthPoller = new HealthPoller(reachable, (status, prev) => {
     // Send to shell renderer
     if (shellView && !shellView.webContents.isDestroyed()) {
       shellView.webContents.send("turnstone:health-update", status);
@@ -663,7 +700,7 @@ app.whenReady().then(async () => {
   tray.create();
 
   // Notifications run only while the mode has a server
-  notificationLifecycle.apply(settings);
+  notificationLifecycle.apply(reachable);
 
   if (isFirstLaunch) {
     openSettings();

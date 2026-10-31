@@ -61,4 +61,4 @@ function firstConfigError(env = process.env) {
   return null;
 }
 
-module.exports = { DEFAULT_LOCAL_CONSOLE_URL, podmanCommand, localConsoleUrl, firstConfigError };
+module.exports = { DEFAULT_LOCAL_CONSOLE_URL, LOOPBACK_HOSTS, podmanCommand, localConsoleUrl, firstConfigError };

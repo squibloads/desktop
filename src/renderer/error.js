@@ -4,6 +4,15 @@ const params = new URLSearchParams(window.location.search);
 const failedUrl = params.get('url') || '';
 document.getElementById('error-url').textContent = failedUrl;
 
+// A refused address is not a connection problem: say so, and offer no Retry for it.
+if (params.get('reason') === 'insecure') {
+  document.getElementById('error-title').textContent = 'Address refused';
+  document.getElementById('error-detail-text').textContent =
+    'Turnstone loads https addresses, and plain http only on this computer. Open Settings to change it.';
+  document.getElementById('error-hint').style.display = 'none';
+  document.getElementById('btn-retry').style.display = 'none';
+}
+
 document.getElementById('btn-retry').addEventListener('click', () => {
   if (failedUrl) window.location.href = failedUrl;
 });

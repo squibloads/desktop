@@ -28,6 +28,22 @@ describe("HealthPoller", () => {
     };
   }
 
+  // Failure: a refused address is polled over plain http anyway, or it reads as switched off and the fault stays hidden.
+  it("reports a refused address as refused and never polls it", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    poller = new HealthPoller(
+      makeSettings({ hasServer: false, serverRefused: true, serverUrl: "http://192.168.1.20:8080", hasConsole: false }),
+      onUpdate,
+    );
+
+    await poller.poll();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(poller.status.server).toBe("refused");
+    vi.unstubAllGlobals();
+  });
+
   it("polls both servers when both enabled", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

@@ -22,12 +22,8 @@ class HealthPoller {
     const prev = { server: this.status.server, console: this.status.console };
 
     const [serverStatus, consoleStatus] = await Promise.all([
-      this.settings.hasServer
-        ? this._checkHealth(this.settings.serverUrl)
-        : Promise.resolve("disabled"),
-      this.settings.hasConsole
-        ? this._checkHealth(this.settings.consoleUrl)
-        : Promise.resolve("disabled"),
+      this._statusOf(this.settings.serverRefused, this.settings.hasServer, this.settings.serverUrl),
+      this._statusOf(this.settings.consoleRefused, this.settings.hasConsole, this.settings.consoleUrl),
     ]);
 
     this.status.server = serverStatus;
@@ -39,6 +35,15 @@ class HealthPoller {
     ) {
       this.onUpdate(this.status, prev);
     }
+  }
+
+  /**
+   * A refused address is a fault the user must see, so it is reported as refused and never
+   * polled. A switched-off service is not checked at all.
+   */
+  _statusOf(refused, enabled, url) {
+    if (refused) return Promise.resolve("refused");
+    return enabled ? this._checkHealth(url) : Promise.resolve("disabled");
   }
 
   async _checkHealth(baseUrl) {

@@ -1,13 +1,17 @@
 // Tray icon and menu decisions, kept free of electron so they can be tested under
 // plain Node. tray.js supplies the Tray and Menu objects.
 
-// Labels for a surface's status. Anything not listed, including a status the
-// server has not reported yet, reads as Unknown rather than an empty label.
+/**
+ * Labels for a surface's status. Anything not listed, including a status the server has not
+ * reported yet, reads as Unknown rather than an empty label. A refused address is a fault, so
+ * it reads as one rather than as switched off.
+ */
 function statusLabel(s) {
   if (s === "ok") return "Connected";
   if (s === "degraded") return "Degraded";
   if (s === "error") return "Error";
   if (s === "disconnected") return "Disconnected";
+  if (s === "refused") return "Address refused";
   return "Unknown";
 }
 

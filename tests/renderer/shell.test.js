@@ -65,6 +65,8 @@ describe("health dots", () => {
     ["disconnected", ["health-dot", "disconnected"], "disconnected"],
     ["error", ["health-dot", "error"], "error"],
     ["unknown", ["health-dot"], "unknown"],
+    // Failure: a refused address shows as switched off or unknown, so a fault the user must fix looks like nothing is wrong.
+    ["refused", ["health-dot", "error"], "address refused"],
   ])("status %s gives the dot classes %j and label %s", async (status, classes, label) => {
     const page = await openShell();
 

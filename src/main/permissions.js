@@ -1,6 +1,7 @@
 // Which permissions a page in the server or console view may have. Electron approves
 // every request when no handler is set, so this is the whole policy for those pages.
 // No electron require here, so the rules run under plain Node in the unit tier.
+const { isValidUrl } = require("./settings-save.js");
 
 // Audio capture is the one media the console needs (voice input). Video stays refused.
 const ALLOWED_MEDIA = ["audio"];
@@ -35,7 +36,7 @@ function allowedOriginsFrom({ hasServer, serverUrl, hasConsole, consoleUrl }) {
   const urls = [];
   if (hasServer) urls.push(serverUrl);
   if (hasConsole) urls.push(consoleUrl);
-  return urls.map(originOf).filter((origin) => origin !== "");
+  return urls.filter(isValidUrl).map(originOf).filter((origin) => origin !== "");
 }
 
 /**

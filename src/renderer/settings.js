@@ -73,10 +73,18 @@ window.electronAPI.getSettings().then((settings) => {
 
 // ─── URL validation ──────────────────────────────────────────────────────
 
+// Kept in step with LOOPBACK_HOSTS by tests/contract/url-rule-parity.test.js.
+const LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"];
+
+/**
+ * Mirrors isValidUrl in src/main/settings-save.js: https for any host, http only for this
+ * computer. The form uses it to mark a field before Save, so a bad address never leaves the page.
+ */
 function isValidUrl(str) {
   try {
     const url = new URL(str);
-    return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol === "https:") return true;
+    return url.protocol === "http:" && LOCAL_HOSTS.includes(url.hostname);
   } catch {
     return false;
   }
