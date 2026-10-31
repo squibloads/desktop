@@ -15,6 +15,18 @@ function statusLabel(s) {
   return "Unknown";
 }
 
+/**
+ * The tray's line for the notification status notifications.js reports. A stopped manager reports null, and a
+ * status not listed has no line, so the tray never claims notifications work when nothing says so.
+ */
+function notificationLabel(status) {
+  if (status === "on") return "Notifications: On";
+  if (status === "signed-out") return "Notifications: Sign in to the server";
+  if (status === "refused") return "Notifications: Refused by the server";
+  if (status === "waiting") return "Notifications: Waiting for the server";
+  return null;
+}
+
 // A surface switched off in settings is not a fault, so it does not count
 // against the icon. With nothing active the icon is red.
 function trayIconName(server, console_) {
@@ -32,7 +44,7 @@ function trayIconName(server, console_) {
 
 // Status rows are informational, so they are disabled. Click handlers are the
 // caller's functions, passed through unchanged.
-function buildTrayMenuTemplate(serverStatus, consoleStatus, actions) {
+function buildTrayMenuTemplate(serverStatus, consoleStatus, actions, notificationStatus = null) {
   const items = [];
   if (serverStatus !== "disabled") {
     items.push({
@@ -46,6 +58,10 @@ function buildTrayMenuTemplate(serverStatus, consoleStatus, actions) {
       enabled: false,
     });
   }
+  const notifications = notificationLabel(notificationStatus);
+  if (notifications) {
+    items.push({ label: notifications, enabled: false });
+  }
   items.push(
     { type: "separator" },
     { label: "Show Window", click: actions.showWindow },
@@ -56,4 +72,4 @@ function buildTrayMenuTemplate(serverStatus, consoleStatus, actions) {
   return items;
 }
 
-module.exports = { statusLabel, trayIconName, buildTrayMenuTemplate };
+module.exports = { statusLabel, notificationLabel, trayIconName, buildTrayMenuTemplate };

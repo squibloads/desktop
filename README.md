@@ -102,7 +102,7 @@ The app checks each service every 5 seconds. When a service changes from not OK 
 
 - **Icon colour:** green when every active service is Connected, yellow when some are, red when none are. Grey until the first check.
 - **Click the icon** to show the window. On Linux, which gesture activates the icon depends on the desktop environment; if clicking does nothing, use the tray menu.
-- **Menu:** a read-only status line for each active service (for example `Server: Connected`). Local and Console Only show only Console, and Server Only shows only Server. Then **Show Window**, **Settings...**, and **Quit**. **Quit** exits the app and applies the *When the app quits* setting.
+- **Menu:** a read-only status line for each active service (for example `Server: Connected`). Local and Console Only show only Console, and Server Only shows only Server. In Server Only and Both, a line then says whether notifications work (see [Notifications](#notifications)). Then **Show Window**, **Settings...**, and **Quit**. **Quit** exits the app and applies the *When the app quits* setting.
 - On **Windows and Linux**, closing the window quits the app. On **macOS**, the app keeps running after the window closes. On macOS, use the Dock icon, not the tray, to reopen a closed window.
 
 ### Notifications
@@ -116,6 +116,15 @@ Notifications run in **Server Only** and **Both** modes only. Every 10 seconds t
 - A workstream that already needed you when the app started, or when you signed in, does not notify.
 
 These requests carry the sign-in cookie the Server view holds, so notifications need no setting of their own. They are the only requests the app itself sends with that cookie: health checks carry none. They go only to the Server URL, and a redirect is not followed.
+
+The tray menu says whether notifications work, and the app logs each change:
+
+| Tray line | Meaning |
+|---|---|
+| `Notifications: On` | The server answered, and the app is watching your workstreams. |
+| `Notifications: Sign in to the server` | The server asked for a sign-in. Sign in through the Server view. |
+| `Notifications: Refused by the server` | The server refused the requests, or answered with a redirect. |
+| `Notifications: Waiting for the server` | No answer yet, or the server is down or busy. |
 
 The app does not check whether the window has focus before it shows a notification. A workstream that needs you and is answered within 10 seconds may not notify. The server's global event stream is not used: it needs a service token, which the server gives no signed-in user.
 
