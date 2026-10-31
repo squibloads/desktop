@@ -12,7 +12,8 @@
     "test:contract": "vitest run --project contract",
     "test:renderer": "vitest run --project renderer",
     "test:shuffle": "node tests/helpers/run-shuffled.mjs",
-    "test:e2e": "node tests/helpers/run-e2e.mjs"
+    "test:e2e": "node tests/helpers/run-e2e.mjs",
+    "test:packaged": "node tests/helpers/check-packaged-build.mjs"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.6.0",

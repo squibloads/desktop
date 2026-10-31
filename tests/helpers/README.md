@@ -76,6 +76,29 @@ tier fails it.
 - `e2e-setup.js` runs before the e2e files. It fails the run when the Electron
   binary is missing, so the smoke tier can never pass by skipping.
 - `run-e2e.mjs` sets `TURNSTONE_E2E=1` and runs `vitest run --project e2e`.
+- `check-packaged-build.mjs` (`npm run test:packaged`) checks the build that
+  `electron-forge package` or `make` left in Forge's output folder (`out/`), on the OS
+  that built it. The release workflow runs it before each OS's upload, so a failure
+  stops that upload and the release.
+  - **Fuses:** it reads the binary's fuses and compares them with the fuses entry in `forge.config.js`.
+  - **Launch switches:** it starts the packaged build, then an unpackaged control
+    (`electron .`), each with `--remote-debugging-port`, `--log-net-log`,
+    `--ssl-key-log-file` and `--ignore-certificate-errors`. Each run gets a throwaway
+    profile whose Server view and health poll go to a local self-signed HTTPS
+    server, which counts connections and requests.
+  - **Pass, packaged build:** it must connect to that server at least once, show no
+    effect of any switch, and log each one as ignored. Running is not enough: a main
+    process that threw stays alive behind Electron's error dialog, connecting nothing.
+  - **Pass, control:** it must show every effect. If it does not, that probe cannot
+    see its switch on this machine, and the check fails rather than pass a build it
+    could not test.
+  - **Timing:** each run ends 3 seconds after its target, or at 60 seconds. The
+    target is two connections for the packaged build, and every effect for the control.
+  - Run it on a desktop that does not mind two app windows opening and closing; on
+    Linux without a display, use `xvfb-run -a`.
+- `packaged-build.mjs` is its pure half: locating the build, comparing fuses
+  and judging the two runs. `tests/contract/packaged-build-check.test.js`
+  covers it.
 
 ## Rules
 
