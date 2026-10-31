@@ -1,4 +1,4 @@
-const { signedInFetch, isRefusedRedirect } = require("./session-fetch.js");
+const { signedInFetch, cookieDigest: sessionCookieDigest, isRefusedRedirect } = require("./session-fetch.js");
 
 // How often the app asks the server for the workstreams. README.md states it, and
 // tests/contract/documented-defaults.test.js keeps the two equal.
@@ -20,14 +20,18 @@ function refusalStatus(code) {
 // whether that works: "on", "signed-out", "refused", "unsupported" or "waiting", and null once stopped.
 //
 // electron is not required at the top: the tests run under plain Node and inject
-// Notification and fetch. The lazy require below only runs in the real app. fetch is
-// bound as fetchImpl because tests/contract/main-process-fetch.test.js refuses the
+// Notification, fetch and cookieDigest. The lazy require below only runs in the real app.
+// fetch is bound as fetchImpl because tests/contract/main-process-fetch.test.js refuses the
 // bare name fetch in the main process.
 class NotificationManager {
-  constructor(settings, { Notification, fetch: fetchImpl = signedInFetch, onStatus = () => {} } = {}) {
+  constructor(
+    settings,
+    { Notification, fetch: fetchImpl = signedInFetch, cookieDigest = sessionCookieDigest, onStatus = () => {} } = {},
+  ) {
     this.settings = settings;
     this._Notification = Notification;
     this._fetch = fetchImpl;
+    this._cookieDigest = cookieDigest;
     this._onStatus = onStatus;
     this.controller = null;
     this.timer = null;
@@ -73,7 +77,13 @@ class NotificationManager {
     let answer;
     let failure = null;
     try {
+      const cookies = await this._cookieDigest(this.settings.serverUrl);
       answer = await this._ask(controller);
+      // The cookies changed while the poll ran: a user signed out, or another signed in, through the Server view.
+      // The answer, whatever it says, is to requests sent as the user before, so it is dropped, and the next poll
+      // asks as whoever is signed in then. A renewed sign-in changes them too, and the next poll then announces
+      // what this one carried.
+      if ((await this._cookieDigest(this.settings.serverUrl)) !== cookies) answer = null;
     } catch (err) {
       // No connection, no answer in time, an OK answer that is not JSON, or a fault here. The next poll asks again.
       answer = { status: "waiting" };
@@ -84,6 +94,7 @@ class NotificationManager {
 
     this.timer = setTimeout(() => this._poll(generation), POLL_INTERVAL_MS);
     this._noteFailure(failure);
+    if (answer === null) return;
     if (answer.status === "on") this._compare(answer.userId, answer.workstreams);
     else if (answer.status !== "waiting") this._forget();
     this._report(answer.status);

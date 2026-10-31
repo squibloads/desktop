@@ -69,6 +69,9 @@ let fake;
 let statuses;
 // console.error, which the manager logs to. Replaced in every test, so a test that expects nothing logged can say so.
 let errors;
+// What the session holds for the server, as the manager's cookieDigest reads it. A test changes it to sign a user in
+// or out while a poll runs.
+let jar;
 
 // onStatus, when given, also runs for each status, after it is recorded in statuses.
 function makeManager(fetch, { settings = SETTINGS, onStatus, ...notification } = {}) {
@@ -76,6 +79,7 @@ function makeManager(fetch, { settings = SETTINGS, onStatus, ...notification } =
   statuses = [];
   manager = new NotificationManager(settings, {
     fetch,
+    cookieDigest: async () => jar.digest,
     Notification: fake.Notification,
     onStatus: (status) => {
       statuses.push(status);
@@ -93,6 +97,7 @@ const nextPoll = (count = 1) => vi.advanceTimersByTimeAsync(POLL_MS * count);
 beforeEach(() => {
   vi.useFakeTimers();
   errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  jar = { digest: "signed in as u1" };
 });
 
 afterEach(() => {
@@ -575,6 +580,81 @@ describe("NotificationManager after a sign-out or an outage", () => {
     expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "w2 encountered an error" }]);
   });
 
+  // Failure: the answer to a list requested as one user arrives after another user signed in through the Server view,
+  // and the first user's workstream is announced on the desktop the second one now uses.
+  it("drops an answer when another user signs in while its poll runs", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    let switchDuringList = false;
+    const switching = vi.fn(async (url, init) => {
+      const resp = await fetch(url, init);
+      if (switchDuringList && new URL(url).pathname === "/v1/api/workstreams") {
+        switchDuringList = false;
+        jar.digest = "signed in as u2";
+        server.userId = "u2";
+      }
+      return resp;
+    });
+    makeManager(switching).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention")];
+    switchDuringList = true;
+    await nextPoll(2);
+
+    expect(fake.constructed).toEqual([]);
+    expect(statuses).toEqual(["on"]);
+  });
+
+  // Failure: a refusal of requests sent as the user before reaches the tray after another user signed in, so it says
+  // "Sign in to the server" to a user who just did, and the states recorded for the next answer are thrown away.
+  it("drops a refusal when another user signs in while its poll runs", async () => {
+    const { server, fetch } = fakeServer();
+    let switchDuringWhoami = false;
+    const switching = vi.fn(async (url, init) => {
+      if (switchDuringWhoami && new URL(url).pathname === "/v1/api/auth/whoami") {
+        switchDuringWhoami = false;
+        jar.digest = "signed in as u2";
+        server.userId = "u2";
+        return { ok: false, status: 401 };
+      }
+      return fetch(url, init);
+    });
+    makeManager(switching).start();
+    await settle();
+
+    switchDuringWhoami = true;
+    await nextPoll(2);
+
+    expect(statuses).toEqual(["on"]);
+  });
+
+  // Failure: an answer dropped because the cookies changed, while the same user stays signed in, as when the sign-in
+  // is renewed, loses the change it carried for good.
+  it("announces at the next poll what a dropped answer carried, when the same user is still signed in", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running")];
+    let renewDuringList = false;
+    const renewing = vi.fn(async (url, init) => {
+      const resp = await fetch(url, init);
+      if (renewDuringList && new URL(url).pathname === "/v1/api/workstreams") {
+        renewDuringList = false;
+        jar.digest = "signed in as u1, renewed";
+      }
+      return resp;
+    });
+    makeManager(renewing).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention")];
+    renewDuringList = true;
+    await nextPoll();
+    expect(fake.constructed).toEqual([]);
+
+    await nextPoll();
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w1 requires your input" }]);
+  });
+
   // Failure: an outage makes the manager forget the states it knew, so a workstream that started waiting during it
   // is never announced.
   it("keeps the workstreams it knew through an outage, and announces what changed during it", async () => {
@@ -603,6 +683,7 @@ describe("NotificationManager start and stop", () => {
         }),
     );
     makeManager(fetch).start();
+    await settle();
     const { signal } = fetch.mock.calls[0][1];
     manager.stop();
     await vi.advanceTimersByTimeAsync(60000);
@@ -624,12 +705,23 @@ describe("NotificationManager start and stop", () => {
   // Failure: a poll that stop() ended goes on to its next request, so a stopped loop still reaches the server.
   it("makes no further request for a poll that a restart ended between its requests", async () => {
     const { fetch } = fakeServer();
-    makeManager(fetch);
-    manager.start();
+    // The first whoami is answered only when the test says, after the restart, and its request is not aborted.
+    let answerFirstWhoami;
+    const firstWhoamiWaits = vi.fn((url, init) => {
+      if (new URL(url).pathname !== "/v1/api/auth/whoami" || answerFirstWhoami) return fetch(url, init);
+      return new Promise((resolve) => {
+        answerFirstWhoami = () => resolve(json({ user_id: "u1" }));
+      });
+    });
+    makeManager(firstWhoamiWaits).start();
+    await settle();
+    manager.stop();
     manager.start();
     await settle();
+    answerFirstWhoami();
+    await settle();
 
-    expect(paths(fetch)).toEqual(["/v1/api/auth/whoami", "/v1/api/auth/whoami", "/v1/api/workstreams"]);
+    expect(paths(firstWhoamiWaits)).toEqual(["/v1/api/auth/whoami", "/v1/api/auth/whoami", "/v1/api/workstreams"]);
   });
 
   // Failure: calling start() twice runs two loops, which poll twice as often, and a later stop() reaches only one.
@@ -702,6 +794,7 @@ describe("NotificationManager start and stop", () => {
 
     manager.stop();
     manager.start();
+    await settle();
 
     expect(whoamiCount(fetch)).toBe(2);
   });
