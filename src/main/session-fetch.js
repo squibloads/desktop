@@ -28,9 +28,20 @@ function signedInFetch(url, init = {}) {
   return require("electron").net.fetch(url, { ...init, credentials: "include", cache: "no-store" });
 }
 
+/**
+ * A digest of the cookies the session holds for the URL, which signedInFetch sends there. It changes when a user
+ * signs in or out through the Server view, so the notification poll can drop an answer to requests sent as the user
+ * before. Only a digest is returned, so the poll never holds the sign-in token.
+ */
+async function cookieDigest(url) {
+  const cookies = await require("electron").session.defaultSession.cookies.get({ url });
+  const pairs = cookies.map(({ name, value }) => `${name}=${value}`).sort();
+  return require("node:crypto").createHash("sha256").update(pairs.join("\n")).digest("hex");
+}
+
 /** Whether a request failed because it was answered with a redirect that was not followed. */
 function isRefusedRedirect(err) {
   return err instanceof Error && err.message === REFUSED_REDIRECT;
 }
 
-module.exports = { sessionFetch, signedInFetch, isRefusedRedirect };
+module.exports = { sessionFetch, signedInFetch, cookieDigest, isRefusedRedirect };

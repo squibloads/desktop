@@ -115,7 +115,7 @@ Notifications run in **Server Only** and **Both** modes only. Every 10 seconds t
 - Only your own workstreams notify, even on a server where you can see other users' workstreams.
 - A workstream that already needed you when notifications started does not notify. They start again, and only record where things stand, when the app starts, when the mode or the Server URL changes, when you or another user signs in, and after the server refused the requests or answered in a form the app cannot read.
 
-These requests carry the cookies the Server view holds for the server, its sign-in among them, so notifications need no setting of their own. A cookie does not depend on the port, so a Console on the same host adds its cookies too, as it does for the Server view. They are the only requests the app itself sends with cookies: health checks carry none. They go only to the Server URL, and a redirect is not followed.
+These requests carry the cookies the Server view holds for the server, its sign-in among them, so notifications need no setting of their own. A cookie does not depend on the port, so a Console on the same host adds its cookies too, as it does for the Server view. They are the only requests the app itself sends with cookies: health checks carry none. They go only to the Server URL, and a redirect is not followed. An answer is dropped when those cookies changed while it was on its way, as when you sign out or another user signs in, so one user's workstreams never notify after another has signed in.
 
 From the end of the first poll on, at most 10 seconds after notifications start, the tray menu says whether notifications work, and the app logs each change. A Server URL the app refuses runs no notifications and shows no line.
 

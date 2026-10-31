@@ -12,6 +12,12 @@ export function fakeElectronNet(netFetch) {
   require.cache[ELECTRON] = { id: ELECTRON, filename: ELECTRON, loaded: true, exports: { net: { fetch: netFetch } } };
 }
 
+/** Makes require("electron").session.defaultSession.cookies.get the given function, until removeFakeElectron() runs. */
+export function fakeElectronCookies(get) {
+  const exports = { session: { defaultSession: { cookies: { get } } } };
+  require.cache[ELECTRON] = { id: ELECTRON, filename: ELECTRON, loaded: true, exports };
+}
+
 export function removeFakeElectron() {
   delete require.cache[ELECTRON];
 }

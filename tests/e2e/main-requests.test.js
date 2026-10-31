@@ -185,6 +185,91 @@ describe("requests the main process makes", () => {
     expect(healthWithCookie).toEqual([]);
   });
 
+  // Failure: the answer to a list requested as one user arrives after another user signed in through the Server
+  // view, and the first user's workstream is announced on the desktop the second one now uses.
+  it("drop an answer to a poll sent as the user before another signs in through the server view", async () => {
+    const seen = [];
+    const userOf = (cookie) => {
+      const token = (cookie ?? "").split("; ").find((c) => c.startsWith("turnstone_auth_server="));
+      return { "turnstone_auth_server=token-u1": "u1", "turnstone_auth_server=token-u2": "u2" }[token] ?? null;
+    };
+    let w1 = "running";
+    let holdNextList = false;
+    const held = [];
+    const server = http.createServer((req, res) => {
+      const cookie = req.headers.cookie ?? null;
+      seen.push({ path: req.url, cookie });
+      const signIn = /^\/sign-in\/(u[12])$/.exec(req.url);
+      if (signIn) {
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "set-cookie": `turnstone_auth_server=token-${signIn[1]}; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600`,
+        });
+        res.end("<!doctype html><title>signed in</title>");
+        return;
+      }
+      if (POLL_PATHS.includes(req.url)) {
+        const user = userOf(cookie);
+        if (!user) return sendJson(res, { error: "Unauthorized: missing or invalid token" }, 401);
+        if (req.url === "/v1/api/auth/whoami") return sendJson(res, { user_id: user });
+        const body = { workstreams: [{ ws_id: "w1", name: "Build", state: w1, user_id: "u1" }] };
+        if (!holdNextList) return sendJson(res, body);
+        holdNextList = false;
+        held.push({ cookie, answer: () => sendJson(res, body) });
+        return;
+      }
+      turnstoneServer([])(req, res);
+    });
+    const port = await serve(server, 0);
+    const site = `http://127.0.0.1:${port}`;
+    const app = await launchApp({ settings: { mode: "server", serverUrl: site } });
+
+    // Notifications are recorded instead of shown, and count as supported on a system without a notification service.
+    const patched = await app.mainEvaluate(({ Notification }) => {
+      globalThis.shownNotifications = [];
+      Notification.isSupported = () => true;
+      Notification.prototype.show = function show() {
+        globalThis.shownNotifications.push({ title: this.title, body: this.body });
+      };
+      return Notification.prototype.show.toString().includes("shownNotifications") && Notification.isSupported();
+    });
+    expect(patched).toBe(true);
+    // Signs in through the Server view, once it has loaded the server.
+    const signInAs = async (user) => {
+      const serverView = ({ webContents }, origin) =>
+        webContents.getAllWebContents().some((c) => c.getURL().startsWith(origin));
+      await pollUntil(() => app.mainEvaluate(serverView, site), { description: "the Server view on the server" });
+      await app.mainEvaluate(
+        ({ webContents }, { origin, path }) => {
+          const view = webContents.getAllWebContents().find((c) => c.getURL().startsWith(origin));
+          return view.loadURL(`${origin}${path}`);
+        },
+        { origin: site, path: `/sign-in/${user}` },
+      );
+    };
+
+    // u1 signs in, and the first list answered for u1 records w1 as running.
+    await signInAs("u1");
+    await pollUntil(() => seen.some((r) => r.path === "/v1/api/workstreams" && userOf(r.cookie) === "u1"), {
+      description: "a list answered for u1",
+    });
+
+    // The next list is asked for as u1 and held. u2 signs in through the Server view before it is answered.
+    w1 = "attention";
+    holdNextList = true;
+    await pollUntil(() => held.length > 0, { description: "a list held while u1 is signed in" });
+    await signInAs("u2");
+    const releasedAt = seen.length;
+    held[0].answer();
+
+    // The poll after it was armed once that answer was dealt with, so by then any notification it caused was shown.
+    await pollUntil(() => seen.slice(releasedAt).some((r) => r.path === "/v1/api/auth/whoami"), {
+      description: "the poll after the held answer",
+    });
+    expect(userOf(held[0].cookie)).toBe("u1");
+    expect(await app.mainEvaluate(() => globalThis.shownNotifications)).toEqual([]);
+  });
+
   // Failure: Electron's fetch fails a redirect instead of returning it, so a server that answers its health
   // check with a redirect, such as one behind a sign-in page, shows as disconnected while it is up.
   it("show a health check answered with a redirect as an error, without following it", async () => {
