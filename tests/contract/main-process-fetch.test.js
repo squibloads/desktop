@@ -85,6 +85,34 @@ function namesIn(source) {
 // Electron's net itself, which takes whatever cookie and cache options it is given.
 const PAST_THE_RULES = ["signedInFetch", "net"];
 
+// The same name, as a key or a property.
+function isNamed(node, computed, name) {
+  return computed ? node.type === "Literal" && node.value === name : node.type === "Identifier" && node.name === name;
+}
+
+/**
+ * Where a source takes a fetch from an object: session.defaultSession.fetch or a view's webContents.session.fetch,
+ * which are Electron's net.fetch without the name net and send the session's cookies by default. A parameter
+ * written { fetch: fetchImpl = sessionFetch } takes what its caller passes, not a property of an object, so it does
+ * not count.
+ */
+function fetchTakenFromObject(source) {
+  const found = [];
+  const tree = parse(source, { ecmaVersion: "latest", sourceType: "script", allowReturnOutsideFunction: true, locations: true });
+  for (const { node, parent, key } of walk(tree)) {
+    if (node.type === "MemberExpression" && isNamed(node.property, node.computed, "fetch")) {
+      found.push(`${node.loc.start.line}: .fetch`);
+    }
+    const destructured =
+      node.type === "ObjectPattern" &&
+      ((parent?.type === "VariableDeclarator" && key === "id") || (parent?.type === "AssignmentExpression" && key === "left"));
+    for (const prop of destructured ? node.properties : []) {
+      if (prop.type === "Property" && isNamed(prop.key, prop.computed, "fetch")) found.push(`${prop.loc.start.line}: { fetch }`);
+    }
+  }
+  return found;
+}
+
 describe("requests from the main process", () => {
   // Failure: a main-process module reaches Node's fetch or its network modules, which trust only the certificate
   // authorities bundled with Node, so a server behind a CA the system trusts loads in the views but fails the
@@ -132,16 +160,35 @@ describe("requests from the main process", () => {
   });
 
   // Failure: a request that needs no sign-in, such as a health check, is sent with the signed-in user's cookies,
-  // or a module calls Electron's net itself and skips the rules for cookies and the cache.
-  it("send the user's cookies only from the notification poll, and reach Electron's net only in session-fetch.js", () => {
+  // or a module calls Electron's net, or a session's fetch, itself and skips the rules for cookies and the cache.
+  it("send the user's cookies only from the notification poll, and reach Electron's network only in session-fetch.js", () => {
     const reach = {};
     for (const name of readdirSync(MAIN_DIR).filter((file) => file.endsWith(".js") && file !== "session-fetch.js")) {
-      const names = namesIn(readFileSync(join(MAIN_DIR, name), "utf8"));
-      const found = PAST_THE_RULES.filter((target) => names.has(target));
+      const source = readFileSync(join(MAIN_DIR, name), "utf8");
+      const names = namesIn(source);
+      const found = [...PAST_THE_RULES.filter((target) => names.has(target)), ...fetchTakenFromObject(source)];
       if (found.length > 0) reach[name] = found;
     }
 
     expect(reach).toEqual({ "notifications.js": ["signedInFetch"] });
+  });
+
+  // Failure: the check above misses a session's fetch, so a health check written with one sends the user's cookies
+  // and every test still passes; or it flags a fetch passed in by a caller, which every module here takes.
+  it("finds a fetch taken from an object, and not one passed in", () => {
+    expect(fetchTakenFromObject("session.defaultSession.fetch(url);")).toEqual(["1: .fetch"]);
+    expect(fetchTakenFromObject('view.webContents.session["fetch"](url);')).toEqual(["1: .fetch"]);
+    expect(fetchTakenFromObject("const { fetch: send } = session.defaultSession;")).toEqual(["1: { fetch }"]);
+    expect(fetchTakenFromObject("let send; ({ fetch: send } = ses);")).toEqual(["1: { fetch }"]);
+
+    const clean = [
+      "class Poller { constructor(settings, { fetch: fetchImpl = sessionFetch } = {}) { this._fetch = fetchImpl; } }",
+      "function make({ fetch } = {}) { return fetch; }",
+      "this._fetch(url);",
+      "const options = { fetch: send };",
+      "// session.defaultSession.fetch(url) in a comment",
+    ].join("\n");
+    expect(fetchTakenFromObject(clean)).toEqual([]);
   });
 
   // Failure: the name check misses a route to the signed-in fetch or to Electron's net, or counts a comment, so
