@@ -5,6 +5,51 @@ const { signedInFetch, cookieDigest: sessionCookieDigest, isRefusedRedirect } = 
 const POLL_INTERVAL_MS = 10000;
 // A request with no answer by then is given up, so a server that stops answering cannot stall the poll.
 const REQUEST_TIMEOUT_MS = 5000;
+// The most of a workstream's name a notification shows, in characters. README.md states it. The model can set the
+// name, and a long one has room to pose as a message from the app.
+const NAME_MAX_CHARS = 40;
+
+/**
+ * How a notification names a workstream: its name, or its ws_id when it has none, quoted after a fixed label and cut
+ * short, so text the model wrote reads as the workstream's own and never as the app's.
+ */
+function workstreamLabel(ws) {
+  const shown = cleanName(ws?.name) || cleanName(ws?.ws_id);
+  return shown ? `Workstream "${shown}"` : "A workstream";
+}
+
+// Characters that show nothing: format characters such as direction overrides, the other default-ignorable ones such
+// as the blank Hangul fillers, and lone surrogates. The two joiners and the emoji presentation selectors are kept,
+// because names in some scripts and many emoji need them, and they cannot reorder or hide text.
+const INVISIBLE = /(?![\u200C\u200D\uFE0E\uFE0F])[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Cs}]/gu;
+// A run of quote marks of any kind: the plain ones, opening and closing quotes in any script, primes and ditto marks.
+// U+030B is the combining double acute that the folding leaves of a double acute accent on its own.
+const QUOTES = /['"\p{Pi}\p{Pf}\u02BA\u030B\u05F4\u2032-\u2037\u275B-\u275E\u2E42\u3003\u301D-\u301F]+/gu;
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+// One line of plain text from a name, or "" when nothing visible is left. Compatibility forms are folded first, so a
+// fullwidth or small look-alike of a quote or a bracket meets the same rules as the plain one. Line breaks and control
+// characters become spaces, and invisible characters are dropped, so the text reads as what it says. A run of quote
+// marks becomes one single quote, so the name cannot close the label's quotes. <, > and & become look-alikes: Electron
+// hands the text to a Linux notification server as it is, and some of those read markup and its entities.
+function cleanName(text) {
+  if (typeof text !== "string") return "";
+  const flat = text
+    .normalize("NFKC")
+    .replace(/\p{Cc}/gu, " ")
+    .replace(INVISIBLE, "")
+    .replace(QUOTES, "'")
+    .replace(/</g, "\u2039")
+    .replace(/>/g, "\u203A")
+    .replace(/&/g, "\uFF06")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Combining marks alone, for one, show as nothing the user can read.
+  if (!/[\p{L}\p{N}\p{P}\p{S}]/u.test(flat)) return "";
+  // Counted in graphemes, so the cut never splits a letter from its accent or an emoji or a flag in two.
+  const shown = Array.from(GRAPHEMES.segment(flat), ({ segment }) => segment);
+  return shown.length > NAME_MAX_CHARS ? `${shown.slice(0, NAME_MAX_CHARS).join("").trimEnd()}\u2026` : flat;
+}
 
 // What a non-OK answer says about notifications. 401 is the server asking for a sign-in. Any other refusal of
 // the request lasts until something changes, while a server error, a rate limit or a request timeout passes.
@@ -197,11 +242,11 @@ class NotificationManager {
   }
 
   _announce(ws) {
-    const name = ws.name || ws.ws_id || "Workstream";
+    const label = workstreamLabel(ws);
     if (ws.state === "attention") {
-      this._notify("Attention Needed", `${name} requires your input`);
+      this._notify("Attention Needed", `${label} requires your input`);
     } else if (ws.state === "error") {
-      this._notify("Error", `${name} encountered an error`);
+      this._notify("Error", `${label} encountered an error`);
     }
   }
 
@@ -246,4 +291,4 @@ function createNotificationLifecycle(create) {
   };
 }
 
-module.exports = { NotificationManager, createNotificationLifecycle };
+module.exports = { NotificationManager, createNotificationLifecycle, workstreamLabel };
