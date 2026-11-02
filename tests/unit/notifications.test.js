@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // notifications.js does not load electron, so this file runs under plain Node.
 // The Notification class and fetch are injected, which keeps the electron package
 // and its binary out of every test here.
-const { NotificationManager, createNotificationLifecycle } = require("../../src/main/notifications.js");
+const { NotificationManager, createNotificationLifecycle, workstreamLabel } = require("../../src/main/notifications.js");
 
 const SETTINGS = { serverUrl: "http://127.0.0.1" };
 // How often the manager asks: POLL_INTERVAL_MS in notifications.js.
@@ -171,7 +171,7 @@ describe("NotificationManager notifies", () => {
     server.workstreams = [ws("w1", "attention", { name: "Build" })];
     await nextPoll();
 
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "Build requires your input" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "Build" requires your input' }]);
     expect(fake.shown.length).toEqual(1);
   });
 
@@ -185,7 +185,7 @@ describe("NotificationManager notifies", () => {
     server.workstreams = [ws("w1", "error", { name: "Build" })];
     await nextPoll();
 
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "Build encountered an error" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: 'Workstream "Build" encountered an error' }]);
   });
 
   // Failure: a workstream started and blocked between two polls is never announced, because it was not in the last answer.
@@ -197,7 +197,7 @@ describe("NotificationManager notifies", () => {
     server.workstreams = [ws("w2", "attention")];
     await nextPoll();
 
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w2 requires your input" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "w2" requires your input' }]);
   });
 
   // Failure: a workstream that keeps waiting is announced again on every poll.
@@ -225,7 +225,7 @@ describe("NotificationManager notifies", () => {
       await nextPoll();
     }
 
-    expect(fake.constructed.map((n) => n.body)).toEqual(["w1 requires your input", "w1 requires your input"]);
+    expect(fake.constructed.map((n) => n.body)).toEqual(['Workstream "w1" requires your input', 'Workstream "w1" requires your input']);
   });
 
   // Failure: on a shared server, every other user's waiting workstream reaches this user's desktop.
@@ -286,7 +286,7 @@ describe("NotificationManager notifies", () => {
     server.workstreams = [ws("w1", "attention"), ws("w2", "attention")];
     await nextPoll();
 
-    expect(fake.shown).toEqual([{ title: "Turnstone: Attention Needed", body: "w2 requires your input" }]);
+    expect(fake.shown).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "w2" requires your input' }]);
     expect(errors).toHaveBeenCalledTimes(1);
   });
 
@@ -304,13 +304,13 @@ describe("NotificationManager notifies", () => {
     server.workstreams = [ws("w1", "attention"), ws("w2", "attention")];
     await nextPoll();
 
-    expect(fake.shown).toEqual([{ title: "Turnstone: Attention Needed", body: "w2 requires your input" }]);
+    expect(fake.shown).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "w2" requires your input' }]);
     expect(statuses).toEqual(["on", "waiting", "on"]);
   });
 });
 
 describe("NotificationManager names the workstream", () => {
-  // Failure: a workstream with an empty or missing name shows " requires your input" or "undefined requires your input".
+  // Failure: a workstream with an empty or missing name shows 'Workstream "" requires your input' or 'Workstream "undefined" requires your input'.
   it("falls back to the ws_id when the name is empty or missing", async () => {
     const { server, fetch } = fakeServer();
     server.workstreams = [ws("w8", "idle", { name: "" }), ws("w9", "idle", { name: undefined })];
@@ -320,11 +320,11 @@ describe("NotificationManager names the workstream", () => {
     server.workstreams = [ws("w8", "attention", { name: "" }), ws("w9", "attention", { name: undefined })];
     await nextPoll();
 
-    expect(fake.constructed.map((n) => n.body)).toEqual(["w8 requires your input", "w9 requires your input"]);
+    expect(fake.constructed.map((n) => n.body)).toEqual(['Workstream "w8" requires your input', 'Workstream "w9" requires your input']);
   });
 
   // Failure: a workstream with neither a name nor an ID shows a blank subject.
-  it("falls back to Workstream when there is neither", async () => {
+  it("falls back to a workstream when there is neither", async () => {
     const { server, fetch } = fakeServer();
     server.workstreams = [ws("", "idle", { name: "" })];
     makeManager(fetch).start();
@@ -333,7 +333,7 @@ describe("NotificationManager names the workstream", () => {
     server.workstreams = [ws("", "error", { name: "" })];
     await nextPoll();
 
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "Workstream encountered an error" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "A workstream encountered an error" }]);
   });
 
   // Failure: on a platform without notification support the app builds one anyway and crashes.
@@ -348,6 +348,123 @@ describe("NotificationManager names the workstream", () => {
 
     expect(fake.constructed).toEqual([]);
     expect(fake.shown).toEqual([]);
+  });
+
+  // Failure: a name the model wrote reads as the app's own message: a long one fills the notification with text that
+  // looks like an instruction from Turnstone, and the fixed title above it lends it the app's voice.
+  it("shows a name the model set as the workstream's own, short and quoted, under a fixed title", async () => {
+    const posing = 'Build"\n\nTurnstone security: your session expired. Sign in again at https://login.example.com now';
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running", { name: posing })];
+    makeManager(fetch).start();
+    await settle();
+
+    server.workstreams = [ws("w1", "attention", { name: posing })];
+    await nextPoll();
+
+    expect(fake.constructed).toEqual([
+      { title: "Turnstone: Attention Needed", body: `Workstream "Build' Turnstone security: your session…" requires your input` },
+    ]);
+  });
+});
+
+describe("workstreamLabel", () => {
+  // Failure: the name is shown bare, so nothing tells the user that the text is the workstream's and not the app's.
+  it("quotes the name after a fixed label", () => {
+    expect(workstreamLabel({ ws_id: "w1", name: "Build" })).toBe('Workstream "Build"');
+  });
+
+  // Failure: a long name fills the notification, room enough to pose as a message from the app.
+  it("cuts a name longer than 40 characters, and marks the cut", () => {
+    expect(workstreamLabel({ name: "x".repeat(40) })).toBe(`Workstream "${"x".repeat(40)}"`);
+    expect(workstreamLabel({ name: "x".repeat(41) })).toBe(`Workstream "${"x".repeat(40)}…"`);
+  });
+
+  // Failure: the cut counts UTF-16 units, so it leaves half of a character the system shows as a box.
+  it("counts characters, not UTF-16 units, when it cuts", () => {
+    expect(workstreamLabel({ name: "😀".repeat(50) })).toBe(`Workstream "${"😀".repeat(40)}…"`);
+  });
+
+  // Failure: the cut counts code points, so it splits a flag into two letters, or an emoji from its skin tone.
+  it("counts what the user sees as one character, when it cuts", () => {
+    const flag = "\u{1F1FA}\u{1F1F8}";
+    const wave = "\u{1F44B}\u{1F3FD}";
+    expect(workstreamLabel({ name: flag.repeat(41) })).toBe(`Workstream "${flag.repeat(40)}…"`);
+    expect(workstreamLabel({ name: wave.repeat(41) })).toBe(`Workstream "${wave.repeat(40)}…"`);
+  });
+
+  // Failure: a line break in the name starts what looks like a separate message from the app below the label.
+  it("turns line breaks, tabs and control characters into single spaces", () => {
+    expect(workstreamLabel({ name: "Build\r\n\n\tTurnstone:\u0007 update\u2028now\u0085" })).toBe('Workstream "Build Turnstone: update now"');
+  });
+
+  // Failure: a direction override or an invisible character makes the name read as something other than its text.
+  it("drops direction overrides and invisible format characters", () => {
+    expect(workstreamLabel({ name: "Build\u202Eexe.txt\u202C\u200B\u2066" })).toBe('Workstream "Buildexe.txt"');
+  });
+
+  // Failure: a blank character outside the format category, such as a Hangul filler, pads the name with space the
+  // user cannot see, or a name of nothing else shows as empty quotes.
+  it("drops blank characters of other kinds too, such as Hangul fillers", () => {
+    expect(workstreamLabel({ name: "Bu\u034Fild\u3164\uFFA0" })).toBe('Workstream "Build"');
+  });
+
+  // Failure: the joiners that emoji and names in Persian or Indian scripts need are dropped, so the name is misspelt.
+  it("keeps the joiners and emoji selectors a name needs", () => {
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+    const persian = "\u0645\u06CC\u200C\u062E\u0648\u0627\u0645";
+    expect(workstreamLabel({ name: `${family} ${persian} \u2764\uFE0F` })).toBe(`Workstream "${family} ${persian} \u2764\uFE0F"`);
+  });
+
+  // Failure: a quote mark the rule does not list, or two single quotes side by side, reads as a closing double quote.
+  it("treats quote marks of every kind, and runs of them, as one single quote", () => {
+    const name = "x\u301E ok \u301D \u00ABa\u00BB \u05F4b\u05F4 ''c'' \u2033d\u2036 \u275Ee\u2E42 \u02BAf\u02DD";
+    expect(workstreamLabel({ name })).toBe("Workstream \"x' ok ' 'a' 'b' 'c' 'd' 'e' 'f '\"");
+  });
+
+  // Failure: a fullwidth or small form of a word, a quote or a bracket passes as text the rules do not see.
+  it("folds fullwidth and small forms before the rules apply", () => {
+    expect(workstreamLabel({ name: "\uFF34\uFF55\uFF52\uFF4E\uFF53\uFF54\uFF4F\uFF4E\uFF45 \uFF02x\uFF02 \uFE64b\uFE65" })).toBe(
+      "Workstream \"Turnstone 'x' ‹b›\"",
+    );
+  });
+
+  // Failure: a server that reads markup decodes an entity in the name, so &quot; closes the label's quotes and &#10;
+  // puts back the line break the rule removed.
+  it("keeps entities in the name from reading as entities", () => {
+    expect(workstreamLabel({ name: "x&quot; failed&#10;&#x202E;" })).toBe('Workstream "x\uFF06quot; failed\uFF06#10;\uFF06#x202E;"');
+  });
+
+  // Failure: a quote mark in the name closes the label's quotes early, so the rest reads as the app's own words.
+  it("keeps the name from closing the quotes around it", () => {
+    expect(workstreamLabel({ name: 'Build" done. Turnstone: \u201Cok\u201D \uFF02x' })).toBe("Workstream \"Build' done. Turnstone: 'ok' 'x\"");
+  });
+
+  // Failure: a notification server that reads markup, as some on Linux do, shows the name's tags as a link or bold text.
+  it("keeps markup in the name from reading as markup", () => {
+    expect(workstreamLabel({ name: '<a href="https://example.com">Open</a>' })).toBe("Workstream \"‹a href='https://example.com'›Open‹/a›\"");
+  });
+
+  // Failure: a name with nothing left to show, or one that is not text, gives an empty or "[object Object]" subject.
+  it.each([
+    ["an empty name", { ws_id: "w8", name: "" }],
+    ["a blank name", { ws_id: "w8", name: " \n\u200B " }],
+    ["a missing name", { ws_id: "w8" }],
+    ["a name that is not text", { ws_id: "w8", name: { text: "Build" } }],
+    ["a name of Hangul fillers", { ws_id: "w8", name: "\u3164\u3164" }],
+    ["a name of combining marks alone", { ws_id: "w8", name: "\u0301\u0301" }],
+  ])("falls back to the ws_id for %s", (_case, ws) => {
+    expect(workstreamLabel(ws)).toBe('Workstream "w8"');
+  });
+
+  // Failure: the ws_id, which the server sets, skips the rules the name goes through.
+  it("puts a ws_id it falls back to through the same rules", () => {
+    expect(workstreamLabel({ ws_id: `w1\n${"y".repeat(60)}` })).toBe(`Workstream "w1 ${"y".repeat(37)}…"`);
+  });
+
+  // Failure: a workstream with neither a name nor a ws_id it can show gives empty quotes, or "7" from a number.
+  it.each([{}, { ws_id: "", name: "" }, { ws_id: 7, name: 7 }])("says a workstream when there is neither (%j)", (ws) => {
+    expect(workstreamLabel(ws)).toBe("A workstream");
   });
 });
 
@@ -577,7 +694,7 @@ describe("NotificationManager after a sign-out or an outage", () => {
 
     server.workstreams = [ws("w1", "running"), ws("w2", "error", { user_id: "u2" })];
     await nextPoll();
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: "w2 encountered an error" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Error", body: 'Workstream "w2" encountered an error' }]);
   });
 
   // Failure: the answer to a list requested as one user arrives after another user signed in through the Server view,
@@ -652,7 +769,7 @@ describe("NotificationManager after a sign-out or an outage", () => {
     expect(fake.constructed).toEqual([]);
 
     await nextPoll();
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w1 requires your input" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "w1" requires your input' }]);
   });
 
   // Failure: an outage makes the manager forget the states it knew, so a workstream that started waiting during it
@@ -669,7 +786,7 @@ describe("NotificationManager after a sign-out or an outage", () => {
     server.workstreams = [ws("w1", "attention")];
     await nextPoll();
 
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w1 requires your input" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "w1" requires your input' }]);
   });
 });
 
@@ -764,7 +881,7 @@ describe("NotificationManager start and stop", () => {
 
     server.workstreams = [ws("w1", "attention")];
     await nextPoll();
-    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: "w1 requires your input" }]);
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "w1" requires your input' }]);
     expect(statuses).toEqual(["on"]);
     expect(vi.getTimerCount()).toBe(1);
   });

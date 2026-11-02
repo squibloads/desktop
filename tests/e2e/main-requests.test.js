@@ -186,7 +186,7 @@ describe("requests the main process makes", () => {
     states.w2 = "attention";
     await pollUntil(async () => (await shown()).length > 0, { description: "a notification" });
 
-    expect(await shown()).toEqual([{ title: "Turnstone: Attention Needed", body: "Build requires your input" }]);
+    expect(await shown()).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "Build" requires your input' }]);
     const signInAt = seen.findIndex((r) => r.path === "/sign-in");
     const cookieBeforeSignIn = seen.slice(0, signInAt).filter((r) => r.cookie !== null);
     const listBeforeSignIn = seen.slice(0, signInAt).filter((r) => r.path === "/v1/api/workstreams");

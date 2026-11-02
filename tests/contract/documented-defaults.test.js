@@ -172,6 +172,16 @@ describe("README timing claims match the code", () => {
     expect(codeMs).toEqual(10000);
   });
 
+  // Failure: the README says a notification shows at most 40 characters of a workstream's name, but the code cuts at
+  // another length, so the user is told the wrong length.
+  it("the README's 40-character name limit equals NAME_MAX_CHARS 40", () => {
+    const readmeChars = readmeMatch(/the first (\d+) characters of the workstream's name/);
+    const codeChars = Number(capture(/const NAME_MAX_CHARS = (\d+);/, notificationsJs, "NAME_MAX_CHARS"));
+
+    expect(readmeChars).toEqual("40");
+    expect(Number(readmeChars)).toEqual(codeChars);
+  });
+
   // Failure: the README says a health check gives up after 3 seconds, but the status poll or the Local probe uses another limit, so a slow Console is shown as down in one place and up in another.
   it("the README's no-answer limit of 3 seconds equals the AbortSignal.timeout in health.js and local-runtime.js", () => {
     const readmeSeconds = readmeMatch(/no answer within (\d+) seconds/);

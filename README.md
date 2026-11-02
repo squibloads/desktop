@@ -109,9 +109,9 @@ The app checks each service every 5 seconds. When a service changes from not OK 
 
 Notifications run in **Server Only** and **Both** modes only. Every 10 seconds the app asks the server for the workstreams of the user signed in to the Server view, counting from the end of the last request, and notifies when one of that user's workstreams comes into a state that needs them.
 
-- **Turnstone: Attention Needed**, with the text `<name> requires your input`, when one of your workstreams starts waiting for you.
-- **Turnstone: Error**, with the text `<name> encountered an error`, when one of them fails.
-- The name is the workstream's name, otherwise its ID, otherwise `Workstream`.
+- **Turnstone: Attention Needed**, with the text `Workstream "<name>" requires your input`, when one of your workstreams starts waiting for you.
+- **Turnstone: Error**, with the text `Workstream "<name>" encountered an error`, when one of them fails.
+- The name is the workstream's name, otherwise its ID. With neither, the text starts `A workstream`. The model can set a workstream's name, so the notification quotes it and shows only the first 40 characters of the workstream's name, on one line, with `…` where it was cut. Invisible characters are dropped, and fullwidth letters show as plain ones. Quote marks of any kind show as one single quote, and `<`, `>` and `&` as `‹`, `›` and `＆`.
 - Only your own workstreams notify, even on a server where you can see other users' workstreams.
 - A workstream that already needed you when notifications started does not notify. They start again, and only record where things stand, when the app starts, when the mode or the Server URL changes, when you or another user signs in, and after the server refused the requests or answered in a form the app cannot read.
 
