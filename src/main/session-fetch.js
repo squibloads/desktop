@@ -13,19 +13,22 @@ const REFUSED_REDIRECT = "Redirect was cancelled";
 /**
  * fetch through the default session. The session's cookies are not sent: a health check needs no sign-in, so it
  * does not act as the signed-in user. The session's HTTP cache is skipped too. Node's fetch had none, and a
- * health answer served from it would read a server that has gone down as healthy.
+ * health answer served from it would read a server that has gone down as healthy. A redirect is never followed:
+ * every request here asks the configured server about itself, so an answer from wherever it points is not one. Each
+ * caller still says so, and reads the refused redirect in its own way.
  */
 function sessionFetch(url, init = {}) {
-  return require("electron").net.fetch(url, { ...init, credentials: "omit", cache: "no-store" });
+  return require("electron").net.fetch(url, { ...init, credentials: "omit", cache: "no-store", redirect: "manual" });
 }
 
 /**
  * fetch through the default session as the user signed in to the Server view: the session's cookies for the URL
  * are sent. Only the notification poll uses it (tests/contract/main-process-fetch.test.js checks this), because
- * the server answers it only for a signed-in user. The HTTP cache is skipped, as for sessionFetch.
+ * the server answers it only for a signed-in user. The HTTP cache is skipped and a redirect is never followed, as
+ * for sessionFetch, so the cookies go nowhere but the configured server.
  */
 function signedInFetch(url, init = {}) {
-  return require("electron").net.fetch(url, { ...init, credentials: "include", cache: "no-store" });
+  return require("electron").net.fetch(url, { ...init, credentials: "include", cache: "no-store", redirect: "manual" });
 }
 
 /**

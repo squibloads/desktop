@@ -23,6 +23,17 @@ describe("sessionFetch", () => {
       ["https://example.com/health", { credentials: "omit", cache: "no-store", redirect: "manual" }],
     ]);
   });
+
+  // Failure: a caller that leaves the option out, or asks to follow, gets Electron's default, so a redirect sends the
+  // request to wherever the server points and the answer from there is read as the server's own.
+  it.each([{}, { redirect: "follow" }])("never follows a redirect, when the caller passes %j", async (init) => {
+    const netFetch = vi.fn().mockResolvedValue("the response");
+    fakeElectronNet(netFetch);
+
+    await sessionFetch("https://example.com/health", init);
+
+    expect(netFetch.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+  });
 });
 
 describe("signedInFetch", () => {
@@ -42,6 +53,16 @@ describe("signedInFetch", () => {
     expect(netFetch.mock.calls).toEqual([
       ["https://example.com/v1/api/workstreams", { credentials: "include", cache: "no-store", redirect: "manual" }],
     ]);
+  });
+
+  // Failure: a redirect is followed with the user's cookies, so the sign-in reaches wherever the server points.
+  it.each([{}, { redirect: "follow" }])("never follows a redirect, when the caller passes %j", async (init) => {
+    const netFetch = vi.fn().mockResolvedValue("the response");
+    fakeElectronNet(netFetch);
+
+    await signedInFetch("https://example.com/v1/api/workstreams", init);
+
+    expect(netFetch.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
   });
 });
 

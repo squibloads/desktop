@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { installSteppedClock } from "../helpers/fake-clock.js";
 import { fakeElectronNet, removeFakeElectron } from "../helpers/fake-electron-net.js";
 
-const { LocalRuntime, LocalRuntimeError, fetchHealthJson } = require("../../src/main/local-runtime.js");
+const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED } = require("../../src/main/local-runtime.js");
 
 /**
  * Scripted podman: each entry maps a joined argv to a result. An unscripted
@@ -266,6 +266,18 @@ describe("LocalRuntime node stage", () => {
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("HEALTH_TIMEOUT");
     expect(err.detail).toContain("unreachable");
+  });
+
+  // Failure: a console that answers /health with a redirect times out as unreachable, while a browser opened on
+  // /health, as the README's troubleshooting says, follows the redirect and shows it answering.
+  it("reports HEALTH_TIMEOUT as a redirect when the console answers with one", async () => {
+    const { rt } = make(
+      { [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" },
+      { fetchHealth: vi.fn(async () => HEALTH_REDIRECTED) },
+    );
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("HEALTH_TIMEOUT");
+    expect(err.detail).toContain("console answered /health with a redirect, which is not followed");
   });
 
   it("stop() during the node wait cancels promptly instead of waiting out the timeout", async () => {
@@ -691,5 +703,41 @@ describe("fetchHealthJson", () => {
 
     expect(health).toBe(null);
     expect(netFetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  // Failure: the start-up probe follows a redirect, so whatever answers at the target, on another port or host,
+  // passes for the local console, and the start opens the console on that answer.
+  it("does not follow a redirect, and reads the refused one as a redirect", async () => {
+    // Electron's fetch rejects a redirect it was told not to follow. One it follows lands on a healthy answer.
+    const netFetch = vi.fn(async (_url, init) => {
+      if (init.redirect === "manual") throw new Error("Redirect was cancelled");
+      return { ok: true, status: 200, json: async () => ({ status: "ok", nodes: 1 }) };
+    });
+    fakeElectronNet(netFetch);
+
+    const health = await fetchHealthJson("http://127.0.0.1:8090");
+
+    expect(health).toBe(HEALTH_REDIRECTED);
+    expect(netFetch.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+  });
+
+  // Failure: a redirect answered as a response rather than a rejection, a 3xx or an opaque redirect, reads as healthy,
+  // or as an unreachable console; or its request is left open.
+  it.each([
+    ["a 302", { ok: false, status: 302 }],
+    ["an opaque redirect", { ok: false, status: 0, type: "opaqueredirect" }],
+  ])("reads %s as a redirect", async (_name, answer) => {
+    const netFetch = vi.fn().mockResolvedValue({ ...answer, json: async () => ({ status: "ok", nodes: 1 }) });
+    fakeElectronNet(netFetch);
+
+    expect(await fetchHealthJson("http://127.0.0.1:8090")).toBe(HEALTH_REDIRECTED);
+    expect(netFetch.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  // Failure: a connection failure, a timeout or another rejection reads as a redirect, so the detail misleads.
+  it("reads any other rejection as unreachable", async () => {
+    fakeElectronNet(vi.fn().mockRejectedValue(new Error("net::ERR_CONNECTION_REFUSED")));
+
+    expect(await fetchHealthJson("http://127.0.0.1:8090")).toBe(null);
   });
 });
