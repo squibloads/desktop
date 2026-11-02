@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "acorn";
 
 // main.js is not run by the tests, so these pin the call shapes that feed the
 // pure modules. A wiring slip (swapped arguments, a hard-coded flag, a dropped
 // sender check) would pass every unit test of the modules themselves.
-const main = readFileSync(join(__dirname, "..", "..", "src", "main", "main.js"), "utf8");
+const MAIN_DIR = join(__dirname, "..", "..", "src", "main");
+const main = readFileSync(join(MAIN_DIR, "main.js"), "utf8");
 
 // The modules main.js may load before it drops the switches: electron, for app.commandLine, and the rule itself, which
 // loads only the pure runtime-config.js. Any other module could throw first and leave the switches in.
@@ -71,6 +72,60 @@ function installEventGuard(source) {
       (source.match(/\bwhenReady\(/g) || []).length === 1 &&
       !/\.(?:on|once|addListener|prependListener|prependOnceListener)\(\s*["'`]ready["'`]/.test(source),
   };
+}
+
+// The one statement that gives a web contents the window-open rule, with openExternal read at call time.
+const WINDOW_OPEN_RULE = "contents.setWindowOpenHandler(windowOpenHandler((url) => shell.openExternal(url)));";
+
+// Where main.js installs the window-open rule: whether a top-level app.on("web-contents-created") listener exists,
+// whether it is registered before whenReady, so it is in place before any window or view is built, and whether its
+// body is exactly the rule.
+function windowOpenWiring(source) {
+  const program = parse(source, { ecmaVersion: "latest", sourceType: "script" });
+  const text = (node) => source.slice(node.start, node.end);
+  const listenerAt = program.body.findIndex(
+    (node) => node.type === "ExpressionStatement" && text(node).startsWith('app.on("web-contents-created", (_event, contents) => {'),
+  );
+  const readyAt = program.body.findIndex(
+    (node) => node.type === "ExpressionStatement" && text(node).startsWith("app.whenReady().then("),
+  );
+  const body = listenerAt >= 0 ? program.body[listenerAt].expression.arguments[1].body.body : [];
+  return {
+    topLevel: listenerAt >= 0,
+    beforeReady: listenerAt >= 0 && readyAt > listenerAt,
+    setsTheRule: body.length === 1 && text(body[0]) === WINDOW_OPEN_RULE,
+  };
+}
+
+// Each node of the syntax tree.
+function* nodesOf(node) {
+  yield node;
+  for (const value of Object.values(node)) {
+    for (const child of [value].flat()) {
+      if (child && typeof child.type === "string") yield* nodesOf(child);
+    }
+  }
+}
+
+/**
+ * How many times a source reaches each named property of an object: after a dot, in brackets, or taken out by
+ * destructuring. A variable or parameter that only shares the name is not a use, nor is a comment or a string.
+ */
+function propertyUses(source, names) {
+  const counts = Object.fromEntries(names.map((name) => [name, 0]));
+  const keyName = (key, computed) => (computed ? (key.type === "Literal" ? key.value : null) : key.name);
+  for (const node of nodesOf(parse(source, { ecmaVersion: "latest", sourceType: "script" }))) {
+    let name = null;
+    if (node.type === "MemberExpression") name = keyName(node.property, node.computed);
+    if (node.type === "ObjectPattern") {
+      for (const prop of node.properties) {
+        const taken = prop.type === "Property" ? keyName(prop.key, prop.computed) : null;
+        if (names.includes(taken)) counts[taken] += 1;
+      }
+    }
+    if (names.includes(name)) counts[name] += 1;
+  }
+  return counts;
 }
 
 const shapes = [
@@ -257,10 +312,51 @@ describe("main.js wiring", () => {
     expect(build).toBeLessThan(catchAt);
   });
 
-  // Failure: the open handler runs when the rule says no, opening links the rule rejected.
-  it("opens external links only when the rule allows them, in both handlers", () => {
-    const hits = main.match(/if \(windowOpenAction\(url\)\.open\) \{/g) || [];
-    expect(hits.length).toBe(2);
+  // Failure: a window or view is built without the window-open rule, as the shell view once was, so a page in it
+  // opens a window inside the app; or the rule is installed only once the app is ready, after a web contents exists.
+  it("gives every web contents the window-open rule as it is created, from the top level", () => {
+    expect(main).toMatch(/const \{ isNavigationAllowed, windowOpenHandler, requestAllowed \} = require\("\.\/view-rules\.js"\);/);
+    expect(windowOpenWiring(main)).toEqual({ topLevel: true, beforeReady: true, setsTheRule: true });
+  });
+
+  // Failure: a second handler replaces the rule for one web contents, or a link reaches the user's browser by a
+  // path that skips the rule's http and https check.
+  it("sets no other window-open handler and opens nothing in the browser outside the rule", () => {
+    const counts = {};
+    for (const name of readdirSync(MAIN_DIR).filter((file) => file.endsWith(".js"))) {
+      const found = propertyUses(readFileSync(join(MAIN_DIR, name), "utf8"), ["setWindowOpenHandler", "openExternal"]);
+      if (found.setWindowOpenHandler > 0 || found.openExternal > 0) counts[name] = found;
+    }
+    expect(counts).toEqual({ "main.js": { setWindowOpenHandler: 1, openExternal: 1 } });
+  });
+
+  // Failure: the count above misses a use written another way, or counts a comment, a string or a variable that only
+  // shares the name, so it proves nothing.
+  it("counts a property however it is reached, and nothing else", () => {
+    const names = ["setWindowOpenHandler", "openExternal"];
+    expect(propertyUses('wc.setWindowOpenHandler(h); shell["openExternal"](u); const { openExternal } = shell;', names)).toEqual({
+      setWindowOpenHandler: 1,
+      openExternal: 2,
+    });
+    expect(propertyUses('// shell.openExternal(u)\nconst t = "setWindowOpenHandler";\nfunction f(openExternal) { return openExternal; }', names)).toEqual({
+      setWindowOpenHandler: 0,
+      openExternal: 0,
+    });
+  });
+
+  // Failure: the wiring check above passes a listener that is not at the top level, comes after whenReady, or sets
+  // something other than the rule, so it proves nothing.
+  it("finds the window-open wiring only where it runs first and sets the rule", () => {
+    const listener = `app.on("web-contents-created", (_event, contents) => {\n  ${WINDOW_OPEN_RULE}\n});\n`;
+    const ready = "app.whenReady().then(() => {});\n";
+    const all = { topLevel: true, beforeReady: true, setsTheRule: true };
+
+    expect(windowOpenWiring(`${listener}${ready}`)).toEqual(all);
+    expect(windowOpenWiring(`${ready}${listener}`).beforeReady).toBe(false);
+    expect(windowOpenWiring(`function later() {\n${listener}}\n${ready}`).topLevel).toBe(false);
+    expect(windowOpenWiring(`${listener.replace("web-contents-created", "browser-window-created")}${ready}`).topLevel).toBe(false);
+    expect(windowOpenWiring(`${listener.replace("windowOpenHandler(", "allowAll(")}${ready}`).setsTheRule).toBe(false);
+    expect(windowOpenWiring(`${listener.replace(WINDOW_OPEN_RULE, `if (false) ${WINDOW_OPEN_RULE}`)}${ready}`).setsTheRule).toBe(false);
   });
 
   // Failure: the old mode keeps alerting when the rebuild throws half way, because its notifications are applied after the window.

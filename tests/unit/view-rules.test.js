@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
-const { isNavigationAllowed, windowOpenAction, mainFrameRequestAllowed, requestAllowed } = require("../../src/main/view-rules.js");
+const { isNavigationAllowed, windowOpenAction, windowOpenHandler, mainFrameRequestAllowed, requestAllowed } = require("../../src/main/view-rules.js");
 
 describe("mainFrameRequestAllowed", () => {
   // Failure: a configured https page redirected to plain http on another site loads in the view, carrying the login over http.
@@ -238,4 +238,50 @@ describe("windowOpenAction", () => {
       expect(windowOpenAction(url)).toEqual({ open: false });
     },
   );
+});
+
+describe("windowOpenHandler", () => {
+  const LINKS = [
+    "https://example.com/docs",
+    "http://127.0.0.1:8080/",
+    "HTTP://example.com/",
+    "javascript:alert(1)",
+    "file:///C:/Windows/system.ini",
+    "data:text/html,<p>x</p>",
+    "about:blank",
+    "",
+  ];
+
+  // Failure: a page in a view or window opens a new window inside the app, which carries the app's preload, or
+  // shows a look-alike page over the app.
+  it.each(LINKS)("denies the window for %j", (url) => {
+    const handler = windowOpenHandler(() => {});
+    expect(handler({ url, frameName: "", features: "", disposition: "new-window" })).toEqual({ action: "deny" });
+  });
+
+  // Failure: a link the rule refuses reaches the user's shell, or a link it allows never reaches the browser.
+  it("hands only the http and https links to the browser, each as given", () => {
+    const opened = [];
+    const handler = windowOpenHandler((url) => opened.push(url));
+    for (const url of LINKS) handler({ url });
+
+    expect(opened).toEqual(["https://example.com/docs", "http://127.0.0.1:8080/"]);
+  });
+
+  // Failure: a request without a URL, or a browser hand-off that throws or rejects, escapes the handler, so the
+  // window is not denied and the main process reports an uncaught error.
+  it("still denies the window when the request has no URL or the hand-off fails", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(windowOpenHandler(() => {})(undefined)).toEqual({ action: "deny" });
+    expect(windowOpenHandler(() => {})({})).toEqual({ action: "deny" });
+
+    const throwing = windowOpenHandler(() => {
+      throw new Error("no browser");
+    });
+    expect(throwing({ url: "https://example.com/" })).toEqual({ action: "deny" });
+
+    const rejecting = windowOpenHandler(() => Promise.reject(new Error("no handler")));
+    expect(rejecting({ url: "https://example.com/" })).toEqual({ action: "deny" });
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(2));
+  });
 });

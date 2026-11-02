@@ -148,7 +148,7 @@ On macOS the View menu also has zoom and full-screen items; the app does not set
 
 ### Links
 
-- A link that opens a new window opens in your default browser.
+- A link that opens a new window opens in your default browser, without asking, if it is an `http` or `https` link. Any other link that opens a new window does nothing. No page opens a window inside the app.
 - A link inside a view that goes to a different address (different scheme, host or port) is blocked.
 
 ## Troubleshooting

@@ -36,6 +36,26 @@ function windowOpenAction(url) {
 }
 
 /**
+ * The window-open handler every web contents the app makes is given. No page opens a window inside the app, where
+ * it would carry the app's preload or sit over the app's own pages, so every request is denied. An http or https
+ * link goes to the user's browser instead, through openExternal, which the caller passes so this runs under plain
+ * Node. A hand-off that throws or rejects is logged, and the window is still denied.
+ */
+function windowOpenHandler(openExternal) {
+  return (details) => {
+    try {
+      const url = details?.url;
+      if (windowOpenAction(url).open) {
+        Promise.resolve(openExternal(url)).catch((err) => console.error("window open:", err));
+      }
+    } catch (err) {
+      console.error("window open:", err);
+    }
+    return { action: "deny" };
+  };
+}
+
+/**
  * Whether a main-frame request from a view may go ahead. Only http and https are checked: the
  * app's own pages and blank pages are not requests to another site. A configured page's
  * requests, including each redirect hop, must stay on its configured origin, so a redirect to
@@ -74,4 +94,4 @@ function configuredAddressOf(webContentsId, views, settings) {
   return null;
 }
 
-module.exports = { isNavigationAllowed, windowOpenAction, mainFrameRequestAllowed, requestAllowed };
+module.exports = { isNavigationAllowed, windowOpenAction, windowOpenHandler, mainFrameRequestAllowed, requestAllowed };
