@@ -91,6 +91,13 @@ function createMainWindow() {
       : { frame: false }),
     backgroundColor: "#0b0f19",
     show: false,
+    // The window's own page stays blank, since its content lives in the views below, but its renderer gets the
+    // same flags as theirs rather than whatever the Electron default is.
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
   });
 
   // --- Shell view (title bar chrome) — always present ---
