@@ -33,7 +33,7 @@ const { shouldStopPodOnQuit } = require("./quit-policy.js");
 const { clampSettingsHeight, isValidHeight } = require("./settings-window.js");
 const { isFromAppPage } = require("./ipc-senders.js");
 const { pathToFileURL } = require("node:url");
-const { isNavigationAllowed, windowOpenAction, requestAllowed } = require("./view-rules.js");
+const { isNavigationAllowed, windowOpenHandler, requestAllowed } = require("./view-rules.js");
 const { requestDecision, checkDecision, allowedOriginsFrom } = require("./permissions.js");
 const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
 const { canRetryLocal } = require("./ipc-guards.js");
@@ -45,6 +45,13 @@ const { spawn } = require("node:child_process");
 // Set when Squirrel started this run for an install, update or uninstall, which whenReady answers instead of starting
 // the app; see install-events.js.
 const installEvent = installEventPlan(process.argv, process.execPath);
+
+// Every web contents the app makes gets the window-open rule as it is created, before a page can load in it: the
+// main window's own, the shell, both views and Settings, and any added later. Nothing else sets a handler, so none
+// replaces the rule. openExternal is read at each call, not when the rule is made.
+app.on("web-contents-created", (_event, contents) => {
+  contents.setWindowOpenHandler(windowOpenHandler((url) => shell.openExternal(url)));
+});
 
 let settings = null;
 // What the health poller and the notification poll may read: a refused address reads as absent.
@@ -265,13 +272,6 @@ function setupViewSecurity(view, settingKey) {
     if (!isNavigationAllowed(allowedUrl, url)) {
       event.preventDefault();
     }
-  });
-
-  view.webContents.setWindowOpenHandler(({ url }) => {
-    if (windowOpenAction(url).open) {
-      shell.openExternal(url);
-    }
-    return { action: "deny" };
   });
 }
 
@@ -519,15 +519,6 @@ function openSettings() {
       nodeIntegration: false,
       sandbox: true,
     },
-  });
-
-  // Learn more and other links leave the app in the user's browser, never
-  // inside a window that carries this preload.
-  settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (windowOpenAction(url).open) {
-      shell.openExternal(url);
-    }
-    return { action: "deny" };
   });
 
   settingsWindow.setMenu(null);
