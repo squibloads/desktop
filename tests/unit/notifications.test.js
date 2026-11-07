@@ -1160,3 +1160,47 @@ describe("createNotificationLifecycle pause and resume", () => {
     expect(create).not.toHaveBeenCalled();
   });
 });
+
+describe("NotificationManager after a wake", () => {
+  async function wokenWith(refuse) {
+    const { server, fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+    manager.pause();
+    server.refuse = refuse;
+    manager.resume();
+    await settle();
+    return server;
+  }
+
+  // Failure: the poll the wake runs fails while the network comes back, so the tray says Waiting and the log reports a
+  // failure after every wake.
+  it("reports and logs nothing for a poll that gets no answer within 15 seconds of the wake", async () => {
+    const server = await wokenWith(new TypeError("fetch failed"));
+    expect(statuses).toEqual(["on"]);
+    expect(errors).not.toHaveBeenCalled();
+
+    server.refuse = null;
+    await nextPoll();
+    expect(statuses).toEqual(["on"]);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  // Failure: a server that stays unreachable after a wake is never reported, and the tray says notifications work.
+  it("reports and logs a poll with no answer once the 15 seconds are over", async () => {
+    await wokenWith(new TypeError("fetch failed"));
+    await nextPoll();
+    expect(statuses).toEqual(["on"]);
+
+    await nextPoll();
+    expect(statuses).toEqual(["on", "waiting"]);
+    expect(errors).toHaveBeenCalledOnce();
+  });
+
+  // Failure: the server's real answer after a wake, such as asking for a sign-in, is held back.
+  it("reports a refusal at once, also within the 15 seconds", async () => {
+    await wokenWith(401);
+
+    expect(statuses).toEqual(["on", "signed-out"]);
+  });
+});

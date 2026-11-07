@@ -1,4 +1,5 @@
 const { signedInFetch, cookieDigest: sessionCookieDigest, isRefusedRedirect } = require("./session-fetch.js");
+const { RESUME_GRACE_MS } = require("./power-events.js");
 
 // How often the app asks the server for the workstreams. README.md states it, and
 // tests/contract/documented-defaults.test.js keeps the two equal.
@@ -93,6 +94,8 @@ class NotificationManager {
     this.failure = null;
     // True between pause() and resume(), so a resume never restarts a manager that was stopped or never started.
     this.paused = false;
+    // Until this time, set by a wake, a poll that gets no answer is neither reported nor logged (see RESUME_GRACE_MS).
+    this.graceUntil = 0;
   }
 
   start() {
@@ -105,6 +108,7 @@ class NotificationManager {
 
   stop() {
     this.paused = false;
+    this.graceUntil = 0;
     this._halt();
     this._forget();
     this._report(null);
@@ -121,10 +125,15 @@ class NotificationManager {
     this.paused = true;
   }
 
-  /** For a wake: polls at once instead of waiting out the interval, then every POLL_INTERVAL_MS as before. */
+  /**
+   * For a wake: polls at once instead of waiting out the interval, then every POLL_INTERVAL_MS as before. For
+   * RESUME_GRACE_MS a poll that gets no answer keeps the tray status and logs nothing, because the network may still
+   * be coming back.
+   */
   resume() {
     if (!this.paused) return;
     this.paused = false;
+    this.graceUntil = Date.now() + RESUME_GRACE_MS;
     this.running = true;
     this._poll(this.generation);
   }
@@ -165,6 +174,8 @@ class NotificationManager {
     if (generation !== this.generation) return;
 
     this.timer = setTimeout(() => this._poll(generation), POLL_INTERVAL_MS);
+    // Right after a wake, no answer may only mean the network is not back yet. A refusal is an answer, and is reported.
+    if (failure !== null && Date.now() < this.graceUntil) return;
     this._noteFailure(failure);
     if (answer === null) return;
     if (answer.status === "on") this._compare(answer.userId, answer.workstreams);

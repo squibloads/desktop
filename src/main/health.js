@@ -1,4 +1,5 @@
 const { sessionFetch, isRefusedRedirect } = require("./session-fetch.js");
+const { RESUME_GRACE_MS } = require("./power-events.js");
 
 class HealthPoller {
   // The tests pass their own fetch; the app uses the session's network stack. It is bound as fetchImpl because
@@ -16,16 +17,18 @@ class HealthPoller {
     this._inFlight = new Set();
     // True between pause() and resume(), so a resume never restarts a poller the app stopped on purpose.
     this.paused = false;
+    // Until this time, set by a wake, a check that gets no answer keeps the last status (see RESUME_GRACE_MS).
+    this._graceUntil = 0;
   }
 
   start() {
     this.stop();
-    this.poll();
-    this.interval = setInterval(() => this.poll(), 5000);
+    this._run();
   }
 
   stop() {
     this.paused = false;
+    this._graceUntil = 0;
     this._halt();
   }
 
@@ -39,10 +42,20 @@ class HealthPoller {
     this.paused = true;
   }
 
-  /** For a wake: checks at once instead of waiting out the interval, then polls as before. */
+  /**
+   * For a wake: checks at once instead of waiting out the interval, then polls as before. For RESUME_GRACE_MS a check
+   * that gets no answer keeps the last status, because the network may still be coming back.
+   */
   resume() {
     if (!this.paused) return;
-    this.start();
+    this.stop();
+    this._graceUntil = Date.now() + RESUME_GRACE_MS;
+    this._run();
+  }
+
+  _run() {
+    this.poll();
+    this.interval = setInterval(() => this.poll(), 5000);
   }
 
   _halt() {
@@ -73,8 +86,11 @@ class HealthPoller {
     }
     if (generation !== this.generation) return;
 
-    this.status.server = serverStatus;
-    this.status.console = consoleStatus;
+    // Right after a wake, no answer may only mean the network is not back yet. Any answer is reported as it is.
+    const settling = Date.now() < this._graceUntil;
+    const held = (status, last) => (settling && status === "disconnected" ? last : status);
+    this.status.server = held(serverStatus, prev.server);
+    this.status.console = held(consoleStatus, prev.console);
 
     if (
       prev.server !== this.status.server ||
