@@ -71,7 +71,7 @@ The app starts the Podman machine when it is stopped and starts or stops the exi
 - sudo: each active `NOPASSWD` line in `/etc/sudoers` and `/etc/sudoers.d/` is commented out as `# turnstone-disabled: ...`, and a file is replaced only once `visudo` accepts the result. Passwordless sudo would let the machine user mount a whole drive.
 - A `WSLInterop` handler registered since the machine booted is removed.
 
-Then it checks that the gaps are closed: no `WSLInterop` handler is registered, the machine user (uid 1000) cannot run `sudo -n true`, and every Windows folder mounted in the machine is listed in `/etc/fstab` (WSL's own mounts under `/usr/lib/wsl` aside). If any check fails, the app stops the pod and shows `MACHINE_NOT_HARDENED`, with each gap in the detail line. The app does not change `/etc/fstab`: which folders the machine sees is still set there.
+Then it checks that the gaps are closed: no `WSLInterop` handler is registered, the machine user (uid 1000) cannot run `sudo -n true`, and every Windows folder mounted in the machine is listed in `/etc/fstab` (WSL's own mounts under `/usr/lib/wsl` aside). If any check fails, the app stops the pod and shows `MACHINE_NOT_HARDENED`, with each gap in the detail line. A check that cannot run (`MACHINE_CHECK_FAILED`) or a restart that fails (`MACHINE_RESTART_FAILED`) also stops a pod left running, because the machine has not been shown to be safe. The app does not change `/etc/fstab`: which folders the machine sees is still set there.
 
 **What happens on quit.** The Settings field *When the app quits* controls this:
 
