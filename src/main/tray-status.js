@@ -1,14 +1,31 @@
 // Tray icon and menu decisions, kept free of electron so they can be tested under
 // plain Node. tray.js supplies the Tray and Menu objects.
 
-// Labels for a surface's status. Anything not listed, including a status the
-// server has not reported yet, reads as Unknown rather than an empty label.
+/**
+ * Labels for a surface's status. Anything not listed, including a status the server has not
+ * reported yet, reads as Unknown rather than an empty label. A refused address is a fault, so
+ * it reads as one rather than as switched off.
+ */
 function statusLabel(s) {
   if (s === "ok") return "Connected";
   if (s === "degraded") return "Degraded";
   if (s === "error") return "Error";
   if (s === "disconnected") return "Disconnected";
+  if (s === "refused") return "Address refused";
   return "Unknown";
+}
+
+/**
+ * The tray's line for the notification status notifications.js reports. A stopped manager reports null, and a
+ * status not listed has no line, so the tray never claims notifications work when nothing says so.
+ */
+function notificationLabel(status) {
+  if (status === "on") return "Notifications: On";
+  if (status === "signed-out") return "Notifications: Sign in to the server";
+  if (status === "refused") return "Notifications: Refused by the server";
+  if (status === "waiting") return "Notifications: Waiting for the server";
+  if (status === "unsupported") return "Notifications: Not supported by this server";
+  return null;
 }
 
 // A surface switched off in settings is not a fault, so it does not count
@@ -28,7 +45,7 @@ function trayIconName(server, console_) {
 
 // Status rows are informational, so they are disabled. Click handlers are the
 // caller's functions, passed through unchanged.
-function buildTrayMenuTemplate(serverStatus, consoleStatus, actions) {
+function buildTrayMenuTemplate(serverStatus, consoleStatus, actions, notificationStatus = null) {
   const items = [];
   if (serverStatus !== "disabled") {
     items.push({
@@ -42,6 +59,10 @@ function buildTrayMenuTemplate(serverStatus, consoleStatus, actions) {
       enabled: false,
     });
   }
+  const notifications = notificationLabel(notificationStatus);
+  if (notifications) {
+    items.push({ label: notifications, enabled: false });
+  }
   items.push(
     { type: "separator" },
     { label: "Show Window", click: actions.showWindow },
@@ -52,4 +73,4 @@ function buildTrayMenuTemplate(serverStatus, consoleStatus, actions) {
   return items;
 }
 
-module.exports = { statusLabel, trayIconName, buildTrayMenuTemplate };
+module.exports = { statusLabel, notificationLabel, trayIconName, buildTrayMenuTemplate };

@@ -12,6 +12,7 @@ const readme = read("README.md");
 const settingsStore = read("src/main/settings-store.js");
 const localRuntime = read("src/main/local-runtime.js");
 const healthJs = read("src/main/health.js");
+const notificationsJs = read("src/main/notifications.js");
 const runtimeConfig = read("src/main/runtime-config.js");
 
 // The first capture group of `pattern` in `text`. A missing match fails with `what` named,
@@ -160,6 +161,27 @@ describe("README timing claims match the code", () => {
     expect(codeMs).toEqual(5000);
   });
 
+  // Failure: the README says the app asks for the workstreams every 10 seconds, but the poll runs at another
+  // interval, so a notification comes later than the user was told, or the server is asked more often.
+  it("the README's notification check every 10 seconds equals POLL_INTERVAL_MS 10000", () => {
+    const readmeSeconds = readmeMatch(/Every (\d+) seconds the app asks the server for the workstreams/);
+    const codeMs = Number(capture(/const POLL_INTERVAL_MS = (\d+);/, notificationsJs, "POLL_INTERVAL_MS"));
+
+    expect(readmeSeconds).toEqual("10");
+    expect(Number(readmeSeconds) * 1000).toEqual(codeMs);
+    expect(codeMs).toEqual(10000);
+  });
+
+  // Failure: the README says a notification shows at most 40 characters of a workstream's name, but the code cuts at
+  // another length, so the user is told the wrong length.
+  it("the README's 40-character name limit equals NAME_MAX_CHARS 40", () => {
+    const readmeChars = readmeMatch(/the first (\d+) characters of the workstream's name/);
+    const codeChars = Number(capture(/const NAME_MAX_CHARS = (\d+);/, notificationsJs, "NAME_MAX_CHARS"));
+
+    expect(readmeChars).toEqual("40");
+    expect(Number(readmeChars)).toEqual(codeChars);
+  });
+
   // Failure: the README says a health check gives up after 3 seconds, but the status poll or the Local probe uses another limit, so a slow Console is shown as down in one place and up in another.
   it("the README's no-answer limit of 3 seconds equals the AbortSignal.timeout in health.js and local-runtime.js", () => {
     const readmeSeconds = readmeMatch(/no answer within (\d+) seconds/);
@@ -272,5 +294,13 @@ describe("README developer note for the smoke-test overrides", () => {
 
     expect(note).toContain("keeps only the origin");
     expect(note).toContain("stops the app at start");
+  });
+
+  // Failure: the note does not say a packaged build ignores the variables, so a developer testing a release build
+  // sets them and is misled when nothing changes.
+  it("says a packaged build ignores both", () => {
+    const note = readmeMatch(/(\*\*For developers: smoke-test overrides\.\*\*[^\n]*)/);
+
+    expect(note).toContain("A packaged build ignores both");
   });
 });

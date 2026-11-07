@@ -83,6 +83,7 @@ const stateLabels = {
   degraded: "degraded",
   disconnected: "disconnected",
   error: "error",
+  refused: "address refused",
 };
 
 const dotNames = {
@@ -95,6 +96,10 @@ window.electronAPI.onHealthUpdate((status) => {
   updateDot("console-health", status.console);
 });
 
+/**
+ * Colours one health dot and labels it for screen readers. A refused address uses the error
+ * colour, because it is a fault the user must fix, not a service that is switched off.
+ */
 function updateDot(id, state) {
   const dot = document.getElementById(id);
   if (!dot) return;
@@ -104,6 +109,8 @@ function updateDot(id, state) {
   else if (state === "degraded") dot.classList.add("degraded");
   else if (state === "disconnected") dot.classList.add("disconnected");
   else if (state === "error") dot.classList.add("error");
+  // A refused address is a fault, shown in the error colour, not a switched-off service.
+  else if (state === "refused") dot.classList.add("error");
 
   const label = stateLabels[state] || "unknown";
   dot.setAttribute("aria-label", `${dotNames[id]}: ${label}`);

@@ -1,5 +1,6 @@
 const { execFile } = require("child_process");
 const { podmanCommand, localConsoleUrl } = require("./runtime-config.js");
+const { sessionFetch, isRefusedRedirect } = require("./session-fetch.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
@@ -59,21 +60,38 @@ function runPodman(args) {
   });
 }
 
+// What fetchHealthJson returns when the console answers /health with a redirect. It is not ready, as null is, but a
+// start that times out on it says the console answered with a redirect: a browser opened on /health, as the README's
+// troubleshooting says, follows the redirect and can show a healthy page, so "unreachable" would contradict it.
+const HEALTH_REDIRECTED = Object.freeze({ redirected: true });
+
 /**
- * Returns the parsed /health body, or null when the console is unreachable,
- * answers non-200, or does not return a JSON object. Callers treat null as
+ * Returns the parsed /health body; HEALTH_REDIRECTED when the console answers
+ * with a redirect; or null when it is unreachable, answers non-200, or does not
+ * return a JSON object. Callers treat anything but a body with status "ok" as
  * "not ready", never as a default state.
  */
 async function fetchHealthJson(baseUrl) {
+  // Aborting the request is what closes its connection. Electron's fetch keeps the connection open while an
+  // answer is left unread.
+  const controller = new AbortController();
   try {
-    const resp = await fetch(`${baseUrl}/health`, {
-      signal: AbortSignal.timeout(3000),
+    const resp = await sessionFetch(`${baseUrl}/health`, {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
+      // A redirect is not followed: the local console answers /health itself, and whatever answers at the target
+      // is not it. Electron's fetch rejects the redirect, which the catch below reads; a redirect returned as an
+      // answer, as Node's fetch returns it, reads the same.
+      redirect: "manual",
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      controller.abort();
+      const redirected = resp.type === "opaqueredirect" || (resp.status >= 300 && resp.status < 400);
+      return redirected ? HEALTH_REDIRECTED : null;
+    }
     const data = await resp.json();
     return data && typeof data === "object" ? data : null;
-  } catch {
-    return null;
+  } catch (err) {
+    return isRefusedRedirect(err) ? HEALTH_REDIRECTED : null;
   }
 }
 
@@ -81,6 +99,7 @@ async function fetchHealthJson(baseUrl) {
 // console was down or up without a registered node.
 function describeHealth(health) {
   if (health === null) return "console unreachable";
+  if (health === HEALTH_REDIRECTED) return "console answered /health with a redirect, which is not followed";
   const nodes =
     typeof health.nodes === "number" ? `nodes=${health.nodes}` : "no numeric nodes field";
   return `status=${String(health.status)}, ${nodes}`;
@@ -295,4 +314,4 @@ class LocalRuntime {
   }
 }
 
-module.exports = { LocalRuntime, LocalRuntimeError };
+module.exports = { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED };

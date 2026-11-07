@@ -24,6 +24,14 @@ describe("errorPageQuery", () => {
   it("is an object, as loadFile's query option requires", () => {
     expect(errorPageQuery("https://turnstone.example.com:8443")).toEqual({ url: "https://turnstone.example.com:8443" });
   });
+
+  // Failure: the refusal reason is dropped, so a refused address shows the generic connection error instead.
+  it("passes a reason through when one is given", () => {
+    expect(errorPageQuery("http://192.168.1.20:8080/", "insecure")).toEqual({
+      url: "http://192.168.1.20:8080/",
+      reason: "insecure",
+    });
+  });
 });
 
 describe("recoveryAction non-http pages", () => {

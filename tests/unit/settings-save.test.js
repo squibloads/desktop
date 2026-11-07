@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-const { planSettingsSave, isValidUrl, writeSavePlan } = require("../../src/main/settings-save.js");
+const { planSettingsSave, isValidUrl, writeSavePlan, reachableSettings } = require("../../src/main/settings-save.js");
 
 const SERVER_URL = "http://127.0.0.1:8080";
 const CONSOLE_URL = "http://127.0.0.1:8090";
@@ -199,7 +199,7 @@ describe("planSettingsSave refused saves", () => {
       serverUrl: ["http://127.0.0.1:8080"],
       consoleUrl: CONSOLE_URL,
     });
-    expect(result).toEqual({ error: "Invalid Server URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: an unknown mode string is written to the store and the next launch shows a blank window.
@@ -215,7 +215,7 @@ describe("planSettingsSave refused saves", () => {
       serverUrl: "ftp://files.example.com/",
       consoleUrl: CONSOLE_URL,
     });
-    expect(result).toEqual({ error: "Invalid Server URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: a javascript: or file: console address is saved and loaded into the console view.
@@ -225,13 +225,13 @@ describe("planSettingsSave refused saves", () => {
       serverUrl: SERVER_URL,
       consoleUrl: "javascript:alert(1)",
     });
-    expect(result).toEqual({ error: "Invalid Console URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Console URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: server mode saves with the server address blank and the window opens on an empty page.
   it("refuses a missing server URL in server mode", () => {
     const result = planSettingsSave(savedBoth(), { mode: "server" });
-    expect(result).toEqual({ error: "Invalid Server URL — must be http:// or https://" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
   });
 
   // Failure: a bad server address in an unused field is reported while the mode itself is unknown.
@@ -273,10 +273,40 @@ describe("isValidUrl", () => {
   );
 
   // Failure: a valid server address is rejected and the user cannot save a working setup.
-  it.each(["http://127.0.0.1:8080/", "https://server.example.com:8443/console", "http://localhost:8090"])(
-    "accepts %s",
+  it.each([
+    "http://127.0.0.1:8080/",
+    "https://server.example.com:8443/console",
+    "http://localhost:8090",
+    "https://192.168.1.20:8443",
+    "http://[::1]:8090/",
+  ])("accepts %s", (url) => {
+    expect(isValidUrl(url)).toBe(true);
+  });
+
+  // Failure: a remote address over plain http is accepted, so the login and the session travel unencrypted.
+  it.each(["http://192.168.1.20:8080", "http://server.example.com:8443/", "http://example.com"])(
+    "rejects plain http to a remote host: %s",
     (url) => {
-      expect(isValidUrl(url)).toBe(true);
+      expect(isValidUrl(url)).toBe(false);
+    },
+  );
+
+  // Failure: a remote host that only contains a loopback name passes as loopback, so plain http reaches the remote server.
+  it.each([
+    "http://localhost.evil.example",
+    "http://evil.example/localhost",
+    "http://localhost@evil.example",
+    "http://127.0.0.1.evil.example",
+    "http://evil.example/?host=127.0.0.1",
+  ])("rejects a loopback look-alike: %s", (url) => {
+    expect(isValidUrl(url)).toBe(false);
+  });
+
+  // Failure: a loopback host on a non-http scheme passes, so the scheme check is lost.
+  it.each(["ftp://localhost:21", "ws://localhost:8080", "file://127.0.0.1/share/x"])(
+    "rejects a non-http scheme on loopback: %s",
+    (url) => {
+      expect(isValidUrl(url)).toBe(false);
     },
   );
 
@@ -291,6 +321,80 @@ describe("isValidUrl", () => {
   // Failure: a missing field from the renderer crashes the save handler instead of returning a message.
   it.each([undefined, null])("rejects a missing value (%s) without throwing", (value) => {
     expect(isValidUrl(value)).toBe(false);
+  });
+});
+
+describe("reachableSettings", () => {
+  // Failure: a stored remote plain-http server is polled and connected to, so its health and notifications still travel unencrypted.
+  it("reads a stored remote plain-http server as absent", () => {
+    const store = { hasServer: true, serverUrl: "http://192.168.1.20:8080", hasConsole: false, consoleUrl: "" };
+    expect(reachableSettings(() => store).hasServer).toBe(false);
+  });
+
+  // Failure: a loopback http server or an https console reads as absent, so a working setup stops being polled.
+  it("keeps a loopback http server and an https console", () => {
+    const store = {
+      hasServer: true,
+      serverUrl: "http://127.0.0.1:8080",
+      hasConsole: true,
+      consoleUrl: "https://console.example.com:8443",
+    };
+    const reachable = reachableSettings(() => store);
+    expect(reachable.hasServer).toBe(true);
+    expect(reachable.hasConsole).toBe(true);
+    expect(reachable.consoleUrl).toBe("https://console.example.com:8443");
+  });
+
+  // Failure: the store is read once, so a later change to a stored address is not seen until restart.
+  it("reads the store on each access", () => {
+    const store = { hasServer: true, serverUrl: "https://server.example.com:8443", hasConsole: false, consoleUrl: "" };
+    const reachable = reachableSettings(() => store);
+    expect(reachable.hasServer).toBe(true);
+    store.serverUrl = "http://192.168.1.20:8080";
+    expect(reachable.hasServer).toBe(false);
+  });
+});
+
+describe("reachableSettings refusals", () => {
+  // Failure: a refused console reads as usable, so it is polled and connected to over plain http.
+  it("reports a refused console as refused and hides it", () => {
+    const store = {
+      hasServer: false,
+      serverUrl: "",
+      hasConsole: true,
+      consoleUrl: "http://192.168.1.21:8090",
+    };
+    const reachable = reachableSettings(() => store);
+    expect(reachable.consoleRefused).toBe(true);
+    expect(reachable.hasConsole).toBe(false);
+  });
+
+  // Failure: a refused server reads as not refused, so the status says switched off and hides the fault.
+  it("reports a refused server as refused, and a valid one as not refused", () => {
+    const refused = { hasServer: true, serverUrl: "http://192.168.1.20:8080", hasConsole: false, consoleUrl: "" };
+    const valid = { hasServer: true, serverUrl: "https://server.example.com:8443", hasConsole: false, consoleUrl: "" };
+    expect(reachableSettings(() => refused).serverRefused).toBe(true);
+    expect(reachableSettings(() => valid).serverRefused).toBe(false);
+  });
+});
+
+describe("planSettingsSave plain http", () => {
+  // Failure: a remote server saved over plain http is accepted, so the login crosses the network unencrypted.
+  it("refuses a remote server over plain http", () => {
+    const result = planSettingsSave(savedBoth(), { mode: "server", serverUrl: "http://192.168.1.20:8080" });
+    expect(result).toEqual({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
+  });
+
+  // Failure: a remote console over plain http is accepted, so the console login crosses the network unencrypted.
+  it("refuses a remote console over plain http", () => {
+    const result = planSettingsSave(savedBoth(), { mode: "console", consoleUrl: "http://console.example.com:8090" });
+    expect(result).toEqual({ error: "Invalid Console URL — must be https:// (http:// only on this computer)" });
+  });
+
+  // Failure: plain http to this computer is refused, so the local server cannot be saved.
+  it("accepts plain http to localhost", () => {
+    const result = planSettingsSave(savedBoth(), { mode: "server", serverUrl: "http://localhost:8080" });
+    expect(result.error).toBeUndefined();
   });
 });
 

@@ -1,6 +1,114 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
-const { isNavigationAllowed, windowOpenAction } = require("../../src/main/view-rules.js");
+const { isNavigationAllowed, windowOpenAction, windowOpenHandler, mainFrameRequestAllowed, requestAllowed } = require("../../src/main/view-rules.js");
+
+describe("mainFrameRequestAllowed", () => {
+  // Failure: a configured https page redirected to plain http on another site loads in the view, carrying the login over http.
+  it("refuses a main-frame request to another origin, over http or https", () => {
+    expect(mainFrameRequestAllowed("http://192.168.1.99:8080/", "https://console.example.com:8443/")).toBe(false);
+    expect(mainFrameRequestAllowed("https://other.example.com/", "https://console.example.com:8443/")).toBe(false);
+  });
+
+  // Failure: the console's own pages are refused, so the console stops after its first page.
+  it("allows a main-frame request to the configured origin", () => {
+    expect(mainFrameRequestAllowed("https://console.example.com:8443/v1/x", "https://console.example.com:8443/")).toBe(true);
+  });
+
+  // Failure: the app's own pages are refused, so the refusal and error pages cannot be shown.
+  it("allows the app's own file pages and blank pages", () => {
+    expect(mainFrameRequestAllowed("file:///C:/app/renderer/error.html", "https://console.example.com:8443/")).toBe(true);
+    expect(mainFrameRequestAllowed("about:blank", "https://console.example.com:8443/")).toBe(true);
+  });
+
+  // Failure: a refused configured address lets an http request through, so a redirect loads an address the rule refuses.
+  it("refuses every http request when the configured address is itself refused", () => {
+    expect(mainFrameRequestAllowed("http://192.168.1.20:8080/", "http://192.168.1.20:8080/")).toBe(false);
+  });
+});
+
+describe("requestAllowed", () => {
+  const views = { server: 7, console: 9 };
+  const settings = { serverUrl: "https://server.example.com:8443/", consoleUrl: "https://console.example.com/" };
+  const readViews = () => views;
+  const readSettings = () => settings;
+  const page = (webContentsId, url) => ({ resourceType: "mainFrame", webContentsId, url });
+
+  // Failure: a server-side redirect from the server view to another site loads in the view, past the navigation check.
+  it("cancels a main-frame redirect from the server view to another site", () => {
+    expect(requestAllowed(page(7, "https://other.example.com/login"), readViews, readSettings)).toBe(false);
+  });
+
+  // Failure: the server view's own pages are cancelled, so the server stops after its first page.
+  it("allows the server view's own pages", () => {
+    expect(requestAllowed(page(7, "https://server.example.com:8443/v1/x"), readViews, readSettings)).toBe(true);
+  });
+
+  // Failure: an https page redirected to plain http on its own host carries the login over http.
+  it("cancels a downgrade to plain http on the same host", () => {
+    expect(requestAllowed(page(7, "http://server.example.com:8443/"), readViews, readSettings)).toBe(false);
+  });
+
+  // Failure: a view is judged against the other view's address, so the console is blocked on its own pages or the server may load the console's site.
+  it("judges each view against its own configured address", () => {
+    expect(requestAllowed(page(9, "https://console.example.com/v1/x"), readViews, readSettings)).toBe(true);
+    expect(requestAllowed(page(9, "https://server.example.com:8443/"), readViews, readSettings)).toBe(false);
+    expect(requestAllowed(page(7, "https://console.example.com/"), readViews, readSettings)).toBe(false);
+  });
+
+  // Failure: a web contents that is not a view loads another site, because no view address is there to compare with.
+  it("refuses a main-frame request from a web contents that is not a view", () => {
+    expect(requestAllowed(page(42, "https://other.example.com/"), readViews, readSettings)).toBe(false);
+  });
+
+  // Failure: a web contents that is not a view is judged against the server address, so it may load the server's pages.
+  it("refuses the server address from a web contents that is not a view", () => {
+    expect(requestAllowed(page(42, "https://server.example.com:8443/"), readViews, readSettings)).toBe(false);
+  });
+
+  // Failure: the app's own file pages are cancelled, so the error and refusal pages cannot load.
+  it("allows the app's own file pages from any web contents", () => {
+    expect(requestAllowed(page(42, "file:///C:/app/renderer/error.html"), readViews, readSettings)).toBe(true);
+  });
+
+  // Failure: a page's scripts and images are judged as navigations, so a page that loads them from a CDN stops working.
+  it("does not judge a page's subresources", () => {
+    const script = { resourceType: "script", webContentsId: 7, url: "https://cdn.example.net/app.js" };
+    const image = { resourceType: "image", webContentsId: 42, url: "https://cdn.example.net/logo.png" };
+    expect(requestAllowed(script, readViews, readSettings)).toBe(true);
+    expect(requestAllowed(image, readViews, readSettings)).toBe(true);
+  });
+
+  // Failure: a request with no web contents id matches a view that has none, and is judged against that view's address.
+  it("refuses a main-frame request with no web contents id when no view exists", () => {
+    const none = { server: null, console: null };
+    expect(requestAllowed({ resourceType: "mainFrame", url: "https://server.example.com:8443/" }, () => none, readSettings)).toBe(false);
+  });
+
+  // Failure: an unreadable settings store leaves the request unanswered, so the view hangs instead of being refused.
+  it("refuses when the settings cannot be read", () => {
+    const broken = () => {
+      throw new Error("corrupt store");
+    };
+    expect(requestAllowed(page(7, "https://server.example.com:8443/"), readViews, broken)).toBe(false);
+  });
+
+  // Failure: an unreadable view leaves the request unanswered, so the page hangs instead of being refused.
+  it("refuses when the views cannot be read", () => {
+    const broken = () => {
+      throw new Error("Object has been destroyed");
+    };
+    expect(requestAllowed(page(7, "https://server.example.com:8443/"), broken, readSettings)).toBe(false);
+  });
+
+  // Failure: the address is read once, so a changed server URL keeps its old origin until the app restarts.
+  it("applies a changed address to the next request", () => {
+    const live = { serverUrl: "https://a.example.com/", consoleUrl: "" };
+    const read = () => live;
+    expect(requestAllowed(page(7, "https://a.example.com/x"), readViews, read)).toBe(true);
+    live.serverUrl = "https://b.example.com/";
+    expect(requestAllowed(page(7, "https://a.example.com/x"), readViews, read)).toBe(false);
+  });
+});
 
 describe("isNavigationAllowed", () => {
   // Failure: a link to another page of the same site is blocked and the in-app page cannot move between its own pages.
@@ -16,6 +124,16 @@ describe("isNavigationAllowed", () => {
   // Failure: an http downgrade of the configured https server is allowed and traffic leaves TLS.
   it("blocks the same host over a different scheme", () => {
     expect(isNavigationAllowed("https://example.com/", "http://example.com/")).toBe(false);
+  });
+
+  // Failure: a configured remote plain-http address still allows navigation, so the page moves on over http.
+  it("refuses navigation when the configured URL is a remote plain-http address", () => {
+    expect(isNavigationAllowed("http://192.168.1.20:8080/", "http://192.168.1.20:8080/next")).toBe(false);
+  });
+
+  // Failure: loopback http is refused as a configured URL, so the local server cannot be navigated within.
+  it("allows navigation within a loopback http address", () => {
+    expect(isNavigationAllowed("http://localhost:8090/", "http://localhost:8090/next")).toBe(true);
   });
 
   // Failure: a link to a different host is loaded inside the app view with the app's preload attached.
@@ -120,4 +238,50 @@ describe("windowOpenAction", () => {
       expect(windowOpenAction(url)).toEqual({ open: false });
     },
   );
+});
+
+describe("windowOpenHandler", () => {
+  const LINKS = [
+    "https://example.com/docs",
+    "http://127.0.0.1:8080/",
+    "HTTP://example.com/",
+    "javascript:alert(1)",
+    "file:///C:/Windows/system.ini",
+    "data:text/html,<p>x</p>",
+    "about:blank",
+    "",
+  ];
+
+  // Failure: a page in a view or window opens a new window inside the app, which carries the app's preload, or
+  // shows a look-alike page over the app.
+  it.each(LINKS)("denies the window for %j", (url) => {
+    const handler = windowOpenHandler(() => {});
+    expect(handler({ url, frameName: "", features: "", disposition: "new-window" })).toEqual({ action: "deny" });
+  });
+
+  // Failure: a link the rule refuses reaches the user's shell, or a link it allows never reaches the browser.
+  it("hands only the http and https links to the browser, each as given", () => {
+    const opened = [];
+    const handler = windowOpenHandler((url) => opened.push(url));
+    for (const url of LINKS) handler({ url });
+
+    expect(opened).toEqual(["https://example.com/docs", "http://127.0.0.1:8080/"]);
+  });
+
+  // Failure: a request without a URL, or a browser hand-off that throws or rejects, escapes the handler, so the
+  // window is not denied and the main process reports an uncaught error.
+  it("still denies the window when the request has no URL or the hand-off fails", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(windowOpenHandler(() => {})(undefined)).toEqual({ action: "deny" });
+    expect(windowOpenHandler(() => {})({})).toEqual({ action: "deny" });
+
+    const throwing = windowOpenHandler(() => {
+      throw new Error("no browser");
+    });
+    expect(throwing({ url: "https://example.com/" })).toEqual({ action: "deny" });
+
+    const rejecting = windowOpenHandler(() => Promise.reject(new Error("no handler")));
+    expect(rejecting({ url: "https://example.com/" })).toEqual({ action: "deny" });
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(2));
+  });
 });

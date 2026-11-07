@@ -6,25 +6,58 @@ const {
   shell,
   screen,
   dialog,
+  session,
 } = require("electron");
+const { switchesToDrop } = require("./debug-switches.js");
+
+// A packaged build drops the launch switches that reach its signed-in views; see debug-switches.js. This runs first,
+// before any other module loads: Electron reads them once this file's top level has run, even if something here throws.
+// The line goes to the console that started the app, if any.
+for (const name of switchesToDrop(app.commandLine)) {
+  app.commandLine.removeSwitch(name);
+  console.warn(`Ignored --${name}: a packaged build does not accept it.`);
+}
+
 const path = require("path");
 const { SettingsStore } = require("./settings-store.js");
 const { HealthPoller } = require("./health.js");
 const { setupMenu } = require("./menu.js");
 const { TurnStoneTray } = require("./tray.js");
+const { notificationLabel } = require("./tray-status.js");
 const { NotificationManager, createNotificationLifecycle } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
 const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 const { planRecovery } = require("./recovery.js");
-const { planSettingsSave, writeSavePlan } = require("./settings-save.js");
+const { planSettingsSave, writeSavePlan, isValidUrl, reachableSettings } = require("./settings-save.js");
 const { shouldStopPodOnQuit } = require("./quit-policy.js");
-const { clampSettingsHeight, isFromWindow, isValidHeight } = require("./settings-window.js");
-const { isNavigationAllowed, windowOpenAction } = require("./view-rules.js");
+const { clampSettingsHeight, isValidHeight } = require("./settings-window.js");
+const { isFromAppPage } = require("./ipc-senders.js");
+const { pathToFileURL } = require("node:url");
+const { isNavigationAllowed, windowOpenHandler, requestAllowed } = require("./view-rules.js");
+const { requestDecision, checkDecision, allowedOriginsFrom } = require("./permissions.js");
 const { contentBounds, tabBarBounds, planLayout, planTabSwitch } = require("./layout.js");
 const { canRetryLocal } = require("./ipc-guards.js");
 const { firstConfigError } = require("./runtime-config.js");
+const { createRedirectRefusals } = require("./redirect-refusals.js");
+const { installEventPlan, runInstallEvent } = require("./install-events.js");
+const { spawn } = require("node:child_process");
+
+// Set when Squirrel started this run for an install, update or uninstall, which whenReady answers instead of starting
+// the app; see install-events.js.
+const installEvent = installEventPlan(process.argv, process.execPath);
+
+// Every web contents the app makes gets the window-open rule as it is created, before a page can load in it: the
+// main window's own, the shell, both views and Settings, and any added later. Nothing else sets a handler, so none
+// replaces the rule. openExternal is read at each call, not when the rule is made.
+app.on("web-contents-created", (_event, contents) => {
+  contents.setWindowOpenHandler(windowOpenHandler((url) => shell.openExternal(url)));
+});
 
 let settings = null;
+// What the health poller and the notification poll may read: a refused address reads as absent.
+const reachable = reachableSettings(() => settings);
+// Redirects the request guard cancelled, so a failed load can say so. See redirect-refusals.js.
+const redirectRefusals = createRedirectRefusals();
 let mainWindow = null;
 let shellView = null;
 let serverView = null;
@@ -33,12 +66,18 @@ let settingsWindow = null;
 let activeTab = "server";
 let healthPoller = null;
 let tray = null;
-const notificationLifecycle = createNotificationLifecycle((s) => new NotificationManager(s));
+const notificationLifecycle = createNotificationLifecycle(
+  (s) => new NotificationManager(s, { onStatus: showNotificationStatus }),
+);
 let localRuntime = null;
 let quitting = false;
 
 // ─── Window Creation ─────────────────────────────────────────────────────
 
+/**
+ * Builds the window and the views for the current mode. A configured address the rule refuses
+ * is shown as the refusal page, never loaded (see loadConfigured).
+ */
 function createMainWindow() {
   const bounds = settings.windowBounds;
   const isMac = process.platform === "darwin";
@@ -59,6 +98,13 @@ function createMainWindow() {
       : { frame: false }),
     backgroundColor: "#0b0f19",
     show: false,
+    // The window's own page stays blank, since its content lives in the views below, but its renderer gets the
+    // same flags as theirs rather than whatever the Electron default is.
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
   });
 
   // --- Shell view (title bar chrome) — always present ---
@@ -67,6 +113,7 @@ function createMainWindow() {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
   mainWindow.contentView.addChildView(shellView);
@@ -78,12 +125,13 @@ function createMainWindow() {
     preload: path.join(__dirname, "../preload/preload.js"),
     contextIsolation: true,
     nodeIntegration: false,
+    sandbox: true,
   };
 
   // --- Server view (if mode includes server) ---
   if (settings.hasServer) {
     serverView = new WebContentsView({ webPreferences: contentViewPrefs });
-    serverView.webContents.loadURL(settings.serverUrl);
+    loadConfigured(serverView, settings.serverUrl);
     setupViewSecurity(serverView, "serverUrl");
     setupFailHandler(serverView, () => settings.serverUrl);
   }
@@ -94,7 +142,7 @@ function createMainWindow() {
     // Local mode shows the loading page until the pod and its node are up
     // (startLocalRuntime), so the view is never blank while starting.
     if (settings.isLocal) showLocalLoading(consoleView);
-    else consoleView.webContents.loadURL(settings.consoleUrl);
+    else loadConfigured(consoleView, settings.consoleUrl);
     setupViewSecurity(consoleView, "consoleUrl");
     setupFailHandler(consoleView, () => settings.consoleUrl);
   }
@@ -148,6 +196,70 @@ function createMainWindow() {
   });
 }
 
+/**
+ * A stored address the rule refuses is never loaded. The view shows the refusal page instead,
+ * and Settings is the way to change the address. Every load of a configured address goes
+ * through here, so the refusal cannot be skipped by a new call site.
+ */
+function loadConfigured(view, url) {
+  if (isValidUrl(url)) {
+    view.webContents.loadURL(url).catch(() => {});
+    return;
+  }
+  view.webContents
+    .loadFile(path.join(__dirname, "../renderer/error.html"), { query: errorPageQuery(url, "insecure") })
+    .catch(() => {});
+}
+
+// Pages in the server and console views get only what permissions.js allows, and only
+// for the origins the user configured. Electron approves every request when no handler is set.
+// Each request is decided when it arrives, so a changed URL applies from then on. A changed URL
+// also reloads its view, which ends any capture that page was running; a mode switch rebuilds
+// the windows, which does the same.
+function installPermissionPolicy() {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const decision = requestDecision(
+      {
+        permission,
+        requestingUrl: details.requestingUrl,
+        topUrl: topUrlOf(webContents),
+        isMainFrame: details.isMainFrame,
+        mediaTypes: details.mediaTypes,
+      },
+      configuredOrigins,
+    );
+    callback(decision);
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    return checkDecision(
+      {
+        permission,
+        requestingOrigin,
+        topUrl: topUrlOf(webContents),
+        isMainFrame: details.isMainFrame,
+        mediaType: details.mediaType,
+      },
+      configuredOrigins,
+    );
+  });
+}
+
+// The top-level page of a view. Electron can pass a null web contents to a check; for a frame
+// inside another page, "" matches no configured origin, so the rules refuse it.
+function topUrlOf(webContents) {
+  return webContents ? webContents.getURL() : "";
+}
+
+// Read only once a request passes the permission name, and again on each request, so a
+// changed URL or a mode switch applies without a restart.
+function configuredOrigins() {
+  try {
+    return allowedOriginsFrom(settings);
+  } catch {
+    return [];
+  }
+}
+
 function setupViewSecurity(view, settingKey) {
   view.webContents.on("will-navigate", (event, url) => {
     // An unreadable setting counts as no allowed URL, so the navigation is cancelled.
@@ -161,21 +273,49 @@ function setupViewSecurity(view, settingKey) {
       event.preventDefault();
     }
   });
+}
 
-  view.webContents.setWindowOpenHandler(({ url }) => {
-    if (windowOpenAction(url).open) {
-      shell.openExternal(url);
-    }
-    return { action: "deny" };
+/**
+ * Every request the session makes goes through requestAllowed, so a main-frame request from a
+ * view to another site is cancelled before it loads, including each redirect hop. The cancelled
+ * load is remembered, so the view shows the redirect refusal rather than a connection error.
+ */
+function installRequestGuard() {
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    const allowed = requestAllowed(details, viewIds, () => settings);
+    if (!allowed) redirectRefusals.refuse(details.webContentsId, details.url);
+    callback({ cancel: !allowed });
   });
+}
+
+/**
+ * The web contents ids of the two views, null for a view that does not exist. Read on each request,
+ * so a rebuilt window is judged by its own views and not by the ones it replaced.
+ */
+function viewIds() {
+  return {
+    server: serverView ? serverView.webContents.id : null,
+    console: consoleView ? consoleView.webContents.id : null,
+  };
 }
 
 // getUrl is read at failure time so the error page and its Retry follow a
 // serverUrl/consoleUrl change made in Settings after the window was built.
 function setupFailHandler(view, getUrl) {
+  // A new navigation supersedes a refusal left by an earlier one (see redirect-refusals.js).
+  view.webContents.on("did-start-navigation", (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) redirectRefusals.navigationStarted(view.webContents.id);
+  });
   view.webContents.on(
     "did-fail-load",
     (_event, code, _desc, validatedURL, isMainFrame) => {
+      // A redirect the request guard cancelled: say so, rather than report an unreachable server.
+      if (isMainFrame && redirectRefusals.matches(view.webContents.id, validatedURL)) {
+        view.webContents
+          .loadFile(path.join(__dirname, "../renderer/error.html"), { query: errorPageQuery(getUrl(), "redirect") })
+          .catch(() => {});
+        return;
+      }
       if (!shouldShowErrorPage(code, isMainFrame, validatedURL)) return;
       const errorPage = path.join(__dirname, "../renderer/error.html");
       view.webContents.loadFile(errorPage, {
@@ -185,8 +325,11 @@ function setupFailHandler(view, getUrl) {
   );
 }
 
-// A reload repeats the current page, which after a failure is our error page.
-// The decision lives in planRecovery; this only carries it out.
+/**
+ * Brings a view back after its backend returns. A reload repeats the current page, which after a
+ * failure is our error page, so the decision comes from planRecovery and the address is loaded
+ * through loadConfigured. A refused address is never reloaded.
+ */
 function recoverView(view, getUrl) {
   const wc = view.webContents;
   if (wc.isDestroyed()) return;
@@ -216,7 +359,7 @@ function recoverView(view, getUrl) {
     showLocalLoading(view);
     startLocalRuntime();
   } else {
-    wc.loadURL(getUrl()).catch(() => {});
+    loadConfigured(view, getUrl());
   }
 }
 
@@ -267,9 +410,13 @@ function sendLocalProgress(stage) {
   }
 }
 
+/**
+ * Loads the local console into a view that is still alive. The console URL comes from settings
+ * and goes through loadConfigured like every other load, so a refused address is never loaded here.
+ */
 function loadLocalConsole(view) {
   if (view && !view.webContents.isDestroyed()) {
-    view.webContents.loadURL(settings.consoleUrl).catch(() => {});
+    loadConfigured(view, settings.consoleUrl);
   }
 }
 
@@ -370,16 +517,8 @@ function openSettings() {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
-  });
-
-  // Learn more and other links leave the app in the user's browser, never
-  // inside a window that carries this preload.
-  settingsWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (windowOpenAction(url).open) {
-      shell.openExternal(url);
-    }
-    return { action: "deny" };
   });
 
   settingsWindow.setMenu(null);
@@ -392,11 +531,15 @@ function openSettings() {
 
 // ─── Rebuild Window ──────────────────────────────────────────────────────
 
+/**
+ * Replaces the window when the mode changes. Notifications are applied before the old window
+ * closes, so the old mode stops alerting even if the rebuild throws halfway.
+ */
 function rebuildWindow() {
   // Apply the new mode's notifications before the window is rebuilt. If the
   // rebuild throws, the new mode is already saved, so its notifications must
   // already match it.
-  notificationLifecycle.apply(settings);
+  notificationLifecycle.apply(reachable);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.close();
@@ -431,11 +574,23 @@ function rebuildWindow() {
 
 // ─── IPC Handlers ────────────────────────────────────────────────────────
 
-ipcMain.handle("turnstone:get-settings", () => {
+// The app's own pages load from this folder. A file: page outside it is not an app page.
+const APP_PAGE_ROOT = pathToFileURL(path.join(__dirname, "../renderer") + path.sep).href;
+
+// A bridge request that does not come from an app page in the window allowed to make it is refused.
+const REFUSED_REQUEST = "Refused: this request did not come from an app page.";
+
+ipcMain.handle("turnstone:get-settings", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents, () => settingsWindow && settingsWindow.webContents], APP_PAGE_ROOT)) {
+    throw new Error(REFUSED_REQUEST);
+  }
   return settings.getAll();
 });
 
-ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
+ipcMain.handle("turnstone:save-settings", (event, newSettings) => {
+  if (!isFromAppPage(event, [() => settingsWindow && settingsWindow.webContents], APP_PAGE_ROOT)) {
+    throw new Error(REFUSED_REQUEST);
+  }
   // quitBehavior is not passed in: reading it can throw on a corrupt store,
   // and this handler never read it.
   const plan = planSettingsSave(
@@ -458,13 +613,15 @@ ipcMain.handle("turnstone:save-settings", (_event, newSettings) => {
       consoleView.webContents.loadURL(settings.consoleUrl);
     }
     if (healthPoller) healthPoller.poll();
-    if (plan.restartNotifications) notificationLifecycle.restart();
+    // apply rather than restart: a refused address that was just fixed has no manager to restart.
+    if (plan.restartNotifications) notificationLifecycle.apply(reachable);
   }
 
   return { ok: true };
 });
 
-ipcMain.on("turnstone:switch-tab", (_event, tab) => {
+ipcMain.on("turnstone:switch-tab", (event, tab) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   switchTab(tab);
 });
 
@@ -475,7 +632,7 @@ ipcMain.on("turnstone:retry-local", (event) => {
   // A start already in flight owns the loading page; reloading it would
   // blank the stage list until the next stage. The rule lives in ipc-guards.js.
   const allowed = canRetryLocal({
-    senderIsConsole: hasConsoleView && isFromWindow(event, consoleView.webContents),
+    senderIsConsole: hasConsoleView && isFromAppPage(event, [() => consoleView.webContents], APP_PAGE_ROOT),
     hasConsoleView,
     consoleDestroyed,
     starting: Boolean(localRuntime && localRuntime.starting),
@@ -488,7 +645,7 @@ ipcMain.on("turnstone:retry-local", (event) => {
 // The settings dialog sizes itself to its content; only that window may ask.
 ipcMain.on("turnstone:settings-resize", (event, height) => {
   if (!settingsWindow || settingsWindow.isDestroyed()) return;
-  if (!isFromWindow(event, settingsWindow.webContents)) return;
+  if (!isFromAppPage(event, [() => settingsWindow.webContents], APP_PAGE_ROOT)) return;
   // Reject a bad request before touching `screen`, as the handler always did.
   if (!isValidHeight(height)) {
     console.warn("settings-resize: ignoring non-numeric height");
@@ -498,30 +655,39 @@ ipcMain.on("turnstone:settings-resize", (event, height) => {
   settingsWindow.setContentSize(460, h);
 });
 
-ipcMain.on("turnstone:open-settings", () => {
+ipcMain.on("turnstone:open-settings", (event) => {
+  // The error pages in the server and console views ask for Settings.
+  if (!isFromAppPage(event, [() => serverView && serverView.webContents, () => consoleView && consoleView.webContents], APP_PAGE_ROOT)) return;
   openSettings();
 });
 
 // Window controls (custom title bar on Win/Linux)
-ipcMain.on("turnstone:window-minimize", () => {
+ipcMain.on("turnstone:window-minimize", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   if (mainWindow) mainWindow.minimize();
 });
 
-ipcMain.on("turnstone:window-maximize", () => {
+ipcMain.on("turnstone:window-maximize", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   if (mainWindow) {
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     else mainWindow.maximize();
   }
 });
 
-ipcMain.on("turnstone:window-close", () => {
+ipcMain.on("turnstone:window-close", (event) => {
+  if (!isFromAppPage(event, [() => shellView && shellView.webContents], APP_PAGE_ROOT)) return;
   if (mainWindow) mainWindow.close();
 });
 
 // ─── Health Polling ──────────────────────────────────────────────────────
 
+/**
+ * Starts the health poller on the reachable settings, so a refused address is reported as
+ * refused and never polled.
+ */
 function setupHealthPoller() {
-  healthPoller = new HealthPoller(settings, (status, prev) => {
+  healthPoller = new HealthPoller(reachable, (status, prev) => {
     // Send to shell renderer
     if (shellView && !shellView.webContents.isDestroyed()) {
       shellView.webContents.send("turnstone:health-update", status);
@@ -548,6 +714,18 @@ function setupHealthPoller() {
   healthPoller.start();
 }
 
+// ─── Notification Status ─────────────────────────────────────────────────
+
+/**
+ * Shows in the tray whether notifications work, and logs each change, so a server that refuses them is not
+ * silent. A stopped manager reports null, which removes the tray line.
+ */
+function showNotificationStatus(status) {
+  if (tray) tray.updateNotifications(status);
+  const label = notificationLabel(status);
+  if (label) console.log(label);
+}
+
 // ─── Menu Actions ────────────────────────────────────────────────────────
 
 function getActiveView() {
@@ -560,6 +738,11 @@ function getActiveView() {
 // ─── App Lifecycle ───────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // A Squirrel event: make its shortcut call and exit, with no window, settings read or Local mode start.
+  if (installEvent) {
+    runInstallEvent(installEvent, { spawn, exit: (code) => app.exit(code) });
+    return;
+  }
   // Checked in every mode, before anything reads the overrides: a bad value stops the app here
   // with a message, instead of failing later inside Local mode.
   const configError = firstConfigError();
@@ -569,6 +752,8 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
+  installPermissionPolicy();
+  installRequestGuard();
   settings = await SettingsStore.create();
   activeTab = settings.activeTab || "server";
 
@@ -611,7 +796,7 @@ app.whenReady().then(async () => {
   tray.create();
 
   // Notifications run only while the mode has a server
-  notificationLifecycle.apply(settings);
+  notificationLifecycle.apply(reachable);
 
   if (isFirstLaunch) {
     openSettings();

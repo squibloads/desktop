@@ -5,9 +5,9 @@ afterEach(() => {
   closeAllPages();
 });
 
-const SERVER = "http://server.example.test:8080";
-const CONSOLE = "http://console.example.test:8090";
-const URL_ERROR = "Enter a valid URL (http:// or https://)";
+const SERVER = "https://server.example.test:8080";
+const CONSOLE = "https://console.example.test:8090";
+const URL_ERROR = "Enter a valid URL (https://, or http:// on this computer)";
 
 // Opens the settings page with the given saved settings. The page fills the
 // form in a promise callback and sets the mode radio last, so waiting for a
@@ -87,13 +87,13 @@ describe("initial values", () => {
     const page = await openSettings({
       mode: "server",
       serverUrl: "https://turnstone.example.test",
-      consoleUrl: "http://console.example.test:9000",
+      consoleUrl: "https://console.example.test:9000",
       quitBehavior: "keep",
     });
     const doc = page.document;
 
     expect(doc.getElementById("server-url").value).toBe("https://turnstone.example.test");
-    expect(doc.getElementById("console-url").value).toBe("http://console.example.test:9000");
+    expect(doc.getElementById("console-url").value).toBe("https://console.example.test:9000");
     expect(doc.getElementById("quit-behavior").value).toBe("keep");
     expect(doc.querySelector('input[name="mode"]:checked').id).toBe("mode-server");
   });
@@ -125,17 +125,17 @@ describe("save payload per mode", () => {
   it.each([
     [
       "server",
-      { server: "http://server.example.test:8080/", console: "not a url", quit: "keep" },
+      { server: "https://server.example.test:8080/", console: "not a url", quit: "keep" },
       { mode: "server", serverUrl: SERVER, consoleUrl: "not a url", quitBehavior: "keep" },
     ],
     [
       "console",
-      { server: "  also not a url  ", console: "http://console.example.test:9000/", quit: "stop" },
-      { mode: "console", serverUrl: "also not a url", consoleUrl: "http://console.example.test:9000", quitBehavior: "stop" },
+      { server: "  also not a url  ", console: "https://console.example.test:9000/", quit: "stop" },
+      { mode: "console", serverUrl: "also not a url", consoleUrl: "https://console.example.test:9000", quitBehavior: "stop" },
     ],
     [
       "both",
-      { server: "  http://server.example.test:8080//  ", console: "http://console.example.test:8090/", quit: "stop" },
+      { server: "  https://server.example.test:8080//  ", console: "https://console.example.test:8090/", quit: "stop" },
       { mode: "both", serverUrl: SERVER, consoleUrl: CONSOLE, quitBehavior: "stop" },
     ],
     [
@@ -184,6 +184,27 @@ describe("validation", () => {
     expect(page.document.getElementById("server-url").classList.contains("invalid")).toBe(true);
     expect(page.document.getElementById("server-url-error").classList.contains("visible")).toBe(true);
     expect(page.closeCalls()).toBe(0);
+  });
+
+  // Failure: a remote server over plain http is saved, so the login crosses the network unencrypted.
+  it("blocks the save and marks the field when a used URL is plain http to a remote host", async () => {
+    const page = await openSettings({ mode: "server" });
+    setValue(page, "server-url", "http://server.example.test:8080");
+
+    page.document.getElementById("btn-save").click();
+
+    expect(page.api.saveSettings).not.toHaveBeenCalled();
+    expect(page.document.getElementById("server-url").classList.contains("invalid")).toBe(true);
+  });
+
+  // Failure: plain http to this computer is refused, so a local server cannot be saved.
+  it("accepts plain http to localhost", async () => {
+    const page = await openSettings({ mode: "server" });
+    setValue(page, "server-url", "http://localhost:8080");
+
+    page.document.getElementById("btn-save").click();
+
+    expect(page.api.saveSettings).toHaveBeenCalled();
   });
 
   // Failure: a URL made only of spaces passes the check and Save sends an empty server address.
@@ -264,14 +285,14 @@ describe("validation", () => {
   // Failure: main refuses a save and the reason is dropped, leaving the window open with no message.
   it("shows the main process's refusal and re-enables Save", async () => {
     const page = await openSettings({ mode: "server" });
-    page.api.saveSettings.mockResolvedValueOnce({ error: "Invalid Server URL — must be http:// or https://" });
+    page.api.saveSettings.mockResolvedValueOnce({ error: "Invalid Server URL — must be https:// (http:// only on this computer)" });
 
     page.document.getElementById("btn-save").click();
 
     await vi.waitFor(() => {
       expect(page.document.getElementById("save-error").classList.contains("visible")).toBe(true);
     });
-    expect(page.document.getElementById("save-error").textContent).toBe("Invalid Server URL — must be http:// or https://");
+    expect(page.document.getElementById("save-error").textContent).toBe("Invalid Server URL — must be https:// (http:// only on this computer)");
     expect(page.document.getElementById("btn-save").disabled).toBe(false);
     expect(page.document.getElementById("btn-save").textContent).toBe("Save");
     expect(page.closeCalls()).toBe(0);
@@ -324,7 +345,7 @@ describe("closing and keyboard", () => {
   // Failure: Cancel saves, or does not close, so the user's edits are written when they meant to discard them.
   it("Cancel closes the window and saves nothing", async () => {
     const page = await openSettings({ mode: "server" });
-    setValue(page, "server-url", "http://changed.example.test");
+    setValue(page, "server-url", "https://changed.example.test");
 
     page.document.getElementById("btn-cancel").click();
 

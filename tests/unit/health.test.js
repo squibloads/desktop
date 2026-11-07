@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // Import the module under test
 const { HealthPoller } = require("../../src/main/health.js");
 
+// The poller's own fetch goes through Electron's network stack, which these Node tests do not have.
+// The tests stub the global fetch, and each poller is given a fetch that calls it.
+const viaGlobalFetch = (url, init) => fetch(url, init);
+
 describe("HealthPoller", () => {
   let poller;
   let onUpdate;
@@ -28,6 +32,54 @@ describe("HealthPoller", () => {
     };
   }
 
+  // Failure: a refused address is polled over plain http anyway, or it reads as switched off and the fault stays hidden.
+  it("reports a refused address as refused and never polls it", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    poller = new HealthPoller(
+      makeSettings({ hasServer: false, serverRefused: true, serverUrl: "http://192.168.1.20:8080", hasConsole: false }),
+      onUpdate,
+      { fetch: viaGlobalFetch },
+    );
+
+    await poller.poll();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(poller.status.server).toBe("refused");
+    vi.unstubAllGlobals();
+  });
+
+  // Failure: a server's redirect is followed to another origin, so the health check travels over plain http to the target.
+  it("does not follow a redirect, and reports it as not healthy", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, json: () => Promise.resolve({}) });
+    vi.stubGlobal("fetch", fetchMock);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
+
+    await poller.poll();
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+    expect(poller.status.server).not.toBe("ok");
+    vi.unstubAllGlobals();
+  });
+
+  // Failure: a non-OK answer's body is only cancelled, which under Electron's fetch leaves its connection open until
+  // the three-second timeout aborts the request.
+  it("aborts the request of a non-OK answer before it reports the answer", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 302, body: {} });
+    vi.stubGlobal("fetch", fetchMock);
+    let abortedWhenReported = null;
+    onUpdate = vi.fn(() => {
+      abortedWhenReported = fetchMock.mock.calls[0][1].signal.aborted;
+    });
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
+
+    await poller.poll();
+
+    expect(poller.status.server).toBe("error");
+    expect(abortedWhenReported).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
   it("polls both servers when both enabled", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -35,7 +87,7 @@ describe("HealthPoller", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -56,7 +108,7 @@ describe("HealthPoller", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate);
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -70,13 +122,23 @@ describe("HealthPoller", () => {
     );
   });
 
+  // Failure: Electron's fetch fails a redirect it does not follow, so a server that answers with a redirect reads as disconnected, as if it were down.
+  it("reports a refused redirect as an error, not as disconnected", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Redirect was cancelled"));
+    poller = new HealthPoller(makeSettings({ hasConsole: false }), onUpdate, { fetch: fetchMock });
+
+    await poller.poll();
+
+    expect(poller.status.server).toBe("error");
+  });
+
   it("reports disconnected on fetch error", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockRejectedValue(new Error("ECONNREFUSED")),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(onUpdate).toHaveBeenCalledWith(
@@ -91,7 +153,7 @@ describe("HealthPoller", () => {
       vi.fn().mockResolvedValue({ ok: false, status: 500 }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(onUpdate).toHaveBeenCalledWith(
@@ -109,7 +171,7 @@ describe("HealthPoller", () => {
       }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
 
     expect(onUpdate).toHaveBeenCalledWith(
@@ -127,7 +189,7 @@ describe("HealthPoller", () => {
       }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll();
     expect(onUpdate).toHaveBeenCalledTimes(1);
 
@@ -151,7 +213,7 @@ describe("HealthPoller", () => {
       }),
     );
 
-    poller = new HealthPoller(makeSettings(), onUpdate);
+    poller = new HealthPoller(makeSettings(), onUpdate, { fetch: viaGlobalFetch });
     await poller.poll(); // ok -> fires
     await poller.poll(); // still ok -> no fire
     await poller.poll(); // disconnected -> fires

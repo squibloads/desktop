@@ -12,6 +12,33 @@ afterEach(() => {
 const NAVIGATION_NOT_IMPLEMENTED = "Not implemented: navigation to another Document";
 
 describe("connection error page", () => {
+  // Failure: a refused address reads as an unreachable server, so the user is told to check Turnstone instead of fixing the address.
+  it("shows the refusal and hides Retry when the reason is insecure", () => {
+    const page = loadPage("error", {
+      ...createFakeBridge(),
+      query: { url: "http://192.168.1.20:8080/", reason: "insecure" },
+    });
+    const doc = page.document;
+
+    expect(doc.getElementById("error-title").textContent).toBe("Address refused");
+    expect(doc.getElementById("error-url").textContent).toBe("http://192.168.1.20:8080/");
+    expect(doc.getElementById("btn-retry").style.display).toBe("none");
+    expect(doc.getElementById("error-hint").style.display).toBe("none");
+  });
+
+  // Failure: a cancelled redirect reads as an unreachable server, so the user looks for a server outage that is not there.
+  it("shows a redirect refusal and keeps Retry, when the reason is redirect", () => {
+    const page = loadPage("error", {
+      ...createFakeBridge(),
+      query: { url: "https://console.example.com:8443/", reason: "redirect" },
+    });
+    const doc = page.document;
+
+    expect(doc.getElementById("error-title").textContent).toBe("Redirect refused");
+    expect(doc.getElementById("btn-retry").style.display).not.toBe("none");
+    expect(doc.getElementById("error-hint").style.display).toBe("none");
+  });
+
   // Failure: the failed URL is not shown, so the user cannot tell which server is unreachable.
   it("shows the failed URL from the query string as text", () => {
     const page = loadPage("error", { ...createFakeBridge(), query: { url: "http://server.example.test:8080/" } });

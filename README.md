@@ -29,7 +29,7 @@ Open Settings with `Ctrl+,` (`Cmd+,` on macOS). The dialog has these fields:
 | Field | Default | Shown in | What it does | Rules |
 |---|---|---|---|---|
 | **Mode** | Both | Always | Chooses which views load, which health dots show, and whether notifications run. | One of Server Only, Console Only, Both, Local. |
-| **Server URL** | `http://localhost:8080` | Server Only, Both | Address of the Turnstone server. Loads the Server view, is health-checked, and is the source for notifications. | Required in these modes. Must start with `http://` or `https://`. Trailing slashes are removed. |
+| **Server URL** | `http://localhost:8080` | Server Only, Both | Address of the Turnstone server. Loads the Server view, is health-checked, and is the source for notifications. | Required in these modes. Must start with `https://`, or with `http://` for this computer only (`localhost`, `127.0.0.1` or `[::1]`). Trailing slashes are removed. A redirect to another site is not followed. |
 | **Console URL** | `http://localhost:8090` | Console Only, Both | Address of the Console. Loads the Console view and is health-checked. | Required in these modes. Same rules as Server URL. |
 | **When the app quits** | Stop Turnstone | Local only | Whether the Local pod is stopped when the app quits. See [Local mode](#local-mode). | Stop Turnstone or Keep Turnstone running. |
 
@@ -94,6 +94,7 @@ The app never stops the Podman machine. If you switch away from Local mode durin
 | Solid red square | **Error**: `/health` returned an error response |
 | Dim red | **Disconnected**: no answer within 3 seconds, or the answer was not JSON |
 | Dim grey | **Unknown**: not checked yet |
+| Solid red square | **Address refused**: the saved address is plain `http://` to another computer, so it is never checked or loaded. Open Settings and change it to `https://`. |
 
 The app checks each service every 5 seconds. When a service changes from not OK to OK, its view recovers on its own: a working page is reloaded, and a view showing an error page loads its address again.
 
@@ -101,18 +102,32 @@ The app checks each service every 5 seconds. When a service changes from not OK 
 
 - **Icon colour:** green when every active service is Connected, yellow when some are, red when none are. Grey until the first check.
 - **Click the icon** to show the window. On Linux, which gesture activates the icon depends on the desktop environment; if clicking does nothing, use the tray menu.
-- **Menu:** a read-only status line for each active service (for example `Server: Connected`). Local and Console Only show only Console, and Server Only shows only Server. Then **Show Window**, **Settings...**, and **Quit**. **Quit** exits the app and applies the *When the app quits* setting.
+- **Menu:** a read-only status line for each active service (for example `Server: Connected`). Local and Console Only show only Console, and Server Only shows only Server. In Server Only and Both, a line then says whether notifications work, from the end of the first poll on (see [Notifications](#notifications)). Then **Show Window**, **Settings...**, and **Quit**. **Quit** exits the app and applies the *When the app quits* setting.
 - On **Windows and Linux**, closing the window quits the app. On **macOS**, the app keeps running after the window closes. On macOS, use the Dock icon, not the tray, to reopen a closed window.
 
 ### Notifications
 
-Notifications come from the server's global event stream. They run in **Server Only** and **Both** modes only.
+Notifications run in **Server Only** and **Both** modes only. Every 10 seconds the app asks the server for the workstreams of the user signed in to the Server view, counting from the end of the last request, and notifies when one of that user's workstreams comes into a state that needs them.
 
-- **Turnstone: Attention Needed**, with the text `<name> requires your input`, when a workstream or cluster reports that it needs attention.
-- **Turnstone: Error**, with the text `<name> encountered an error`, when one reports an error.
-- The name is the workstream's name, otherwise its ID, otherwise `Workstream`.
+- **Turnstone: Attention Needed**, with the text `Workstream "<name>" requires your input`, when one of your workstreams starts waiting for you.
+- **Turnstone: Error**, with the text `Workstream "<name>" encountered an error`, when one of them fails.
+- The name is the workstream's name, otherwise its ID. With neither, the text starts `A workstream`. The model can set a workstream's name, so the notification quotes it and shows only the first 40 characters of the workstream's name, on one line, with `…` where it was cut. Invisible characters are dropped, and fullwidth letters show as plain ones. Quote marks of any kind show as one single quote, and `<`, `>` and `&` as `‹`, `›` and `＆`.
+- Only your own workstreams notify, even on a server where you can see other users' workstreams.
+- A workstream that already needed you when notifications started does not notify. They start again, and only record where things stand, when the app starts, when the mode or the Server URL changes, when you or another user signs in, and after the server refused the requests or answered in a form the app cannot read.
 
-The app does not check whether the window has focus before it shows a notification. If the event stream drops, the app reconnects, waiting up to 30 seconds between attempts.
+These requests carry the cookies the Server view holds for the server, its sign-in among them, so notifications need no setting of their own. A cookie does not depend on the port, so a Console on the same host adds its cookies too, as it does for the Server view. They are the only requests the app itself sends with cookies: health checks carry none. They go only to the Server URL, and a redirect is not followed. An answer is dropped when those cookies changed while it was on its way, as when you sign out or another user signs in, so one user's workstreams never notify after another has signed in.
+
+From the end of the first poll on, at most 10 seconds after notifications start, the tray menu says whether notifications work, and the app logs each change. A Server URL the app refuses runs no notifications and shows no line.
+
+| Tray line | Meaning |
+|---|---|
+| `Notifications: On` | The server answered, and the app is watching your workstreams. |
+| `Notifications: Sign in to the server` | The server asked for a sign-in. Sign in through the Server view. |
+| `Notifications: Refused by the server` | The server refused the requests, or answered with a redirect. |
+| `Notifications: Not supported by this server` | The server answered in a form the app cannot read, such as an older server's list of workstreams. |
+| `Notifications: Waiting for the server` | The server did not answer, is down or busy, or asked the app to slow down. The log says why the first time each cause appears. |
+
+The app does not check whether the window has focus before it shows a notification. A workstream that needs you and is answered within 10 seconds may not notify. The server's global event stream is not used: it needs a service token, which the server gives no signed-in user.
 
 ### Reload and developer tools
 
@@ -133,7 +148,7 @@ On macOS the View menu also has zoom and full-screen items; the app does not set
 
 ### Links
 
-- A link that opens a new window opens in your default browser.
+- A link that opens a new window opens in your default browser, without asking, if it is an `http` or `https` link. Any other link that opens a new window does nothing. No page opens a window inside the app.
 - A link inside a view that goes to a different address (different scheme, host or port) is blocked.
 
 ## Troubleshooting
@@ -182,6 +197,7 @@ npm run test:contract   # tests/contract only
 npm run test:renderer   # tests/renderer only (jsdom)
 npm run test:shuffle    # files and tests in random order; prints the seed
 npm run test:e2e        # Electron smoke tier: opens real app windows; needs the Electron binary (opt-in)
+npm run test:packaged   # after npm run package or make: checks the packaged build's fuses and dropped launch switches
 ```
 
 Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to change the worker count (default: half the logical cores). To replay a shuffled run, set `VITEST_SHUFFLE=1` and `VITEST_SEED=<printed seed>` in your shell, then run `npx vitest run`. The seed fixes the file order, independent of worker timing; projects run in parallel, so their files can interleave differently. `VITEST_MAX_WORKERS=1` gives an exact replay. Setting `VITEST_SEED` without `VITEST_SHUFFLE=1` is an error, not a silent no-op.
@@ -189,7 +205,7 @@ Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to chang
 Tests live in `tests/unit` (one module under `src/main`), `tests/contract` (checks on static files and the test layout), and
 `tests/renderer` (each renderer page in jsdom). The rules for writing tests are in `tests/helpers/README.md`.
 
-**For developers: smoke-test overrides.** Two environment variables exist for the opt-in Electron smoke tests and are off by default. `TURNSTONE_PODMAN` replaces the `podman` command with a JSON array of strings: the executable first, then any arguments that go before the Podman arguments, for example `["C:\\node.exe","C:\\fake-podman.js"]`. `TURNSTONE_LOCAL_CONSOLE_URL` replaces the Local Console address with an `http://` URL on `127.0.0.1`, `localhost` or `[::1]`, for example `http://localhost:9191`; a URL with credentials or any other host is rejected. The console address keeps only the origin, so any path or query on the value is dropped. A malformed value is an error that names the variable, never a silent fallback: an empty value counts as unset, and a bad value of either variable stops the app at start with that message.
+**For developers: smoke-test overrides.** Two environment variables exist for the opt-in Electron smoke tests and are off by default. A packaged build ignores both: only an unpackaged run, such as `npm start` or the smoke tier, reads them. `TURNSTONE_PODMAN` replaces the `podman` command with a JSON array of strings: the executable first, then any arguments that go before the Podman arguments, for example `["C:\\node.exe","C:\\fake-podman.js"]`. `TURNSTONE_LOCAL_CONSOLE_URL` replaces the Local Console address with an `http://` URL on `127.0.0.1`, `localhost` or `[::1]`, for example `http://localhost:9191`; a URL with credentials or any other host is rejected. The console address keeps only the origin, so any path or query on the value is dropped. A malformed value is an error that names the variable, never a silent fallback: an empty value counts as unset, and a bad value of either variable stops the app at start with that message.
 
 ## Building
 
@@ -198,6 +214,19 @@ npm run make
 ```
 
 Produces platform-specific distributables in `out/make/`.
+
+On Windows, the installer is `out/make/squirrel.windows/x64/Turnstone-<version> Setup.exe`. It installs for the current user, with no admin prompt.
+
+Squirrel makes no shortcuts for this app. Instead it starts the app once for each event and waits for it: up to 15 seconds for install and update, 10 for uninstall. The app answers each event without opening a window:
+
+- **Install:** creates the desktop shortcut and the Start menu shortcut, under Turnstone Labs.
+  - Running a newer Setup.exe over an installed app is also an install, not an update.
+  - Squirrel first ends a running copy, without the app's quit steps, so a Local mode pod is not stopped.
+- **Update:** `Update.exe --update`. The app has no auto-updater and never runs it itself.
+  - Refreshes both shortcuts.
+  - Brings back a desktop shortcut the user deleted. Update.exe has no option that refreshes only the shortcuts that exist.
+- **Uninstall:** removes both shortcuts. What stays: the empty Turnstone Labs folder; `%LOCALAPPDATA%\turnstone-desktop`, with the last version's folder; and the app's data in `%APPDATA%`.
+- **An older version that an update is about to delete:** exits.
 
 ## Releases
 

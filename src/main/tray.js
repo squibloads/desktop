@@ -14,6 +14,7 @@ class TurnStoneTray {
     this.tray = null;
     this.serverStatus = "unknown";
     this.consoleStatus = "unknown";
+    this.notificationStatus = null;
   }
 
   create() {
@@ -30,8 +31,14 @@ class TurnStoneTray {
     this.tray.setImage(loadIcon(trayIconName(server, console_)));
   }
 
+  // The notification manager reports while the app quits too, after the tray may be gone.
+  updateNotifications(status) {
+    this.notificationStatus = status;
+    if (this.tray) this._rebuildMenu();
+  }
+
   _rebuildMenu() {
-    const items = buildTrayMenuTemplate(this.serverStatus, this.consoleStatus, this.actions);
+    const items = buildTrayMenuTemplate(this.serverStatus, this.consoleStatus, this.actions, this.notificationStatus);
     this.tray.setContextMenu(Menu.buildFromTemplate(items));
   }
 
