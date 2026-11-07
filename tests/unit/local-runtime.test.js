@@ -6,6 +6,7 @@ import { installSteppedClock } from "../helpers/fake-clock.js";
 import { fakeElectronNet, removeFakeElectron } from "../helpers/fake-electron-net.js";
 
 const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED } = require("../../src/main/local-runtime.js");
+const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
 
 /**
  * Scripted podman: each entry maps a joined argv to a result. An unscripted
@@ -17,7 +18,8 @@ function makeRunner(script) {
     const key = args.join(" ");
     calls.push(key);
     if (!(key in script)) throw new Error(`unscripted podman call: ${key}`);
-    const out = script[key];
+    // A function answers each call afresh, so one call can answer differently the second time.
+    const out = typeof script[key] === "function" ? script[key]() : script[key];
     if (out instanceof Error) throw out;
     return out;
   });
@@ -35,6 +37,9 @@ const STOP = "--connection turnstone pod stop turnstone";
 const POD_START = "--connection turnstone pod start turnstone";
 const HEALTH_URL = "http://127.0.0.1:8090";
 const READY = { status: "ok", nodes: 1 };
+// The machine check, run as root inside the machine, and what a machine holding every ADR-05 setting answers.
+const HARDEN = `machine ssh --username root turnstone ${machineCheckCommand()}`;
+const HARDENED = "wslconf=ok\nsudo=refused\nend=ok\n";
 
 function machines(running) {
   return JSON.stringify([{ Name: "turnstone", Running: running }]);
@@ -50,7 +55,8 @@ function make(script, opts = {}) {
   // Deadlines read Date.now(), so the clock is stepped: each timeout counts
   // polls, not wall time. Pass `step` to change the cost of one read.
   installSteppedClock({ step: opts.step ?? 1 });
-  const runner = makeRunner(script);
+  // Every start checks the machine, so a test that is not about the check gets a machine that passes it.
+  const runner = makeRunner({ [HARDEN]: HARDENED, ...script });
   const fetchHealth = opts.fetchHealth || vi.fn(async () => READY);
   const rt = new LocalRuntime({
     run: runner.run,
@@ -77,6 +83,7 @@ describe("LocalRuntime.start", () => {
     expect(calls).toEqual([
       MACHINE_LIST,
       "machine start turnstone",
+      HARDEN,
       POD_STATE,
       POD_START,
     ]);
@@ -99,7 +106,7 @@ describe("LocalRuntime.start", () => {
       [POD_STATE]: "Running",
     });
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, POD_STATE]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE]);
   });
 
   it("reports PODMAN_NOT_FOUND when the binary is missing", async () => {
@@ -175,6 +182,136 @@ describe("LocalRuntime.start", () => {
     await rt.start();
     // Three console polls, then one node-stage poll that sees nodes=1.
     expect(fetchHealth).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("LocalRuntime machine hardening", () => {
+  const MACHINE_STOP = "machine stop turnstone";
+  const MACHINE_START = "machine start turnstone";
+
+  // Failure: a machine that was already running is trusted as it is, so settings dropped while the app was closed
+  // stay dropped (ADR-05: the app re-asserts them on every start).
+  it("checks the machine on every start, before the pod, also when it was already running", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE]);
+  });
+
+  // Failure: a rewritten wsl.conf is trusted before the machine boots with it, so automount and interop stay on.
+  it("restarts the machine when wsl.conf was rewritten, then checks again before the pod", async () => {
+    const reports = ["wslconf=rewritten\nsudo=refused\nend=ok\n", HARDENED];
+    const { rt, calls } = make({
+      [MACHINE_LIST]: machines(true),
+      [HARDEN]: () => reports.shift(),
+      [MACHINE_STOP]: "",
+      [MACHINE_START]: "",
+      [POD_STATE]: "Exited",
+      [POD_START]: "",
+    });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, MACHINE_STOP, MACHINE_START, HARDEN, POD_STATE, POD_START]);
+  });
+
+  // Failure: a machine with a gap runs the agent anyway, or a pod left running from before keeps running on it.
+  it("refuses with MACHINE_NOT_HARDENED naming the gap, stops a pod left running, and never starts one", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: machines(true),
+      [HARDEN]: "wslconf=ok\nsudo=allowed\nend=ok\n",
+      [STOP]: "",
+    });
+    const err = await rt.start().catch((e) => e);
+    expect(err).toBeInstanceOf(LocalRuntimeError);
+    expect(err.code).toBe("MACHINE_NOT_HARDENED");
+    expect(err.detail).toBe("the machine user can use sudo without a password");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, STOP]);
+  });
+
+  // Failure: a failed stop of the pod on an unhardened machine replaces the gap with POD_STOP_FAILED, so the user
+  // is told the wrong thing.
+  it("still reports MACHINE_NOT_HARDENED when stopping the pod fails", async () => {
+    const { rt } = make({
+      [MACHINE_LIST]: machines(true),
+      [HARDEN]: "wslconf=ok\nsudo=allowed\nend=ok\n",
+      [STOP]: new Error("Error: no pod with name or ID turnstone found"),
+    });
+    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_NOT_HARDENED" });
+  });
+
+  // Failure: a wsl.conf that will not stay written restarts the machine on every start forever, or passes.
+  it("reports MACHINE_NOT_HARDENED when wsl.conf still differs after the restart", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: machines(true),
+      [HARDEN]: "wslconf=rewritten\nsudo=refused\nend=ok\n",
+      [MACHINE_STOP]: "",
+      [MACHINE_START]: "",
+      [STOP]: "",
+    });
+    await expect(rt.start()).rejects.toMatchObject({
+      code: "MACHINE_NOT_HARDENED",
+      detail: "wsl.conf does not keep the app's settings after a restart",
+    });
+    expect(calls.filter((c) => c === MACHINE_STOP)).toHaveLength(1);
+  });
+
+  // Failure: a check that could not run reads as a clean machine, and the error detail repeats the whole encoded
+  // script instead of what went wrong.
+  it("reports MACHINE_CHECK_FAILED with podman's error, not the command line, when the check cannot run", async () => {
+    const failure = new Error(
+      `Command failed: podman ${HARDEN}\nError: ssh: connect to host localhost port 51234: Connection refused`,
+    );
+    const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: failure, [STOP]: "" });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("MACHINE_CHECK_FAILED");
+    expect(err.detail).toBe("Error: ssh: connect to host localhost port 51234: Connection refused");
+    expect(calls).not.toContain(POD_START);
+  });
+
+  // Failure: a check whose binary is missing reads as a failed check, so the user is not told to install Podman.
+  it("reports PODMAN_NOT_FOUND when podman disappears before the check", async () => {
+    const missing = Object.assign(new Error("spawn podman ENOENT"), { code: "ENOENT" });
+    const { rt } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: missing });
+    await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_NOT_FOUND" });
+  });
+
+  // Failure: a report cut off part way reads as a clean machine, because the gaps it never reached are not in it.
+  it("reports MACHINE_CHECK_FAILED when the report has no end line", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: "wslconf=ok\nsudo=refused\n", [STOP]: "" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_CHECK_FAILED" });
+    expect(calls).not.toContain(POD_STATE);
+  });
+
+  // Failure: a machine that will not restart after its settings were put back starts the pod on the old settings.
+  it("reports MACHINE_RESTART_FAILED when the restart fails, and never reaches the pod", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: machines(true),
+      [HARDEN]: "wslconf=rewritten\nsudo=refused\nend=ok\n",
+      [MACHINE_STOP]: new Error("Error: machine stop failed"),
+    });
+    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_RESTART_FAILED" });
+    expect(calls).not.toContain(POD_STATE);
+  });
+
+  // Failure: quitting during the restart lets the start carry on and bring the pod up after the quit.
+  it("stop() during the restart cancels the start before the machine comes back", async () => {
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const { rt, calls } = make({
+      [MACHINE_LIST]: machines(true),
+      [HARDEN]: "wslconf=rewritten\nsudo=refused\nend=ok\n",
+      [MACHINE_STOP]: () => gate.then(() => ""),
+      [MACHINE_START]: "",
+      [STOP]: "",
+    });
+    const started = rt.start().catch((e) => e);
+    await vi.waitFor(() => expect(calls).toContain(MACHINE_STOP));
+    const stopping = rt.stop();
+    release();
+    expect((await started).code).toBe("START_CANCELLED");
+    await stopping;
+    expect(calls).not.toContain(MACHINE_START);
+    expect(calls).not.toContain(POD_STATE);
   });
 });
 
@@ -350,6 +487,7 @@ describe("LocalRuntime.start overlap guard", () => {
   it("runs again after a failed start settles", async () => {
     const script = {
       [MACHINE_LIST]: new Error("podman busy"),
+      [HARDEN]: HARDENED,
       [POD_STATE]: "Running",
     };
     const runner = makeRunner(script);
@@ -404,6 +542,7 @@ describe("LocalRuntime.starting", () => {
     const run = vi.fn(async (args) => {
       const key = args.join(" ");
       if (key === MACHINE_LIST) return machines(true);
+      if (key === HARDEN) return HARDENED;
       if (key === POD_STATE) {
         await gate;
         return "Running";
@@ -469,6 +608,7 @@ describe("LocalRuntime stop and started semantics", () => {
       const key = args.join(" ");
       calls.push(key);
       if (key === MACHINE_LIST) return machines(true);
+      if (key === HARDEN) return HARDENED;
       if (key === POD_STATE) return "Exited";
       if (key === POD_START) {
         await gate;
@@ -512,6 +652,7 @@ describe("LocalRuntime cancellation", () => {
     const run = vi.fn(async (args) => {
       const key = args.join(" ");
       if (key === MACHINE_LIST) return machines(true);
+      if (key === HARDEN) return HARDENED;
       if (key === POD_STATE) {
         await gate;
         return "Running";
@@ -568,6 +709,7 @@ describe("LocalRuntime cancellation", () => {
       const key = args.join(" ");
       calls.push(key);
       if (key === MACHINE_LIST) return machines(false);
+      if (key === HARDEN) return HARDENED;
       if (key === "machine start turnstone") {
         await gate;
         return "";

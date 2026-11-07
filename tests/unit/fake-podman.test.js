@@ -98,6 +98,39 @@ describe("fake-podman known calls", () => {
     expect(savedState().pod).toBe("Exited");
     expect(logLines()).toEqual(["--connection turnstone pod stop turnstone", "pod stop done"]);
   });
+
+  // Failure: the machine check the app runs at every launch is refused, so every e2e start fails at the machine stage.
+  it("answers the machine check as root with a hardened machine by default", () => {
+    const result = callPodman(["machine", "ssh", "--username", "root", "turnstone", "printf %s abc | base64 -d | sh"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("wslconf=ok\nsudo=refused\nend=ok\n");
+    expect(logLines()).toEqual(["machine ssh --username root turnstone printf %s abc | base64 -d | sh"]);
+  });
+
+  // Failure: no test can show the app refusing a machine with a gap, because the fake only ever answers clean.
+  it("answers the machine check with passwordless sudo when hardening is gap", () => {
+    const result = callPodman(["machine", "ssh", "--username", "root", "turnstone", "check"], { hardening: "gap" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("wslconf=ok\nsudo=allowed\nend=ok\n");
+  });
+
+  // Failure: no test can show the app failing closed when the check cannot run.
+  it("fails the machine check when hardening is fails", () => {
+    const result = callPodman(["machine", "ssh", "--username", "root", "turnstone", "check"], { hardening: "fails" });
+
+    expect(result.status).toBe(1);
+  });
+
+  // Failure: the restart after a rewritten wsl.conf has no stop to call, so the machine is never restarted in a test.
+  it("stops a running machine", () => {
+    const result = callPodman(["machine", "stop", "turnstone"]);
+
+    expect(result.status).toBe(0);
+    expect(savedState().machine).toBe("stopped");
+    expect(logLines()).toEqual(["machine stop turnstone"]);
+  });
 });
 
 describe("fake-podman rejects unknown calls", () => {
@@ -124,6 +157,13 @@ describe("fake-podman rejects unknown calls", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("fake-podman: unexpected call: --connection other pod stop turnstone");
+  });
+
+  // Failure: a machine check run as the machine user, or with its script split in pieces, passes as the root check.
+  it("exits 1 for a machine check not run as root, or with more than one script argument", () => {
+    expect(callPodman(["machine", "ssh", "turnstone", "check"]).status).toBe(1);
+    expect(callPodman(["machine", "ssh", "--username", "root", "turnstone", "check", "extra"]).status).toBe(1);
+    expect(callPodman(["machine", "ssh", "--username", "root", "turnstone"]).status).toBe(1);
   });
 
   // Failure: the whole command is passed as one argument, and the fake matches it as if the words were separate arguments.

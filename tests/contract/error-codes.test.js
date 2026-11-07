@@ -12,8 +12,11 @@ function read(relative) {
 // the derived set, so this list and a README row must change with it.
 const CODES = [
   "HEALTH_TIMEOUT",
+  "MACHINE_CHECK_FAILED",
   "MACHINE_LIST_FAILED",
   "MACHINE_MISSING",
+  "MACHINE_NOT_HARDENED",
+  "MACHINE_RESTART_FAILED",
   "MACHINE_START_FAILED",
   "NODE_TIMEOUT",
   "PODMAN_NOT_FOUND",

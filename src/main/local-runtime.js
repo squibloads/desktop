@@ -1,6 +1,7 @@
 const { execFile } = require("child_process");
 const { podmanCommand, localConsoleUrl } = require("./runtime-config.js");
 const { sessionFetch, isRefusedRedirect } = require("./session-fetch.js");
+const { machineCheckCommand, parseMachineReport, hardeningGaps } = require("./machine-hardening.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
@@ -16,6 +17,12 @@ const USER_MESSAGES = {
   MACHINE_LIST_FAILED:
     "Podman answered, but its machine list could not be read.",
   MACHINE_START_FAILED: "The Turnstone Podman machine would not start.",
+  MACHINE_CHECK_FAILED:
+    "The Turnstone machine's safety settings could not be checked, so Turnstone was not started.",
+  MACHINE_RESTART_FAILED:
+    "The Turnstone machine's safety settings were put back, but the machine would not restart to apply them.",
+  MACHINE_NOT_HARDENED:
+    "The Turnstone machine's safety settings are not holding, so Turnstone was not started.",
   POD_MISSING: "The Turnstone pod does not exist on the Podman machine.",
   POD_START_FAILED: "The Turnstone pod would not start.",
   POD_STOP_FAILED: "The Turnstone pod would not stop cleanly.",
@@ -105,6 +112,15 @@ function describeHealth(health) {
   return `status=${String(health.status)}, ${nodes}`;
 }
 
+// What a failed podman call said, without its first line: execFile puts the whole command line there, and for the
+// machine check that is a long encoded script that says nothing about what went wrong.
+function withoutCommandLine(err) {
+  const message = String((err && err.message) || "");
+  const lines = message.split(/\r?\n/);
+  const rest = lines.slice(1).join("\n").trim();
+  return rest || lines[0] || "podman failed with no message";
+}
+
 /**
  * Drives the local Podman machine and pod. Pod lifecycle is stop-then-start
  * only: `pod restart`, or restarting a single container, kills conmon and
@@ -176,6 +192,7 @@ class LocalRuntime {
       await this._podman(["machine", "start", MACHINE], "MACHINE_START_FAILED");
       this._checkCancelled();
     }
+    await this._hardenMachine();
     this._progress("pod");
     const state = await this._podState();
     this.started = true;
@@ -248,6 +265,46 @@ class LocalRuntime {
     const m = list.find((x) => x.Name === MACHINE);
     if (!m) throw new LocalRuntimeError("MACHINE_MISSING", MACHINE);
     return m.Running === true;
+  }
+
+  /**
+   * ADR-05: the machine's own settings keep the Windows host out of it, and nothing in the machine holds them in
+   * place, so they are put back on every start and the gaps they close are checked before the pod runs. A gap stops
+   * the start, and a pod left running from before is stopped, so the agent never runs on a machine with a gap.
+   */
+  async _hardenMachine() {
+    let report = await this._checkMachine();
+    this._checkCancelled();
+    if (report.wslconf === "rewritten") {
+      // The machine reads wsl.conf only when it boots, so a rewritten file means nothing until a restart.
+      await this._podman(["machine", "stop", MACHINE], "MACHINE_RESTART_FAILED");
+      this._checkCancelled();
+      await this._podman(["machine", "start", MACHINE], "MACHINE_RESTART_FAILED");
+      this._checkCancelled();
+      report = await this._checkMachine();
+      this._checkCancelled();
+    }
+    const gaps = hardeningGaps(report);
+    if (gaps.length === 0) return;
+    await this.run(podArgs(["pod", "stop", POD])).catch(() => {});
+    throw new LocalRuntimeError("MACHINE_NOT_HARDENED", gaps.join("; "));
+  }
+
+  // One run of the machine script, as root. A report without its end line was cut short, so it is a failed check,
+  // never a clean machine.
+  async _checkMachine() {
+    let out;
+    try {
+      out = await this.run(["machine", "ssh", "--username", "root", MACHINE, machineCheckCommand()]);
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err);
+      throw new LocalRuntimeError("MACHINE_CHECK_FAILED", withoutCommandLine(err));
+    }
+    const report = parseMachineReport(out);
+    if (!report.complete) {
+      throw new LocalRuntimeError("MACHINE_CHECK_FAILED", "the check stopped before it finished");
+    }
+    return report;
   }
 
   async _podState() {

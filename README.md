@@ -58,19 +58,27 @@ Local mode runs Turnstone in a Podman pod on this PC and opens its Console at `h
 
 **What happens on launch.** The loading screen, titled **Starting Local Turnstone**, shows these stages in order:
 
-1. **Starting the Podman machine.** If the `turnstone` machine is not running, the app starts it.
+1. **Starting the Podman machine.** If the `turnstone` machine is not running, the app starts it. Then it puts back and checks the machine's safety settings (below).
 2. **Starting Turnstone.** If the pod is not running, the app starts it. A pod that is already running is left alone.
 3. **Waiting for the console.** The app checks `/health` once a second for up to 2 minutes, until it reports `ok`.
 4. **Waiting for the node to come online (this can take about a minute).** The app checks once a second until a node is registered, for up to 3 minutes. If none has registered after 3 minutes, the Console opens anyway, provided the Console is still healthy. If the Console stopped answering, or answers with anything other than a healthy status, during the wait, you get the `HEALTH_TIMEOUT` error page instead.
 
-The app starts the Podman machine when it is stopped and starts or stops the existing pod. It never stops the machine.
+The app starts the Podman machine when it is stopped and starts or stops the existing pod. It stops the machine only to restart it after putting `/etc/wsl.conf` back.
+
+**The machine's safety settings.** These keep Windows out of the machine, and nothing in the machine holds them in place, so on every start, before the pod, the app runs a script as root inside the machine (`podman machine ssh --username root turnstone`). It puts these back:
+
+- `/etc/wsl.conf`: drives are not mounted automatically and only the folders in `/etc/fstab` are; Windows programs cannot be started and the Windows PATH is not added; a boot command removes the `WSLInterop` handler, which would otherwise still run a Windows `.exe` placed in a shared folder. If the file differs from the app's copy, the app writes its copy and restarts the machine, because the machine reads the file only when it boots. A pod that was running stops with the machine and is started again.
+- sudo: each active `NOPASSWD` line in `/etc/sudoers` and `/etc/sudoers.d/` is commented out as `# turnstone-disabled: ...`, and a file is replaced only once `visudo` accepts the result. Passwordless sudo would let the machine user mount a whole drive.
+- A `WSLInterop` handler registered since the machine booted is removed.
+
+Then it checks that the gaps are closed: no `WSLInterop` handler is registered, the machine user (uid 1000) cannot run `sudo -n true`, and every Windows folder mounted in the machine is listed in `/etc/fstab` (WSL's own mounts under `/usr/lib/wsl` aside). If any check fails, the app stops the pod and shows `MACHINE_NOT_HARDENED`, with each gap in the detail line. The app does not change `/etc/fstab`: which folders the machine sees is still set there.
 
 **What happens on quit.** The Settings field *When the app quits* controls this:
 
 - **Stop Turnstone** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. If startup was already running a Podman step when you quit, that step finishes first, so quitting can take longer. A failed stop is ignored.
 - **Keep Turnstone running**: the pod is left running. The next launch does not start the machine or the pod if they are already running.
 
-The app never stops the Podman machine. If you switch away from Local mode during a session, Stop Turnstone still stops the pod on quit.
+The app never stops the Podman machine on quit. If you switch away from Local mode during a session, Stop Turnstone still stops the pod on quit.
 
 ## Everyday use
 
@@ -173,6 +181,9 @@ If startup fails, the loading screen is replaced by an error page. It shows the 
 | `MACHINE_MISSING` | The Turnstone Podman machine does not exist. Create it, then reopen Turnstone. | Create a machine named `turnstone` in Podman. `podman machine list` should show it. |
 | `MACHINE_LIST_FAILED` | Podman answered, but its machine list could not be read. | Run `podman machine list --format json` by hand and read its error. |
 | `MACHINE_START_FAILED` | The Turnstone Podman machine would not start. | Run `podman machine start turnstone` by hand and read its error. |
+| `MACHINE_CHECK_FAILED` | The Turnstone machine's safety settings could not be checked, so Turnstone was not started. | Run `podman machine ssh --username root turnstone id -u` by hand. It must print `0`. The detail line shows Podman's error. |
+| `MACHINE_RESTART_FAILED` | The Turnstone machine's safety settings were put back, but the machine would not restart to apply them. | Run `podman machine stop turnstone`, then `podman machine start turnstone`, by hand and read the error. |
+| `MACHINE_NOT_HARDENED` | The Turnstone machine's safety settings are not holding, so Turnstone was not started. | The detail line names each gap. See *The machine's safety settings* under [Local mode](#local-mode). |
 | `POD_MISSING` | The Turnstone pod does not exist on the Podman machine. | The app's check is `podman --connection turnstone pod inspect turnstone`. It also fails if the `turnstone` connection is missing or unreachable. |
 | `POD_START_FAILED` | The Turnstone pod would not start. | Run `podman --connection turnstone pod start turnstone` by hand and read its error. |
 | `HEALTH_TIMEOUT` | Turnstone started but did not become healthy before the timeout. | Open `http://127.0.0.1:8090/health` in a browser. The detail line shows the last status the app saw. |
