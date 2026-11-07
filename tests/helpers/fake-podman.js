@@ -1,15 +1,18 @@
-// Stands in for the podman binary. It implements only the five calls local-runtime.js makes,
+// Stands in for the podman binary. It implements only the seven calls local-runtime.js makes,
 // each matched as its exact argv, and keeps the machine and pod state in a JSON file so a test
 // can change them while the app is running.
 //
 // The app runs it as `node fake-podman.js <args>`, because TURNSTONE_PODMAN is a JSON array that
 // names this file. Environment variables:
-//   FAKE_PODMAN_STATE          state file: { machine, pod, failStart, failStop }
+//   FAKE_PODMAN_STATE          state file: { machine, pod, failStart, failStop, hardening }
 //   FAKE_PODMAN_LOG            receives one line per call, the arguments joined with spaces
 //   FAKE_PODMAN_STOP_DELAY_MS  optional, default 0: `pod stop` takes this long, then logs `pod stop done`
 //
-// machine: "running" | "stopped" | "missing" | "list-fails"
-// pod:     "Running" | "Exited" | "missing"
+// machine:   "running" | "stopped" | "missing" | "list-fails"
+// pod:       "Running" | "Exited" | "missing"
+// hardening: "ok" (the default when absent) | "gap" | "fails". The machine check run as root answers
+//            a hardened machine, a machine whose user has passwordless sudo, or exits 1. The script it
+//            is given is not run: machine-hardening.test.js and a real machine cover what it does.
 // failStart makes `machine start` and `pod start` exit 1; failStop does the same for `pod stop`.
 //
 // Any other call exits 1, so a new podman call in the app fails the test that makes it instead of
@@ -23,10 +26,17 @@ const MACHINE = "turnstone";
 const POD = "turnstone";
 const CONNECTION = "turnstone";
 
-// The five calls, as the argv local-runtime.js passes them. Matched element by element, so the same
-// words split differently are not one of these calls.
+// The seven calls, as the argv local-runtime.js passes them. Matched element by element, so the same
+// words split differently are not one of these calls. The machine check is this prefix and then
+// exactly one argument, the encoded script.
 const MACHINE_LIST = ["machine", "list", "--format", "json"];
 const MACHINE_START = ["machine", "start", MACHINE];
+const MACHINE_STOP = ["machine", "stop", MACHINE];
+const MACHINE_CHECK = ["machine", "ssh", "--username", "root", MACHINE];
+const HARDENING_REPORTS = {
+  ok: "wslconf=ok\nsudo=refused\nend=ok\n",
+  gap: "wslconf=ok\nsudo=allowed\nend=ok\n",
+};
 const POD_INSPECT = ["--connection", CONNECTION, "pod", "inspect", POD, "--format", "{{.State}}"];
 const POD_START = ["--connection", CONNECTION, "pod", "start", POD];
 const POD_STOP = ["--connection", CONNECTION, "pod", "stop", POD];
@@ -78,6 +88,16 @@ if (sameArgv(args, MACHINE_LIST)) {
   state.machine = "running";
   save();
   console.log(`Starting machine "${MACHINE}"`);
+} else if (sameArgv(args, MACHINE_STOP)) {
+  if (state.machine === "missing") fail(`Error: machine ${MACHINE} does not exist`);
+  state.machine = "stopped";
+  save();
+  console.log(`Machine "${MACHINE}" stopped successfully`);
+} else if (args.length === MACHINE_CHECK.length + 1 && sameArgv(args.slice(0, -1), MACHINE_CHECK)) {
+  const hardening = state.hardening ?? "ok";
+  if (hardening === "fails") fail("Error: ssh: connect to host localhost: Connection refused");
+  if (!(hardening in HARDENING_REPORTS)) fail(`fake-podman: unknown hardening state "${hardening}"`);
+  process.stdout.write(HARDENING_REPORTS[hardening]);
 } else if (sameArgv(args, POD_INSPECT)) {
   if (state.pod === "missing") fail(`Error: no such pod ${POD}`);
   console.log(state.pod);
