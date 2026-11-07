@@ -91,6 +91,8 @@ class NotificationManager {
     this.userId = null;
     // Why the last poll failed, as text, or null when it got an answer. A cause is logged when it first appears.
     this.failure = null;
+    // True between pause() and resume(), so a resume never restarts a manager that was stopped or never started.
+    this.paused = false;
   }
 
   start() {
@@ -102,6 +104,33 @@ class NotificationManager {
   }
 
   stop() {
+    this.paused = false;
+    this._halt();
+    this._forget();
+    this._report(null);
+  }
+
+  /**
+   * For a sleep: the poll in flight is aborted, which closes its connection, and the next one is cancelled. What was
+   * recorded and the tray status are kept, so a workstream that comes to need the user while the PC sleeps is
+   * announced on the wake. Only a running manager pauses.
+   */
+  pause() {
+    if (!this.running) return;
+    this._halt();
+    this.paused = true;
+  }
+
+  /** For a wake: polls at once instead of waiting out the interval, then every POLL_INTERVAL_MS as before. */
+  resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.running = true;
+    this._poll(this.generation);
+  }
+
+  // Ends the loop: a poll begun before this does nothing more (see generation), and its requests are aborted.
+  _halt() {
     this.running = false;
     this.generation += 1;
     clearTimeout(this.timer);
@@ -110,8 +139,6 @@ class NotificationManager {
       this.controller.abort();
       this.controller = null;
     }
-    this._forget();
-    this._report(null);
   }
 
   async _poll(generation) {
@@ -286,6 +313,14 @@ function createNotificationLifecycle(create) {
         current.stop();
         current.start();
       }
+    },
+    // A sleep and the wake after it. A mode without a server has no manager, so
+    // there is nothing to pause.
+    pause() {
+      if (current) current.pause();
+    },
+    resume() {
+      if (current) current.resume();
     },
     stop,
   };

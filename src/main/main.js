@@ -7,6 +7,7 @@ const {
   screen,
   dialog,
   session,
+  powerMonitor,
 } = require("electron");
 const { switchesToDrop } = require("./debug-switches.js");
 
@@ -40,6 +41,7 @@ const { canRetryLocal } = require("./ipc-guards.js");
 const { firstConfigError } = require("./runtime-config.js");
 const { createRedirectRefusals } = require("./redirect-refusals.js");
 const { installEventPlan, runInstallEvent } = require("./install-events.js");
+const { watchSleep } = require("./power-events.js");
 const { spawn } = require("node:child_process");
 
 // Set when Squirrel started this run for an install, update or uninstall, which whenReady answers instead of starting
@@ -797,6 +799,19 @@ app.whenReady().then(async () => {
 
   // Notifications run only while the mode has a server
   notificationLifecycle.apply(reachable);
+
+  // A sleep pauses both polls and a wake runs them at once (see power-events.js). healthPoller is read when the event
+  // arrives, so a rebuilt window's poller is the one paused.
+  watchSleep(powerMonitor, {
+    onSuspend: () => {
+      if (healthPoller) healthPoller.pause();
+      notificationLifecycle.pause();
+    },
+    onResume: () => {
+      if (healthPoller) healthPoller.resume();
+      notificationLifecycle.resume();
+    },
+  });
 
   if (isFirstLaunch) {
     openSettings();
