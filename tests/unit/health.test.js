@@ -326,3 +326,86 @@ describe("HealthPoller pause and resume, for sleep", () => {
     expect(fetch.mock.calls.length).toBe(before + 1);
   });
 });
+
+describe("HealthPoller after a wake", () => {
+  let poller;
+  let onUpdate;
+  const settings = { serverUrl: "http://localhost:8080", hasServer: true, hasConsole: false };
+  const advance = (ms) => vi.advanceTimersByTimeAsync(ms);
+
+  // A server whose network the test takes away ("down"), or which answers with a server error ("error").
+  function switchable() {
+    const state = { mode: "ok" };
+    const fetch = vi.fn(async () => {
+      if (state.mode === "down") throw new TypeError("fetch failed");
+      if (state.mode === "error") return { ok: false, status: 502, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ status: "ok" }) };
+    });
+    return { state, fetch };
+  }
+
+  async function wokenWith(mode) {
+    const { state, fetch } = switchable();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await advance(0);
+    onUpdate.mockClear();
+    poller.pause();
+    state.mode = mode;
+    poller.resume();
+    await advance(0);
+    return state;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    onUpdate = vi.fn();
+  });
+
+  afterEach(() => {
+    if (poller) poller.stop();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Failure: the network is not back for the check the wake runs, the service reads as disconnected, and the next good
+  // check reloads a page that was working.
+  it("keeps the last status when a check gets no answer within 15 seconds of the wake", async () => {
+    const state = await wokenWith("down");
+    await advance(10000);
+    expect(poller.status.server).toBe("ok");
+
+    state.mode = "ok";
+    await advance(5000);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  // Failure: a service that stays down after a wake is never reported down.
+  it("reports no answer as disconnected once the 15 seconds are over", async () => {
+    await wokenWith("down");
+    await advance(15000);
+
+    expect(poller.status.server).toBe("disconnected");
+    expect(onUpdate).toHaveBeenCalledOnce();
+  });
+
+  // Failure: a real answer, such as a server error, is held back after a wake, and the user is told nothing.
+  it("reports an answer that is not OK at once, also within the 15 seconds", async () => {
+    await wokenWith("error");
+
+    expect(poller.status.server).toBe("error");
+    expect(onUpdate).toHaveBeenCalledOnce();
+  });
+
+  // Failure: the hold applies without a wake, and an outage is hidden.
+  it("reports no answer at once when there was no wake", async () => {
+    const { state, fetch } = switchable();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await advance(0);
+    state.mode = "down";
+    await advance(5000);
+
+    expect(poller.status.server).toBe("disconnected");
+  });
+});
