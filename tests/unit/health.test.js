@@ -225,3 +225,187 @@ describe("HealthPoller", () => {
     );
   });
 });
+
+describe("HealthPoller pause and resume, for sleep", () => {
+  let poller;
+  let onUpdate;
+  const settings = { serverUrl: "http://localhost:8080", hasServer: true, hasConsole: false };
+  const healthy = () => vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ status: "ok" }) }));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    onUpdate = vi.fn();
+  });
+
+  afterEach(() => {
+    if (poller) poller.stop();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Failure: the poller keeps polling through a sleep, and a check sent as the PC suspends fails and reads as an outage.
+  it("pause stops the polls", async () => {
+    const fetch = healthy();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    poller.pause();
+    await vi.advanceTimersByTimeAsync(20000);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // Failure: a check in flight across the sleep is left on a dead connection, or its failure is reported after the
+  // wake as a disconnect that never happened.
+  it("pause aborts the check in flight and drops its answer", async () => {
+    const fetch = vi.fn(
+      (url, init) =>
+        new Promise((_, reject) => {
+          init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        }),
+    );
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const { signal } = fetch.mock.calls[0][1];
+
+    poller.pause();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(signal.aborted).toBe(true);
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(poller.status.server).toBe("unknown");
+  });
+
+  // Failure: the first check after a wake waits out the 5 second interval, so the dots and the views lag the wake.
+  it("resume checks at once, then every 5 seconds again", async () => {
+    const fetch = healthy();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    poller.pause();
+
+    poller.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  // Failure: a resume restarts a poller that the app stopped on purpose, on the way to quitting or for a rebuilt window.
+  it("resume does nothing unless the poller was paused", async () => {
+    const fetch = healthy();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetch).not.toHaveBeenCalled();
+
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    poller.stop();
+    poller.resume();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // Failure: two resumes for one wake leave two intervals running, and the server is asked twice as often.
+  it("runs one interval after two resumes", async () => {
+    const fetch = healthy();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(0);
+    poller.pause();
+
+    poller.resume();
+    poller.resume();
+    await vi.advanceTimersByTimeAsync(0);
+    const before = fetch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(fetch.mock.calls.length).toBe(before + 1);
+  });
+});
+
+describe("HealthPoller after a wake", () => {
+  let poller;
+  let onUpdate;
+  const settings = { serverUrl: "http://localhost:8080", hasServer: true, hasConsole: false };
+  const advance = (ms) => vi.advanceTimersByTimeAsync(ms);
+
+  // A server whose network the test takes away ("down"), or which answers with a server error ("error").
+  function switchable() {
+    const state = { mode: "ok" };
+    const fetch = vi.fn(async () => {
+      if (state.mode === "down") throw new TypeError("fetch failed");
+      if (state.mode === "error") return { ok: false, status: 502, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ status: "ok" }) };
+    });
+    return { state, fetch };
+  }
+
+  async function wokenWith(mode) {
+    const { state, fetch } = switchable();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await advance(0);
+    onUpdate.mockClear();
+    poller.pause();
+    state.mode = mode;
+    poller.resume();
+    await advance(0);
+    return state;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    onUpdate = vi.fn();
+  });
+
+  afterEach(() => {
+    if (poller) poller.stop();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Failure: the network is not back for the check the wake runs, the service reads as disconnected, and the next good
+  // check reloads a page that was working.
+  it("keeps the last status when a check gets no answer within 15 seconds of the wake", async () => {
+    const state = await wokenWith("down");
+    await advance(10000);
+    expect(poller.status.server).toBe("ok");
+
+    state.mode = "ok";
+    await advance(5000);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  // Failure: a service that stays down after a wake is never reported down.
+  it("reports no answer as disconnected once the 15 seconds are over", async () => {
+    await wokenWith("down");
+    await advance(15000);
+
+    expect(poller.status.server).toBe("disconnected");
+    expect(onUpdate).toHaveBeenCalledOnce();
+  });
+
+  // Failure: a real answer, such as a server error, is held back after a wake, and the user is told nothing.
+  it("reports an answer that is not OK at once, also within the 15 seconds", async () => {
+    await wokenWith("error");
+
+    expect(poller.status.server).toBe("error");
+    expect(onUpdate).toHaveBeenCalledOnce();
+  });
+
+  // Failure: the hold applies without a wake, and an outage is hidden.
+  it("reports no answer at once when there was no wake", async () => {
+    const { state, fetch } = switchable();
+    poller = new HealthPoller(settings, onUpdate, { fetch });
+    poller.start();
+    await advance(0);
+    state.mode = "down";
+    await advance(5000);
+
+    expect(poller.status.server).toBe("disconnected");
+  });
+});

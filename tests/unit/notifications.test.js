@@ -1001,3 +1001,206 @@ describe("createNotificationLifecycle", () => {
     expect(made).toEqual([]);
   });
 });
+
+describe("NotificationManager pause and resume, for sleep", () => {
+  // A fetch that never answers on its own, and rejects when its request is aborted, as a request on a connection the
+  // sleep killed does.
+  function hangingFetch() {
+    return vi.fn(
+      (url, init) =>
+        new Promise((_, reject) => {
+          init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+        }),
+    );
+  }
+
+  // Failure: a request in flight when the PC sleeps is left open on a connection that died, and the poll waits on it.
+  it("pause aborts the request in flight and cancels the next poll", async () => {
+    const fetch = hangingFetch();
+    makeManager(fetch).start();
+    await settle();
+    const { signal } = fetch.mock.calls[0][1];
+
+    manager.pause();
+    await settle();
+    await nextPoll(3);
+
+    expect(signal.aborted).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // Failure: the aborted poll reports "waiting" and logs a failure, so every sleep reads as a server outage.
+  it("reports and logs nothing for the poll it aborted", async () => {
+    const { server, fetch: serverFetch } = fakeServer();
+    let hang = false;
+    const fetch = vi.fn((url, init) =>
+      hang
+        ? new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true }))
+        : serverFetch(url, init),
+    );
+    server.workstreams = [ws("w1", "running")];
+    makeManager(fetch).start();
+    await settle();
+    hang = true;
+    await nextPoll();
+
+    manager.pause();
+    await settle();
+
+    expect(statuses).toEqual(["on"]);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  // Failure: a sleep reads as the user signing out, so the tray says notifications are off and what was recorded is lost.
+  it("keeps the tray status while paused", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+
+    manager.pause();
+
+    expect(statuses).toEqual(["on"]);
+    expect(manager.status).toBe("on");
+  });
+
+  // Failure: the first poll after a wake waits out the 10 second interval.
+  it("resume polls at once, then every 10 seconds again", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+    manager.pause();
+    const before = whoamiCount(fetch);
+
+    manager.resume();
+    await settle();
+    expect(whoamiCount(fetch)).toBe(before + 1);
+    await nextPoll();
+    expect(whoamiCount(fetch)).toBe(before + 2);
+  });
+
+  // Failure: a workstream that came to need the user while the PC slept is never announced, because the first answer
+  // after the wake only records where things stand.
+  it("announces a workstream that changed state while paused", async () => {
+    const { server, fetch } = fakeServer();
+    server.workstreams = [ws("w1", "running", { name: "Build" })];
+    makeManager(fetch).start();
+    await settle();
+    manager.pause();
+
+    server.workstreams = [ws("w1", "attention", { name: "Build" })];
+    manager.resume();
+    await settle();
+
+    expect(fake.constructed).toEqual([{ title: "Turnstone: Attention Needed", body: 'Workstream "Build" requires your input' }]);
+  });
+
+  // Failure: a resume starts a poll for a manager that was stopped or never started, so a mode without a server polls.
+  it("resume does nothing unless the manager was paused", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch);
+    manager.resume();
+    await settle();
+    expect(fetch).not.toHaveBeenCalled();
+
+    manager.start();
+    await settle();
+    manager.stop();
+    const before = fetch.mock.calls.length;
+    manager.resume();
+    await settle();
+    await nextPoll();
+    expect(fetch.mock.calls.length).toBe(before);
+  });
+
+  // Failure: two resumes for one wake run two poll loops side by side.
+  it("runs one poll loop after two resumes", async () => {
+    const { fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+    manager.pause();
+
+    manager.resume();
+    manager.resume();
+    await settle();
+    const before = whoamiCount(fetch);
+    await nextPoll();
+
+    expect(whoamiCount(fetch)).toBe(before + 1);
+  });
+});
+
+describe("createNotificationLifecycle pause and resume", () => {
+  function fakeManager() {
+    return { start: vi.fn(), stop: vi.fn(), pause: vi.fn(), resume: vi.fn() };
+  }
+
+  // Failure: a sleep leaves the running manager polling, or a wake never reaches it.
+  it("passes pause and resume to the running manager", () => {
+    const made = fakeManager();
+    const lifecycle = createNotificationLifecycle(() => made);
+    lifecycle.apply({ hasServer: true });
+
+    lifecycle.pause();
+    lifecycle.resume();
+
+    expect(made.pause).toHaveBeenCalledOnce();
+    expect(made.resume).toHaveBeenCalledOnce();
+  });
+
+  // Failure: a sleep in a mode with no server throws, or a wake makes a manager for it.
+  it("does nothing when no manager runs", () => {
+    const create = vi.fn(fakeManager);
+    const lifecycle = createNotificationLifecycle(create);
+    lifecycle.apply({ hasServer: false });
+
+    expect(() => {
+      lifecycle.pause();
+      lifecycle.resume();
+    }).not.toThrow();
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("NotificationManager after a wake", () => {
+  async function wokenWith(refuse) {
+    const { server, fetch } = fakeServer();
+    makeManager(fetch).start();
+    await settle();
+    manager.pause();
+    server.refuse = refuse;
+    manager.resume();
+    await settle();
+    return server;
+  }
+
+  // Failure: the poll the wake runs fails while the network comes back, so the tray says Waiting and the log reports a
+  // failure after every wake.
+  it("reports and logs nothing for a poll that gets no answer within 15 seconds of the wake", async () => {
+    const server = await wokenWith(new TypeError("fetch failed"));
+    expect(statuses).toEqual(["on"]);
+    expect(errors).not.toHaveBeenCalled();
+
+    server.refuse = null;
+    await nextPoll();
+    expect(statuses).toEqual(["on"]);
+    expect(errors).not.toHaveBeenCalled();
+  });
+
+  // Failure: a server that stays unreachable after a wake is never reported, and the tray says notifications work.
+  it("reports and logs a poll with no answer once the 15 seconds are over", async () => {
+    await wokenWith(new TypeError("fetch failed"));
+    await nextPoll();
+    expect(statuses).toEqual(["on"]);
+
+    await nextPoll();
+    expect(statuses).toEqual(["on", "waiting"]);
+    expect(errors).toHaveBeenCalledOnce();
+  });
+
+  // Failure: the server's real answer after a wake, such as asking for a sign-in, is held back.
+  it("reports a refusal at once, also within the 15 seconds", async () => {
+    await wokenWith(401);
+
+    expect(statuses).toEqual(["on", "signed-out"]);
+  });
+});

@@ -74,4 +74,25 @@ describe("local start errors", () => {
     await waitForText(errorPage, "#error-title", "POD_MISSING");
     await waitForText(errorPage, "#error-message", "The Turnstone pod does not exist on the Podman machine.");
   });
+
+  // Failure: a machine whose user has passwordless sudo runs the agent anyway, and sudo mounts any drive past the
+  // folder scoping (ADR-05).
+  it("shows MACHINE_NOT_HARDENED with the gap, and never starts the pod, when the machine has a gap", async () => {
+    const { port } = await reservedConsole();
+    const app = await launchApp({
+      settings: { mode: "local" },
+      podmanState: { machine: "running", pod: "Exited", hardening: "gap" },
+      consolePort: port,
+    });
+
+    const errorPage = await app.findPage(urlEndsWith("local-error.html"), { description: "local error page" });
+    await waitForText(errorPage, "#error-title", "MACHINE_NOT_HARDENED");
+    await waitForText(
+      errorPage,
+      "#error-message",
+      "The Turnstone machine's safety settings are not holding, so Turnstone was not started.",
+    );
+    await waitForText(errorPage, "#error-detail", "the machine user can use sudo without a password");
+    expect(app.readPodmanLog()).not.toContain("--connection turnstone pod start turnstone");
+  });
 });
