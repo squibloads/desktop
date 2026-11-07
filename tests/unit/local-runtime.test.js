@@ -266,29 +266,71 @@ describe("LocalRuntime machine hardening", () => {
     expect(calls).not.toContain(POD_START);
   });
 
-  // Failure: a check whose binary is missing reads as a failed check, so the user is not told to install Podman.
-  it("reports PODMAN_NOT_FOUND when podman disappears before the check", async () => {
-    const missing = Object.assign(new Error("spawn podman ENOENT"), { code: "ENOENT" });
-    const { rt } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: missing });
-    await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_NOT_FOUND" });
+  // Failure: a check that failed with nothing on stderr shows its command line, the whole encoded script, as the detail.
+  it("never shows the command line as the detail when podman said nothing", async () => {
+    const silent = Object.assign(new Error(`Command failed: podman ${HARDEN}`), { code: 255 });
+    const { rt } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: silent, [STOP]: "" });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("MACHINE_CHECK_FAILED");
+    expect(err.detail).toBe("podman exited with code 255 and printed nothing");
   });
 
-  // Failure: a report cut off part way reads as a clean machine, because the gaps it never reached are not in it.
-  it("reports MACHINE_CHECK_FAILED when the report has no end line", async () => {
+  // Failure: a check that hung until runPodman's timeout killed it reads as a check that failed for no reason.
+  it("says a check that ran out of time was stopped", async () => {
+    const killed = Object.assign(new Error(`Command failed: podman ${HARDEN}`), { killed: true, signal: "SIGTERM", code: null });
+    const { rt } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: killed, [STOP]: "" });
+    const err = await rt.start().catch((e) => e);
+    expect(err.detail).toBe("podman did not finish in time and was stopped");
+  });
+
+  // Failure: a pod left running from an earlier session keeps running on a machine the check could not vouch for.
+  it("stops a pod left running when the check cannot run", async () => {
+    const failure = new Error(`Command failed: podman ${HARDEN}\nError: ssh: handshake failed`);
+    const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: failure, [STOP]: "" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_CHECK_FAILED" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, STOP]);
+  });
+
+  // Failure: a check whose binary is missing reads as a failed check, so the user is not told to install Podman.
+  it("reports PODMAN_NOT_FOUND when podman disappears before the check, and calls nothing more", async () => {
+    const missing = Object.assign(new Error("spawn podman ENOENT"), { code: "ENOENT" });
+    const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: missing });
+    await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_NOT_FOUND" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN]);
+  });
+
+  // Failure: a report cut off part way reads as a clean machine, because the gaps it never reached are not in it, or
+  // the pod left running keeps running.
+  it("reports MACHINE_CHECK_FAILED when the report has no end line, and stops a pod left running", async () => {
     const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [HARDEN]: "wslconf=ok\nsudo=refused\n", [STOP]: "" });
     await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_CHECK_FAILED" });
-    expect(calls).not.toContain(POD_STATE);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, STOP]);
   });
 
-  // Failure: a machine that will not restart after its settings were put back starts the pod on the old settings.
-  it("reports MACHINE_RESTART_FAILED when the restart fails, and never reaches the pod", async () => {
+  // Failure: a machine that will not restart after its settings were put back starts the pod on the old settings, or
+  // a stop that failed leaves the pod running on them.
+  it("reports MACHINE_RESTART_FAILED when the restart fails, stops a pod left running, and never reaches the pod", async () => {
     const { rt, calls } = make({
       [MACHINE_LIST]: machines(true),
       [HARDEN]: "wslconf=rewritten\nsudo=refused\nend=ok\n",
       [MACHINE_STOP]: new Error("Error: machine stop failed"),
+      [STOP]: "",
     });
     await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_RESTART_FAILED" });
-    expect(calls).not.toContain(POD_STATE);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, MACHINE_STOP, STOP]);
+  });
+
+  // Failure: a restart that came back down halfway leaves the pod's stop unattempted, or its failure replaces the code.
+  it("still reports MACHINE_RESTART_FAILED when the machine will not come back and the pod stop fails", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: machines(true),
+      [HARDEN]: "wslconf=rewritten\nsudo=refused\nend=ok\n",
+      [MACHINE_STOP]: "",
+      [MACHINE_START]: new Error("Error: machine start failed"),
+      [STOP]: new Error("Error: machine turnstone is not running"),
+    });
+    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_RESTART_FAILED" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, MACHINE_STOP, MACHINE_START, STOP]);
   });
 
   // Failure: quitting during the restart lets the start carry on and bring the pod up after the quit.

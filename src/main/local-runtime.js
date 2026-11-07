@@ -42,6 +42,10 @@ class LocalRuntimeError extends Error {
   }
 }
 
+// The machine check's failures that leave the machine unverified. A pod left running is stopped for each. A missing
+// podman cannot stop anything, and a cancelled start leaves the pod to the stop that cancelled it.
+const UNVERIFIED_MACHINE = new Set(["MACHINE_NOT_HARDENED", "MACHINE_CHECK_FAILED", "MACHINE_RESTART_FAILED"]);
+
 function podArgs(args) {
   return ["--connection", PODMAN_CONNECTION, ...args];
 }
@@ -112,13 +116,18 @@ function describeHealth(health) {
   return `status=${String(health.status)}, ${nodes}`;
 }
 
-// What a failed podman call said, without its first line: execFile puts the whole command line there, and for the
-// machine check that is a long encoded script that says nothing about what went wrong.
+// What a failed podman call said, never its command line: execFile puts the whole command line in the first line, and
+// for the machine check that is a long encoded script that says nothing about what went wrong. With nothing on stderr,
+// such as a call runPodman's timeout killed, the detail says how the call ended instead.
 function withoutCommandLine(err) {
   const message = String((err && err.message) || "");
   const lines = message.split(/\r?\n/);
   const rest = lines.slice(1).join("\n").trim();
-  return rest || lines[0] || "podman failed with no message";
+  if (rest) return rest;
+  if (err && err.killed) return "podman did not finish in time and was stopped";
+  if (lines[0] && !lines[0].startsWith("Command failed:")) return lines[0];
+  if (err && typeof err.code === "number") return `podman exited with code ${err.code} and printed nothing`;
+  return "podman failed with no message";
 }
 
 /**
@@ -269,10 +278,22 @@ class LocalRuntime {
 
   /**
    * ADR-05: the machine's own settings keep the Windows host out of it, and nothing in the machine holds them in
-   * place, so they are put back on every start and the gaps they close are checked before the pod runs. A gap stops
-   * the start, and a pod left running from before is stopped, so the agent never runs on a machine with a gap.
+   * place, so they are put back on every start and the gaps they close are checked before the pod runs. A gap, a check
+   * that could not run and a restart that failed all stop the start, and each stops a pod left running from before,
+   * so the agent never runs on a machine nobody has shown to be safe.
    */
   async _hardenMachine() {
+    try {
+      await this._assertHardened();
+    } catch (err) {
+      if (err && UNVERIFIED_MACHINE.has(err.code)) {
+        await this.run(podArgs(["pod", "stop", POD])).catch(() => {});
+      }
+      throw err;
+    }
+  }
+
+  async _assertHardened() {
     let report = await this._checkMachine();
     this._checkCancelled();
     if (report.wslconf === "rewritten") {
@@ -285,9 +306,7 @@ class LocalRuntime {
       this._checkCancelled();
     }
     const gaps = hardeningGaps(report);
-    if (gaps.length === 0) return;
-    await this.run(podArgs(["pod", "stop", POD])).catch(() => {});
-    throw new LocalRuntimeError("MACHINE_NOT_HARDENED", gaps.join("; "));
+    if (gaps.length > 0) throw new LocalRuntimeError("MACHINE_NOT_HARDENED", gaps.join("; "));
   }
 
   // One run of the machine script, as root. A report without its end line was cut short, so it is a failed check,
