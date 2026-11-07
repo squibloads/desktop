@@ -98,6 +98,8 @@ The app never stops the Podman machine. If you switch away from Local mode durin
 
 The app checks each service every 5 seconds. When a service changes from not OK to OK, its view recovers on its own: a working page is reloaded, and a view showing an error page loads its address again.
 
+When the PC sleeps, the checks stop and the one in flight is cancelled, so a sleep does not show as a disconnect. On wake, the app checks at once instead of waiting for the next 5-second check. The log notes each sleep and wake (`power: suspend, polls paused`, `power: resume, polling now`).
+
 ### System tray
 
 - **Icon colour:** green when every active service is Connected, yellow when some are, red when none are. Grey until the first check.
@@ -114,6 +116,7 @@ Notifications run in **Server Only** and **Both** modes only. Every 10 seconds t
 - The name is the workstream's name, otherwise its ID. With neither, the text starts `A workstream`. The model can set a workstream's name, so the notification quotes it and shows only the first 40 characters of the workstream's name, on one line, with `…` where it was cut. Invisible characters are dropped, and fullwidth letters show as plain ones. Quote marks of any kind show as one single quote, and `<`, `>` and `&` as `‹`, `›` and `＆`.
 - Only your own workstreams notify, even on a server where you can see other users' workstreams.
 - A workstream that already needed you when notifications started does not notify. They start again, and only record where things stand, when the app starts, when the mode or the Server URL changes, when you or another user signs in, and after the server refused the requests or answered in a form the app cannot read.
+- A sleep does not start them again. While the PC sleeps, the requests stop and the one in flight is cancelled, and the tray line stays as it was. On wake the app asks at once, so a workstream that came to need you while the PC slept notifies then.
 
 These requests carry the cookies the Server view holds for the server, its sign-in among them, so notifications need no setting of their own. A cookie does not depend on the port, so a Console on the same host adds its cookies too, as it does for the Server view. They are the only requests the app itself sends with cookies: health checks carry none. They go only to the Server URL, and a redirect is not followed. An answer is dropped when those cookies changed while it was on its way, as when you sign out or another user signs in, so one user's workstreams never notify after another has signed in.
 
