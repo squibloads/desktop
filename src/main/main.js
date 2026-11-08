@@ -42,11 +42,18 @@ const { firstConfigError } = require("./runtime-config.js");
 const { createRedirectRefusals } = require("./redirect-refusals.js");
 const { installEventPlan, runInstallEvent } = require("./install-events.js");
 const { watchSleep } = require("./power-events.js");
+const { claimSingleInstance, bringToFront } = require("./single-instance.js");
 const { spawn } = require("node:child_process");
 
 // Set when Squirrel started this run for an install, update or uninstall, which whenReady answers instead of starting
 // the app; see install-events.js.
 const installEvent = installEventPlan(process.argv, process.execPath);
+
+// One copy at a time; see single-instance.js. A Squirrel event run skips the lock: Update.exe starts it while the app
+// may be open, and it must still make its shortcut call. A copy that loses the lock quits before whenReady builds
+// anything, so it never reads settings, starts Local mode or stops the pod. mainWindow is read at each launch.
+const ownsInstance = installEvent !== null || claimSingleInstance(app, () => bringToFront(mainWindow));
+if (!ownsInstance) app.quit();
 
 // Every web contents the app makes gets the window-open rule as it is created, before a page can load in it: the
 // main window's own, the shell, both views and Settings, and any added later. Nothing else sets a handler, so none
@@ -745,6 +752,8 @@ app.whenReady().then(async () => {
     runInstallEvent(installEvent, { spawn, exit: (code) => app.exit(code) });
     return;
   }
+  // Another copy holds the lock and this one is quitting: build nothing.
+  if (!ownsInstance) return;
   // Checked in every mode, before anything reads the overrides: a bad value stops the app here
   // with a message, instead of failing later inside Local mode.
   const configError = firstConfigError();
@@ -825,6 +834,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", async () => {
+  if (!ownsInstance) return;
   if (!mainWindow) {
     if (!settings) {
       settings = await SettingsStore.create();

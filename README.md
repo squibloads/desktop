@@ -115,6 +115,10 @@ When the PC sleeps, the checks stop and the one in flight is cancelled, so a sle
 - **Menu:** a read-only status line for each active service (for example `Server: Connected`). Local and Console Only show only Console, and Server Only shows only Server. In Server Only and Both, a line then says whether notifications work, from the end of the first poll on (see [Notifications](#notifications)). Then **Show Window**, **Settings...**, and **Quit**. **Quit** exits the app and applies the *When the app quits* setting.
 - On **Windows and Linux**, closing the window quits the app. On **macOS**, the app keeps running after the window closes. On macOS, use the Dock icon, not the tray, to reopen a closed window.
 
+### One copy at a time
+
+The app runs one copy at a time. Starting it again brings the open window to the front, restoring it if it is minimized and showing it if it is hidden in the tray, and the new copy exits. The new copy does nothing else: it does not start, check or stop the Local machine or pod, and the *When the app quits* setting does not apply to it. The lock belongs to the user-data folder, so a copy started with a different `--user-data-dir` keeps its own settings and runs alongside.
+
 ### Notifications
 
 Notifications run in **Server Only** and **Both** modes only. Every 10 seconds the app asks the server for the workstreams of the user signed in to the Server view, counting from the end of the last request, and notifies when one of that user's workstreams comes into a state that needs them.
