@@ -6,8 +6,9 @@
 // not leave an Electron process or a fake Console running into the next test.
 
 import { _electron as electron } from "playwright-core";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,6 +20,9 @@ import { checkPodmanOverride, checkSeededSettings, pathWithoutPodman } from "./s
 // Electron's Windows argv parsing and glues the next argument onto the app path.
 const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const FAKE_PODMAN = fileURLToPath(new URL("./fake-podman.js", import.meta.url));
+// The Electron binary Playwright launches, for a second copy started outside Playwright: a copy that exits at once has
+// no debugger connection for Playwright to wait on.
+const ELECTRON = createRequire(import.meta.url)("electron");
 
 // Bounds app.close(). The normal path resolves when the process exits. The guard sits well under
 // the 60 s hookTimeout (vitest.config.mjs), so a hung quit fails its own test, and its process tree
@@ -287,11 +291,77 @@ ${appOutput || "(none)"}`,
     return found;
   }
 
+  // Second copies started with spawnSecondInstance, so close() can end any still running.
+  const seconds = new Set();
+
+  /**
+   * Starts another copy of the app the way a second double-click would: same environment and, by default, this app's
+   * user-data directory. With ownUserData it gets a directory of its own, seeded for console mode, so it holds a lock
+   * of its own; its console is ownConsoleUrl, or this app's closed port. close() kills a copy that is still running.
+   */
+  function spawnSecondInstance({ ownUserData = false, ownConsoleUrl = consoleUrl } = {}) {
+    let dir = userDataDir;
+    if (ownUserData) {
+      dir = mkdtempSync(join(tmpdir(), "turnstone-e2e-"));
+      writeFileSync(
+        join(dir, "turnstone-desktop.json"),
+        JSON.stringify({ hasLaunched: true, mode: "console", consoleUrl: ownConsoleUrl }),
+      );
+    }
+    const secondArgs = [REPO_ROOT, `--user-data-dir=${dir}`];
+    if (process.env.CI) secondArgs.push("--no-sandbox");
+    const child = spawn(ELECTRON, secondArgs, { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.on("data", (chunk) => {
+        output = (output + chunk).slice(-4000);
+      });
+    }
+    const exited = new Promise((resolveExit) => {
+      child.once("exit", (code, signal) => resolveExit({ code, signal }));
+    });
+    seconds.add({ child, ownDir: ownUserData ? dir : null });
+    return {
+      exited,
+      running: () => child.exitCode === null && child.signalCode === null,
+      output: () => output,
+    };
+  }
+
+  // Every copy is killed and every directory removed even when one kill fails; the first failure is rethrown after.
+  async function endSecondInstances() {
+    let firstError = null;
+    for (const { child, ownDir } of seconds) {
+      try {
+        if (child.exitCode === null && child.signalCode === null) {
+          killTree(child);
+          await waitForGone(child);
+        }
+      } catch (err) {
+        firstError ??= err;
+      }
+      try {
+        if (ownDir) rmSync(ownDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch (err) {
+        // Windows can still hold a file after the retries; the next copy is ended all the same.
+        firstError ??= err;
+      }
+    }
+    seconds.clear();
+    if (firstError) throw firstError;
+  }
+
   async function close() {
     if (closed) return;
     closed = true;
     live.delete(handle);
+    // A second copy that would not die must not keep this app running: the quit goes on, and the failure is
+    // rethrown once this app is gone.
+    let secondsError = null;
     try {
+      await endSecondInstances().catch((err) => {
+        secondsError = err;
+      });
       await quitWithGuard(app, () => `
 podman calls: ${JSON.stringify(readLines(logPath))}
 app output:
@@ -301,6 +371,7 @@ ${appOutput || "(none)"}`);
       finalLog ??= readLines(logPath);
       rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
+    if (secondsError) throw secondsError;
   }
 
   const handle = {
@@ -308,6 +379,7 @@ ${appOutput || "(none)"}`);
     userDataDir,
     findPage,
     close,
+    spawnSecondInstance,
     windowUrls: () => app.windows().map((w) => w.url()),
     /**
      * Runs a function in the main process, with Electron's modules as its first argument. Tests use it

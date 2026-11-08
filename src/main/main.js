@@ -42,11 +42,19 @@ const { firstConfigError } = require("./runtime-config.js");
 const { createRedirectRefusals } = require("./redirect-refusals.js");
 const { installEventPlan, runInstallEvent } = require("./install-events.js");
 const { watchSleep } = require("./power-events.js");
+const { claimSingleInstance, bringToFront, reopensOnSecondLaunch } = require("./single-instance.js");
 const { spawn } = require("node:child_process");
 
 // Set when Squirrel started this run for an install, update or uninstall, which whenReady answers instead of starting
 // the app; see install-events.js.
 const installEvent = installEventPlan(process.argv, process.execPath);
+
+// One copy at a time; see single-instance.js. A Squirrel event run skips the lock: Update.exe starts it while the app
+// may be open, and it must still make its shortcut call. A copy that loses the lock quits before whenReady builds
+// anything, so it never reads settings, starts Local mode or stops the pod. The first copy answers each later launch
+// with onSecondLaunch.
+const ownsInstance = installEvent !== null || claimSingleInstance(app, onSecondLaunch);
+if (!ownsInstance) app.quit();
 
 // Every web contents the app makes gets the window-open rule as it is created, before a page can load in it: the
 // main window's own, the shell, both views and Settings, and any added later. Nothing else sets a handler, so none
@@ -73,6 +81,8 @@ const notificationLifecycle = createNotificationLifecycle(
 );
 let localRuntime = null;
 let quitting = false;
+// Set once startup has built the main window, so a second launch before then does not build another beside it.
+let windowBuilt = false;
 
 // ─── Window Creation ─────────────────────────────────────────────────────
 
@@ -745,6 +755,8 @@ app.whenReady().then(async () => {
     runInstallEvent(installEvent, { spawn, exit: (code) => app.exit(code) });
     return;
   }
+  // Another copy holds the lock and this one is quitting: build nothing.
+  if (!ownsInstance) return;
   // Checked in every mode, before anything reads the overrides: a bad value stops the app here
   // with a message, instead of failing later inside Local mode.
   const configError = firstConfigError();
@@ -780,6 +792,7 @@ app.whenReady().then(async () => {
   });
 
   createMainWindow();
+  windowBuilt = true;
   startLocalRuntime();
   setupHealthPoller();
   settings.hasLaunched = true;
@@ -824,7 +837,8 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("activate", async () => {
+/** Builds the main window again after it closed, as the macOS Dock icon does. */
+async function reopenWindow() {
   if (!mainWindow) {
     if (!settings) {
       settings = await SettingsStore.create();
@@ -832,7 +846,23 @@ app.on("activate", async () => {
     createMainWindow();
     startLocalRuntime();
   }
+}
+
+app.on("activate", async () => {
+  if (!ownsInstance) return;
+  await reopenWindow();
 });
+
+/**
+ * Another launch of the app, handed over by single-instance.js: bring the window forward, or on macOS, where the app
+ * outlives its window, build it again. A failed reopen is logged, since nothing awaits this handler.
+ */
+function onSecondLaunch() {
+  if (bringToFront(mainWindow)) return;
+  if (reopensOnSecondLaunch({ platform: process.platform, started: windowBuilt })) {
+    reopenWindow().catch((err) => console.error("second launch: could not reopen the window:", err));
+  }
+}
 
 app.on("before-quit", (event) => {
   // Stop the pod before exiting unless the user chose to keep it. Keyed on
