@@ -234,6 +234,40 @@ describe("README timing claims match the code", () => {
     expect(initGetsIt).toBe(true);
   });
 
+  // Failure: the README promises a different Turnstone than the release pins, or a digest that is not the one pulled.
+  it("the README names the pinned Turnstone version and its digest", () => {
+    const { TURNSTONE_IMAGE } = require("../../src/main/turnstone-image.js");
+
+    expect(readme).toContain(`Turnstone ${TURNSTONE_IMAGE.version}`);
+    expect(readme).toContain(TURNSTONE_IMAGE.digest);
+  });
+
+  // Failure: the README's free-space rule and the check differ, so a user frees the wrong amount.
+  it("the README's free space before a download equals MIN_FREE_BYTES", () => {
+    const readmeGb = readmeMatch(/needs (\d+) GB free/);
+    // Written as a product, such as 5 * 1024 * 1024 * 1024.
+    const codeBytes = capture(/const MIN_FREE_BYTES = ([\d *]+);/, localRuntime, "MIN_FREE_BYTES")
+      .split("*")
+      .reduce((product, factor) => product * Number(factor.trim()), 1);
+
+    expect(Number(readmeGb) * 1024 ** 3).toEqual(codeBytes);
+  });
+
+  // Failure: the README says the download gets 15 minutes, but the pull is cut off at another time, or a quit cannot
+  // end it.
+  it("the download's 15 minutes equal PULL_TIMEOUT_MS, and the pull carries the quit's signal", () => {
+    const readmeMinutes = readmeMatch(/It allows the download (\d+) minutes/);
+    const codeMs = capture(/const PULL_TIMEOUT_MS = ([\d *]+);/, localRuntime, "PULL_TIMEOUT_MS")
+      .split("*")
+      .reduce((product, factor) => product * Number(factor.trim()), 1);
+    const pullGetsIt = /this\.run\(podArgs\(\["pull", ref\]\), \{ timeoutMs: PULL_TIMEOUT_MS, signal: abort\.signal \}\)/.test(
+      localRuntime,
+    );
+
+    expect(Number(readmeMinutes) * 60000).toEqual(codeMs);
+    expect(pullGetsIt).toBe(true);
+  });
+
   // Failure: the podman names differ between the constants and the README, so the manual fix the README gives targets a machine, pod or connection the app does not use.
   it("MACHINE, POD and PODMAN_CONNECTION are all turnstone, and the README commands match the args the app builds", () => {
     const names = {

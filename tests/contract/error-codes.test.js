@@ -11,7 +11,9 @@ function read(relative) {
 // The codes the app can show or log, pinned. Adding a code to the source changes
 // the derived set, so this list and a README row must change with it.
 const CODES = [
+  "DISK_SPACE_LOW",
   "HEALTH_TIMEOUT",
+  "IMAGE_PULL_FAILED",
   "MACHINE_CHECK_FAILED",
   "MACHINE_CREATE_FAILED",
   "MACHINE_LIST_FAILED",

@@ -2,6 +2,8 @@ const { execFile } = require("child_process");
 const { podmanCommand, localConsoleUrl } = require("./runtime-config.js");
 const { sessionFetch, isRefusedRedirect } = require("./session-fetch.js");
 const { machineCheckCommand, parseMachineReport, hardeningGaps } = require("./machine-hardening.js");
+const { TURNSTONE_IMAGE, pinnedImageRef } = require("./turnstone-image.js");
+const { freeDiskBytes: readFreeDiskBytes, podmanDataDir } = require("./disk-space.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
@@ -18,6 +20,10 @@ const MACHINE_USER = "user";
 const MACHINE_INIT = ["machine", "init", MACHINE, "--username", MACHINE_USER];
 // Init downloads the machine image, which every other call's two minutes do not cover on most links.
 const INIT_TIMEOUT_MS = 15 * 60 * 1000;
+// The pinned image is about 1.3 GB, so its pull gets the same allowance.
+const PULL_TIMEOUT_MS = 15 * 60 * 1000;
+// Free space each download needs first, on the drive the machine's disk grows on (NFR-04).
+const MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024;
 
 const USER_MESSAGES = {
   PODMAN_NOT_FOUND:
@@ -25,6 +31,9 @@ const USER_MESSAGES = {
   PODMAN_TOO_OLD:
     "Podman is older than 6.1.4, which Turnstone needs to create its machine. Update Podman, then reopen Turnstone.",
   MACHINE_CREATE_FAILED: "The Turnstone Podman machine could not be created.",
+  DISK_SPACE_LOW:
+    "Turnstone could not confirm 5 GB of free disk space for its download. Free up space, then reopen Turnstone.",
+  IMAGE_PULL_FAILED: "The Turnstone image could not be downloaded.",
   MACHINE_LIST_FAILED:
     "Podman answered, but its machine list could not be read.",
   MACHINE_START_FAILED: "The Turnstone Podman machine would not start.",
@@ -172,6 +181,8 @@ class LocalRuntime {
     nodeTimeoutMs = 180000,
     healthIntervalMs = 1000,
     onProgress = null,
+    freeDiskBytes = readFreeDiskBytes,
+    diskPath = podmanDataDir(),
   } = {}) {
     this.run = run;
     this.fetchHealth = fetchHealth;
@@ -181,13 +192,16 @@ class LocalRuntime {
     this.nodeTimeoutMs = nodeTimeoutMs;
     this.healthIntervalMs = healthIntervalMs;
     this.onProgress = onProgress;
+    this.freeDiskBytes = freeDiskBytes;
+    this.diskPath = diskPath;
     // True once a pod call has succeeded past the machine check, so quit can
     // stop a pod this session started without touching one it never saw.
     this.started = false;
     this._starting = null;
     this._cancelled = false;
-    // Set while a machine create runs, so a quit can end it instead of waiting up to its 15 minutes.
-    this._createAbort = null;
+    // Set while a download runs (the machine create or the image pull), so a quit can end it instead of waiting up to
+    // its 15 minutes.
+    this._downloadAbort = null;
     // Latest progress stage; the loading page asks for it when it attaches
     // after the event was already sent.
     this.stage = null;
@@ -234,7 +248,15 @@ class LocalRuntime {
     }
     await this._hardenMachine();
     this._progress("pod");
-    const state = await this._podState();
+    let state;
+    try {
+      state = await this._podState();
+    } catch (err) {
+      // A missing pod is a first run: the pinned image comes in now. Creating the pod from it is #1681; until then
+      // the start still stops at POD_MISSING, with the image in place.
+      if (err && err.code === "POD_MISSING") await this._ensureImage();
+      throw err;
+    }
     this.started = true;
     this._checkCancelled();
     if (state !== "Running") {
@@ -267,8 +289,9 @@ class LocalRuntime {
 
   async stop() {
     this._cancelled = true;
-    // A machine create can run for minutes; it is ended, and its half-made machine removed, rather than waited for.
-    if (this._createAbort) this._createAbort.abort();
+    // A machine create or an image pull can run for minutes; it is ended rather than waited for, and a create's
+    // half-made machine is removed.
+    if (this._downloadAbort) this._downloadAbort.abort();
     // A pod start still in flight would bring the pod back up after this
     // stop, so let it settle first; its own error is reported to its caller.
     if (this._starting) await this._starting.catch(() => {});
@@ -318,10 +341,11 @@ class LocalRuntime {
    */
   async _createMachine() {
     await this._checkPodmanVersion();
+    this._checkDiskSpace();
     this._checkCancelled();
     this._progress("create");
     const abort = new AbortController();
-    this._createAbort = abort;
+    this._downloadAbort = abort;
     try {
       await this.run(MACHINE_INIT, { timeoutMs: INIT_TIMEOUT_MS, signal: abort.signal });
     } catch (err) {
@@ -334,7 +358,7 @@ class LocalRuntime {
         cleanup ? `${reason}\nThe half-made machine could not be removed: ${cleanup}` : reason,
       );
     } finally {
-      this._createAbort = null;
+      this._downloadAbort = null;
     }
   }
 
@@ -367,6 +391,93 @@ class LocalRuntime {
     if (compareVersions(parsed.slice(1).map(Number), MIN_PODMAN) < 0) {
       throw new LocalRuntimeError("PODMAN_TOO_OLD", `found Podman ${text}; ${MIN_PODMAN.join(".")} or later is needed`);
     }
+  }
+
+  // Before each download. A free-space read that fails is an error, never taken as enough.
+  _checkDiskSpace() {
+    const gb = (bytes) => (bytes / 1024 ** 3).toFixed(1);
+    let free;
+    try {
+      free = this.freeDiskBytes(this.diskPath);
+    } catch (err) {
+      throw new LocalRuntimeError(
+        "DISK_SPACE_LOW",
+        `the free space on the drive holding ${this.diskPath} could not be read: ${err && err.message}`,
+      );
+    }
+    if (!(free >= MIN_FREE_BYTES)) {
+      throw new LocalRuntimeError(
+        "DISK_SPACE_LOW",
+        `${gb(MIN_FREE_BYTES)} GB needed on the drive holding ${this.diskPath}; ${gb(free)} GB free`,
+      );
+    }
+  }
+
+  /**
+   * First run: the pod needs the image this release pins (ADR-03). It is pulled by digest when the machine does not
+   * have it, after the disk check and with a quit able to end the pull, and then its digest is checked (D-2). An
+   * interrupted pull leaves no image under the pinned reference, so a Retry pulls again; nothing is built on the image
+   * until its digest checks out.
+   */
+  async _ensureImage() {
+    const ref = pinnedImageRef();
+    if (await this._imageExists(ref)) return;
+    this._checkDiskSpace();
+    this._checkCancelled();
+    this._progress("image");
+    const abort = new AbortController();
+    this._downloadAbort = abort;
+    try {
+      await this.run(podArgs(["pull", ref]), { timeoutMs: PULL_TIMEOUT_MS, signal: abort.signal });
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err, "IMAGE_PULL_FAILED");
+      if (abort.signal.aborted) throw new LocalRuntimeError("START_CANCELLED", "stopped during the image download");
+      throw new LocalRuntimeError("IMAGE_PULL_FAILED", withoutCommandLine(err));
+    } finally {
+      this._downloadAbort = null;
+    }
+    this._checkCancelled();
+    await this._verifyImageDigest(ref);
+  }
+
+  // `image exists` answers "no" with exit code 1. Any other failure is an error, never read as "not there".
+  async _imageExists(ref) {
+    try {
+      await this.run(podArgs(["image", "exists", ref]));
+      return true;
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err, "IMAGE_PULL_FAILED");
+      if (err && err.code === 1) return false;
+      throw new LocalRuntimeError("IMAGE_PULL_FAILED", withoutCommandLine(err));
+    }
+  }
+
+  // The pulled image must carry the pinned index digest among its repo digests. One that does not, or whose digests
+  // cannot be read, is removed, so the next start does not find it "there" and skip the check.
+  async _verifyImageDigest(ref) {
+    let out;
+    try {
+      out = await this.run(podArgs(["image", "inspect", ref, "--format", "{{json .RepoDigests}}"]));
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err, "IMAGE_PULL_FAILED");
+      await this.run(podArgs(["image", "rm", ref])).catch(() => {});
+      throw new LocalRuntimeError(
+        "IMAGE_PULL_FAILED",
+        `the downloaded image's digest could not be checked, so it was removed: ${withoutCommandLine(err)}`,
+      );
+    }
+    let digests = null;
+    try {
+      digests = JSON.parse(out);
+    } catch {
+      // Unreadable output is a failed check, handled below.
+    }
+    if (Array.isArray(digests) && digests.includes(ref)) return;
+    await this.run(podArgs(["image", "rm", ref])).catch(() => {});
+    throw new LocalRuntimeError(
+      "IMAGE_PULL_FAILED",
+      `the downloaded image does not carry the pinned digest ${TURNSTONE_IMAGE.digest}; it was removed`,
+    );
   }
 
   /**

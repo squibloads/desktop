@@ -1,4 +1,4 @@
-// Stands in for the podman binary. It implements only the ten calls local-runtime.js makes,
+// Stands in for the podman binary. It implements only the fourteen calls local-runtime.js makes,
 // each matched as its exact argv, and keeps the machine and pod state in a JSON file so a test
 // can change them while the app is running.
 //
@@ -16,6 +16,8 @@
 // failStart makes `machine start` and `pod start` exit 1; failStop does the same for `pod stop`.
 // failInit makes `machine init` exit 1 after leaving a half-made machine, as an interrupted create can.
 // podmanVersion is what `version` reports, "6.1.4" when absent.
+// image:     "present" (the default when absent) | "missing". failPull makes `pull` exit 1 and leaves it
+//            missing; wrongDigest makes the image's digests leave out the pinned one.
 //
 // Any other call exits 1, so a new podman call in the app fails the test that makes it instead of
 // passing silently.
@@ -28,9 +30,16 @@ const MACHINE = "turnstone";
 const POD = "turnstone";
 const CONNECTION = "turnstone";
 
-// The ten calls, as the argv local-runtime.js passes them. Matched element by element, so the same
+// The fourteen calls, as the argv local-runtime.js passes them. Matched element by element, so the same
 // words split differently are not one of these calls. The machine check is this prefix and then
 // exactly one argument, the encoded script.
+const PINNED = require("../../src/main/turnstone-image.js").pinnedImageRef();
+// The linux/amd64 manifest inside the pinned index, as a real pull lists it beside the index digest.
+const PLATFORM = "ghcr.io/turnstonelabs/turnstone@sha256:48a7730e76096cba73d648c0f447090596dfd3721d06fc9ca2a35dcce5aaa752";
+const IMAGE_EXISTS = ["--connection", CONNECTION, "image", "exists", PINNED];
+const PULL = ["--connection", CONNECTION, "pull", PINNED];
+const IMAGE_DIGESTS = ["--connection", CONNECTION, "image", "inspect", PINNED, "--format", "{{json .RepoDigests}}"];
+const IMAGE_RM = ["--connection", CONNECTION, "image", "rm", PINNED];
 const VERSION = ["version", "--format", "{{.Client.Version}}"];
 const MACHINE_INIT = ["machine", "init", MACHINE, "--username", "user"];
 const MACHINE_RM = ["machine", "rm", "--force", MACHINE];
@@ -82,7 +91,22 @@ function save() {
   fs.writeFileSync(statePath, JSON.stringify(state));
 }
 
-if (sameArgv(args, VERSION)) {
+if (sameArgv(args, IMAGE_EXISTS)) {
+  // Exit 1 is podman's "no", not a failure.
+  if ((state.image ?? "present") !== "present") process.exit(1);
+} else if (sameArgv(args, PULL)) {
+  if (state.failPull) fail("Error: reading blob sha256:48a7: connection reset by peer");
+  state.image = "present";
+  save();
+  console.log("Writing manifest to image destination");
+} else if (sameArgv(args, IMAGE_DIGESTS)) {
+  if ((state.image ?? "present") !== "present") fail(`Error: no such image ${PINNED}`);
+  console.log(JSON.stringify(state.wrongDigest ? [PLATFORM] : [PLATFORM, PINNED]));
+} else if (sameArgv(args, IMAGE_RM)) {
+  state.image = "missing";
+  save();
+  console.log("Untagged");
+} else if (sameArgv(args, VERSION)) {
   console.log(state.podmanVersion ?? "6.1.4");
 } else if (sameArgv(args, MACHINE_INIT)) {
   if (state.machine !== "missing") fail(`Error: machine "${MACHINE}" already exists`);

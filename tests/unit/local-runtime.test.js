@@ -68,6 +68,9 @@ function make(script, opts = {}) {
     healthIntervalMs: 1,
     healthUrl: HEALTH_URL,
     onProgress: opts.onProgress,
+    // Plenty of space unless a test says otherwise; the real reading is covered in disk-space.test.js.
+    freeDiskBytes: opts.freeDiskBytes ?? (() => 100e9),
+    diskPath: "C:\\Users\\joe\\.local\\share\\containers\\podman\\machine",
   });
   return { rt, calls: runner.calls, fetchHealth, run: runner.run };
 }
@@ -290,6 +293,8 @@ describe("LocalRuntime.start", () => {
     const { rt } = make({
       [MACHINE_LIST]: machines(true),
       [POD_STATE]: new Error("no such pod turnstone"),
+      // The image is already there, so nothing is pulled.
+      [IMAGE_EXISTS]: "",
     });
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
   });
@@ -747,11 +752,170 @@ describe("LocalRuntime.starting", () => {
   });
 });
 
+// The pinned image and the calls that bring it in, as local-runtime.js passes them.
+const PINNED = "ghcr.io/turnstonelabs/turnstone@sha256:c98762f1c339986d84c255476d0fe188466bb13da1ccee695612ec3a83660d12";
+const PLATFORM = "ghcr.io/turnstonelabs/turnstone@sha256:48a7730e76096cba73d648c0f447090596dfd3721d06fc9ca2a35dcce5aaa752";
+const IMAGE_EXISTS = `--connection turnstone image exists ${PINNED}`;
+const PULL = `--connection turnstone pull ${PINNED}`;
+const IMAGE_DIGESTS = `--connection turnstone image inspect ${PINNED} --format {{json .RepoDigests}}`;
+const IMAGE_RM = `--connection turnstone image rm ${PINNED}`;
+// `image exists` answers "no" with exit code 1; anything else is a failure to answer.
+const IMAGE_ABSENT = Object.assign(new Error("Command failed: podman image exists"), { code: 1 });
+const NO_POD = new Error("Error: no such pod turnstone");
+// A machine that is up and hardened, with no pod yet: the state a first run reaches after the create.
+const NEW_MACHINE = { [MACHINE_LIST]: machines(true), [POD_STATE]: NO_POD };
+
+describe("LocalRuntime pinned image", () => {
+  // Failure: a first run has no image for the pod, and nothing fetches the one the release was tested with.
+  it("pulls the pinned image by digest when the pod is missing, checks its digest, then still reports POD_MISSING", async () => {
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: "",
+      [IMAGE_DIGESTS]: JSON.stringify([PLATFORM, PINNED]),
+    });
+    // Creating the pod is #1681; until then a start that has the image stops at the missing pod.
+    await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+  });
+
+  // Failure: every start downloads 1.3 GB again, though the image is already there.
+  it("does not pull when the pinned image is already there", async () => {
+    const { rt, calls } = make({ ...NEW_MACHINE, [IMAGE_EXISTS]: "" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS]);
+  });
+
+  // Failure: a download fills the disk, and the machine, the pod and the rest of the PC fail with it (NFR-04).
+  it("refuses to pull with less than 5 GB free, and says where and how much", async () => {
+    const { rt, calls } = make({ ...NEW_MACHINE, [IMAGE_EXISTS]: IMAGE_ABSENT }, { freeDiskBytes: () => 3e9 });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("DISK_SPACE_LOW");
+    expect(err.detail).toContain("GB free");
+    expect(err.detail).toContain("podman");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS]);
+  });
+
+  // Failure: the machine create downloads its image with no disk check, so the first download can fill the disk.
+  it("refuses to create the machine with less than 5 GB free", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: "[]", [VERSION]: "6.1.4\n" }, { freeDiskBytes: () => 1e9 });
+    await expect(rt.start()).rejects.toMatchObject({ code: "DISK_SPACE_LOW" });
+    expect(calls).toEqual([MACHINE_LIST, VERSION]);
+  });
+
+  // Failure: a free-space read that fails is taken as enough, so the check passes on a guess.
+  it("reports DISK_SPACE_LOW when the free space cannot be read", async () => {
+    const { rt } = make(
+      { ...NEW_MACHINE, [IMAGE_EXISTS]: IMAGE_ABSENT },
+      {
+        freeDiskBytes: () => {
+          throw new Error("EIO: i/o error, statfs");
+        },
+      },
+    );
+    await expect(rt.start()).rejects.toMatchObject({
+      code: "DISK_SPACE_LOW",
+      detail: expect.stringContaining("EIO"),
+    });
+  });
+
+  // Failure: the 1.3 GB pull gets the two minutes every other call gets, and is cut off on most links.
+  it("gives the pull a long time limit, and shows the image stage", async () => {
+    const stages = [];
+    const { rt, run } = make(
+      { ...NEW_MACHINE, [IMAGE_EXISTS]: IMAGE_ABSENT, [PULL]: "", [IMAGE_DIGESTS]: JSON.stringify([PINNED]) },
+      { onProgress: (stage) => stages.push(stage) },
+    );
+    await rt.start().catch(() => {});
+    const [, options] = run.mock.calls.find(([args]) => args.join(" ") === PULL);
+    expect(options?.timeoutMs).toBeGreaterThanOrEqual(15 * 60 * 1000);
+    expect(stages).toEqual(["machine", "pod", "image"]);
+  });
+
+  // Failure: a failed pull shows the whole podman command line, or a generic error, and the user cannot tell why.
+  it("reports IMAGE_PULL_FAILED with Podman's error, and checks no digest", async () => {
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: new Error("Command failed: podman pull\nError: reading blob: connection reset by peer"),
+    });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("IMAGE_PULL_FAILED");
+    expect(err.detail).toBe("Error: reading blob: connection reset by peer");
+    expect(calls).not.toContain(IMAGE_DIGESTS);
+  });
+
+  // Failure: an image that does not carry the pinned digest is used anyway, and the pod runs code nobody pinned (D-2).
+  it("refuses and removes an image that does not carry the pinned digest", async () => {
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: "",
+      [IMAGE_DIGESTS]: JSON.stringify([PLATFORM]),
+      [IMAGE_RM]: "",
+    });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("IMAGE_PULL_FAILED");
+    expect(err.detail).toContain("pinned digest");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
+  });
+
+  // Failure: a digest check that cannot run leaves the pulled image in place unchecked, against "check after every pull".
+  it("removes the pulled image when its digests cannot be read, and reports why", async () => {
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: "",
+      [IMAGE_DIGESTS]: new Error("Command failed: podman image inspect\nError: storage is locked"),
+      [IMAGE_RM]: "",
+    });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("IMAGE_PULL_FAILED");
+    expect(err.detail).toContain("Error: storage is locked");
+    expect(err.detail).not.toContain("Command failed");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
+  });
+
+  // Failure: podman failing to say whether the image is there is read as "not there", and a pull starts on a guess.
+  it("reports IMAGE_PULL_FAILED when podman cannot say whether the image is there", async () => {
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: Object.assign(new Error("Command failed: podman image exists\nError: storage is locked"), { code: 125 }),
+    });
+    await expect(rt.start()).rejects.toMatchObject({ code: "IMAGE_PULL_FAILED" });
+    expect(calls).not.toContain(PULL);
+  });
+
+  // Failure: quitting during the 1.3 GB pull waits for it to finish.
+  it("stops a pull when the app quits, without waiting for it", async () => {
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: (options) =>
+        new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })),
+          );
+        }),
+      [STOP]: "",
+    });
+    const starting = rt.start();
+    await vi.waitFor(() => expect(calls).toContain(PULL));
+
+    await rt.stop();
+
+    await expect(starting).rejects.toMatchObject({ code: "START_CANCELLED" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, STOP]);
+  });
+});
+
 describe("LocalRuntimeError messages", () => {
   const CODES = [
     "PODMAN_NOT_FOUND",
     "PODMAN_TOO_OLD",
     "MACHINE_CREATE_FAILED",
+    "DISK_SPACE_LOW",
+    "IMAGE_PULL_FAILED",
     "MACHINE_LIST_FAILED",
     "MACHINE_START_FAILED",
     "POD_MISSING",
