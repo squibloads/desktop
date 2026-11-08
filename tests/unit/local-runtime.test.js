@@ -210,18 +210,28 @@ describe("LocalRuntime.start", () => {
     expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_RM]);
   });
 
-  // Failure: a cleanup that fails replaces the reason the create failed, so the error page names the wrong problem.
-  it("keeps the init error when the cleanup fails too", async () => {
+  // Failure: a cleanup that fails replaces the reason the create failed, or vanishes silently, so a Retry meets the
+  // leftover WSL distribution and nothing says why.
+  it("keeps the init error, and says and logs that the cleanup failed too", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const { rt } = make({
       [MACHINE_LIST]: "[]",
       [VERSION]: "6.1.4\n",
       [MACHINE_INIT]: new Error("Command failed: podman machine init\nError: image download failed"),
-      [MACHINE_RM]: new Error("Error: machine turnstone does not exist"),
+      [MACHINE_RM]: new Error("Command failed: podman machine rm\nError: turnstone: VM does not exist"),
     });
-    await expect(rt.start()).rejects.toMatchObject({
-      code: "MACHINE_CREATE_FAILED",
-      detail: expect.stringContaining("image download failed"),
-    });
+    try {
+      const err = await rt.start().catch((e) => e);
+
+      expect(err.code).toBe("MACHINE_CREATE_FAILED");
+      expect(err.detail).toContain("image download failed");
+      expect(err.detail).toContain("The half-made machine could not be removed: Error: turnstone: VM does not exist");
+      expect(err.detail).not.toContain("Command failed");
+      expect(logged).toHaveBeenCalledWith("machine create cleanup failed:", "Error: turnstone: VM does not exist");
+    } finally {
+      // Restoring also clears the recorded calls, so it comes after the assertions.
+      logged.mockRestore();
+    }
   });
 
   it("treats unparseable machine list output as an error, not as empty", async () => {
