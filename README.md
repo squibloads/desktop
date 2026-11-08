@@ -53,7 +53,7 @@ Local mode runs Turnstone in a Podman pod on this PC and opens its Console at `h
 **Before you use it.** These must already exist:
 
 - Podman 6.1.4 or later is installed, and `podman` runs from the PATH the app sees.
-- A Podman connection named `turnstone`, with a pod named `turnstone` on it. The pod commands use this connection. The app does not create the pod yet.
+- A Podman connection named `turnstone`, with a pod named `turnstone` on it. The pod commands use this connection. The app does not create the pod yet, but on a first run it downloads the image the pod will need (below).
 - A Console that answers `/health` at `http://127.0.0.1:8090`.
 
 The Podman machine named `turnstone` need not exist: the app creates it on first run (below).
@@ -61,7 +61,9 @@ The Podman machine named `turnstone` need not exist: the app creates it on first
 **What happens on launch.** The loading screen, titled **Starting Local Turnstone**, shows these stages in order:
 
 1. **Starting the Podman machine.** If there is no `turnstone` machine, the app creates one first, and the stage reads **Creating the Podman machine (first run only; this can take several minutes)**: it checks that Podman is 6.1.4 or later, then runs `podman machine init turnstone --username user`, which downloads the machine image. It allows the create 15 minutes. A create that fails is removed (`podman machine rm --force turnstone`), so Retry starts clean. Quitting during the create ends it and removes the half-made machine, so the quit does not wait for it. If the `turnstone` machine is not running, the app starts it. Then it puts back and checks the machine's safety settings (below), which a new machine needs on its first start.
-2. **Starting Turnstone.** If the pod is not running, the app starts it. A pod that is already running is left alone.
+2. **Starting Turnstone.** If the pod is not running, the app starts it. A pod that is already running is left alone. If there is no pod, this is a first run, and the app first makes sure the machine has the Turnstone image this release pins (see [Releases](#releases)): when it does not, the stage reads **Downloading Turnstone (first run only; this can take several minutes)** while the app pulls the image by its digest, never by tag. It allows the download 15 minutes, and quitting during it ends the download. Then it checks that the image carries the pinned digest; one that does not is removed and the start stops with `IMAGE_PULL_FAILED`. An interrupted download leaves nothing under the pinned digest, so Retry downloads again. The app does not create the pod yet, so a first run then stops at `POD_MISSING`, with the image in place.
+
+   **Free space.** Before each download, the machine create and the image, the app checks that the drive holding Podman's machines (`%USERPROFILE%\.local\share\containers\podman\machine` on Windows) has room: Turnstone needs 5 GB free. With less, or if the free space cannot be read, the start stops with `DISK_SPACE_LOW`.
 3. **Waiting for the console.** The app checks `/health` once a second for up to 2 minutes, until it reports `ok`.
 4. **Waiting for the node to come online (this can take about a minute).** The app checks once a second until a node is registered, for up to 3 minutes. If none has registered after 3 minutes, the Console opens anyway, provided the Console is still healthy. If the Console stopped answering, or answers with anything other than a healthy status, during the wait, you get the `HEALTH_TIMEOUT` error page instead.
 
@@ -191,6 +193,8 @@ If startup fails, the loading screen is replaced by an error page. It shows the 
 |---|---|---|
 | `PODMAN_NOT_FOUND` | Podman is not installed. Install Podman, then reopen Turnstone. | Install Podman. Check that `podman` runs from a terminal on this PC. |
 | `PODMAN_TOO_OLD` | Podman is older than 6.1.4, which Turnstone needs to create its machine. Update Podman, then reopen Turnstone. | Update Podman. The detail line shows the version found. Only a first run, which creates the machine, checks it. |
+| `DISK_SPACE_LOW` | Turnstone could not confirm 5 GB of free disk space for its download. Free up space, then reopen Turnstone. | Free space on the drive the detail line names, then Retry. The detail also says when the free space could not be read at all. |
+| `IMAGE_PULL_FAILED` | The Turnstone image could not be downloaded. | Read the detail line: Podman's error for a failed download, or a digest that did not match the pin (that image was removed). Check the network, then Retry. To try it yourself, run `podman --connection turnstone pull` with the pinned reference from [Releases](#releases). |
 | `MACHINE_CREATE_FAILED` | The Turnstone Podman machine could not be created. | Read the detail line, which shows Podman's error or why its version could not be read. The half-made machine was removed, so Retry tries again from the start. To see the error yourself, run `podman machine init turnstone --username user`. If the detail says the half-made machine could not be removed, or that a WSL distribution named `podman-turnstone` already exists, a create was interrupted before Podman saved the machine: if that distribution holds nothing you need, run `wsl --unregister podman-turnstone`, then Retry. The app never removes a distribution Podman does not know, since it could hold a machine whose Podman settings were lost. |
 | `MACHINE_LIST_FAILED` | Podman answered, but its machine list could not be read. | Run `podman machine list --format json` by hand and read its error. |
 | `MACHINE_START_FAILED` | The Turnstone Podman machine would not start. | Run `podman machine start turnstone` by hand and read its error. |
@@ -280,6 +284,21 @@ Pushing a version tag triggers CI builds for macOS, Windows, and Linux. The work
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
+
+**The pinned Turnstone image.** Each release ships one Turnstone version, pinned by its registry index digest in `src/main/turnstone-image.js` (ADR-03). A first run in Local mode pulls exactly that image, and newer versions come only through the updater. This release pins Turnstone 1.9.1:
+
+```text
+ghcr.io/turnstonelabs/turnstone@sha256:c98762f1c339986d84c255476d0fe188466bb13da1ccee695612ec3a83660d12
+```
+
+To move the pin for a release, look up the new version's index digest with an anonymous registry token, then set `version` and `digest` in `src/main/turnstone-image.js`, and update this section and its test (`tests/unit/turnstone-image.test.js`):
+
+```bash
+tok=$(curl -s "https://ghcr.io/token?scope=repository:turnstonelabs/turnstone:pull" | sed 's/.*"token":"\([^"]*\)".*/\1/')
+curl -sI -H "Authorization: Bearer $tok" -H "Accept: application/vnd.oci.image.index.v1+json" https://ghcr.io/v2/turnstonelabs/turnstone/manifests/X.Y.Z | grep -i docker-content-digest
+```
+
+The digest is the index's, not the linux/amd64 manifest's: a pull by the index digest records both on the image, and the app checks for the index digest.
 
 ## License
 
