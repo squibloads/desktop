@@ -5,6 +5,7 @@ const { machineCheckCommand, parseMachineReport, hardeningGaps } = require("./ma
 const { TURNSTONE_IMAGE, pinnedImageRef } = require("./turnstone-image.js");
 const { freeDiskBytes: readFreeDiskBytes, podmanDataDir } = require("./disk-space.js");
 const { redactSecrets } = require("./redact-secrets.js");
+const { configCommand, parseConfigReport } = require("./turnstone-config.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
@@ -45,6 +46,7 @@ const USER_MESSAGES = {
   MACHINE_NOT_HARDENED:
     "The Turnstone machine's safety settings are not holding, so Turnstone was not started.",
   POD_MISSING: "The Turnstone pod does not exist on the Podman machine.",
+  CONFIG_WRITE_FAILED: "Turnstone could not create its settings file in its machine.",
   POD_START_FAILED: "The Turnstone pod would not start.",
   POD_STOP_FAILED: "The Turnstone pod would not stop cleanly.",
   START_CANCELLED: "Startup was cancelled because Turnstone is quitting.",
@@ -256,9 +258,15 @@ class LocalRuntime {
     try {
       state = await this._podState();
     } catch (err) {
-      // A missing pod is a first run: the pinned image comes in now. Creating the pod from it is #1681; until then
-      // the start still stops at POD_MISSING, with the image in place.
-      if (err && err.code === "POD_MISSING") await this._ensureImage();
+      // A missing pod is a first run: the pinned image comes in now, then config.toml with this install's secrets,
+      // which the pod mounts. Creating the pod is #1681; until then the start still stops at POD_MISSING, with the
+      // image and the config in place.
+      if (err && err.code === "POD_MISSING") {
+        await this._ensureImage();
+        this._checkCancelled();
+        await this._ensureConfig();
+        this._checkCancelled();
+      }
       throw err;
     }
     this.started = true;
@@ -533,6 +541,33 @@ class LocalRuntime {
       throw new LocalRuntimeError("MACHINE_CHECK_FAILED", "the check stopped before it finished");
     }
     return report;
+  }
+
+  // One run of the config script, as root (#1680). The machine makes the secrets, so the report says only whether the
+  // file was created, kept or could not be set up. A report without its end line was cut short, so it is a failure,
+  // never a written file. It runs under the "pod" stage: the loading page has no label for another.
+  async _ensureConfig() {
+    let out;
+    try {
+      out = await this.run(["machine", "ssh", "--username", "root", MACHINE, configCommand()]);
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err);
+      throw new LocalRuntimeError("CONFIG_WRITE_FAILED", withoutCommandLine(err));
+    }
+    const report = parseConfigReport(out);
+    if (!report.complete) {
+      throw new LocalRuntimeError("CONFIG_WRITE_FAILED", "the script stopped before it finished");
+    }
+    if (report.config === "failed") {
+      throw new LocalRuntimeError(
+        "CONFIG_WRITE_FAILED",
+        "the machine could not create config.toml, or could not check the one already there",
+      );
+    }
+    if (report.config !== "created" && report.config !== "kept") {
+      throw new LocalRuntimeError("CONFIG_WRITE_FAILED", `the script answered config=${report.config ?? "(nothing)"}`);
+    }
+    return report.config;
   }
 
   async _podState() {

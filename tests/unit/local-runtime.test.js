@@ -7,6 +7,7 @@ import { fakeElectronNet, removeFakeElectron } from "../helpers/fake-electron-ne
 
 const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED, runPodman } = require("../../src/main/local-runtime.js");
 const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
+const { configCommand } = require("../../src/main/turnstone-config.js");
 
 /**
  * Scripted podman: each entry maps a joined argv to a result. An unscripted
@@ -41,6 +42,9 @@ const READY = { status: "ok", nodes: 1 };
 // The machine check, run as root inside the machine, and what a machine holding every ADR-05 setting answers.
 const HARDEN = `machine ssh --username root turnstone ${machineCheckCommand()}`;
 const HARDENED = "wslconf=ok\nsudo=refused\nend=ok\n";
+// The config script, run as root inside the machine on a first run, and what it answers when it writes config.toml.
+const CONFIG = `machine ssh --username root turnstone ${configCommand()}`;
+const CONFIG_CREATED = "config=created\nend=ok\n";
 
 function machines(running) {
   return JSON.stringify([{ Name: "turnstone", Running: running }]);
@@ -56,8 +60,9 @@ function make(script, opts = {}) {
   // Deadlines read Date.now(), so the clock is stepped: each timeout counts
   // polls, not wall time. Pass `step` to change the cost of one read.
   installSteppedClock({ step: opts.step ?? 1 });
-  // Every start checks the machine, so a test that is not about the check gets a machine that passes it.
-  const runner = makeRunner({ [HARDEN]: HARDENED, ...script });
+  // Every start checks the machine, so a test that is not about the check gets a machine that passes it; a first run
+  // that reaches the config step gets a script that writes the file.
+  const runner = makeRunner({ [HARDEN]: HARDENED, [CONFIG]: CONFIG_CREATED, ...script });
   const fetchHealth = opts.fetchHealth || vi.fn(async () => READY);
   const rt = new LocalRuntime({
     run: runner.run,
@@ -774,16 +779,16 @@ describe("LocalRuntime pinned image", () => {
       [PULL]: "",
       [IMAGE_DIGESTS]: JSON.stringify([PLATFORM, PINNED]),
     });
-    // Creating the pod is #1681; until then a start that has the image stops at the missing pod.
+    // Creating the pod is #1681; until then a start that has the image and the config stops at the missing pod.
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
   });
 
   // Failure: every start downloads 1.3 GB again, though the image is already there.
   it("does not pull when the pinned image is already there", async () => {
     const { rt, calls } = make({ ...NEW_MACHINE, [IMAGE_EXISTS]: "" });
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
   });
 
   // Failure: a download fills the disk, and the machine, the pod and the rest of the PC fail with it (NFR-04).
@@ -859,7 +864,7 @@ describe("LocalRuntime pinned image", () => {
     calls.length = 0;
     // Creating the pod is #1681; until then a Retry that gets the image stops at the missing pod.
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
   });
 
   // Failure: after an image is refused for its digest, Retry finds nothing to pull, or finds the refused image and
@@ -876,7 +881,7 @@ describe("LocalRuntime pinned image", () => {
     await expect(rt.start()).rejects.toMatchObject({ code: "IMAGE_PULL_FAILED" });
     calls.length = 0;
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
   });
 
   // Failure: an image that does not carry the pinned digest is used anyway, and the pod runs code nobody pinned (D-2).
@@ -940,6 +945,120 @@ describe("LocalRuntime pinned image", () => {
 
     await expect(starting).rejects.toMatchObject({ code: "START_CANCELLED" });
     expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, STOP]);
+  });
+});
+
+// A first run whose image is already in place, so the config step comes straight after the image check.
+const FIRST_RUN = { ...NEW_MACHINE, [IMAGE_EXISTS]: "" };
+
+describe("LocalRuntime config step", () => {
+  // Failure: the pod #1681 creates finds no config.toml, and a server started without jwt_secret exits.
+  it("writes config.toml on a first run, after the image and before the start stops at POD_MISSING", async () => {
+    const { rt, calls } = make(FIRST_RUN);
+    await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
+  });
+
+  // Failure: a file left by an earlier run is refused, so a removed pod can never be made again without losing the
+  // install's secrets.
+  it("accepts a config.toml that is already there", async () => {
+    const { rt, calls } = make({ ...FIRST_RUN, [CONFIG]: "config=kept\nend=ok\n" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
+  });
+
+  // Failure: every start runs a root script it does not need, and an existing pod waits on it.
+  it("never runs the config step when the pod exists", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" });
+    await rt.start();
+    expect(calls).not.toContain(CONFIG);
+  });
+
+  // Failure: a secret made in the app reaches a command line, where /proc/<pid>/cmdline shows it (L-11). The config
+  // call carries the fixed script, the same on every run, so it holds no secret.
+  it("sends the same fixed script on every run", async () => {
+    const first = make(FIRST_RUN);
+    await first.rt.start().catch(() => {});
+    const second = make(FIRST_RUN);
+    await second.rt.start().catch(() => {});
+    const configArgs = (run) => run.mock.calls.map(([args]) => args).filter((args) => args.join(" ") === CONFIG);
+    expect(configArgs(first.run)).toEqual([["machine", "ssh", "--username", "root", "turnstone", configCommand()]]);
+    expect(configArgs(second.run)).toEqual(configArgs(first.run));
+  });
+
+  // Failure: a script that could not run shows its command line, the whole encoded script, instead of Podman's error.
+  it("reports CONFIG_WRITE_FAILED with Podman's error, not the command line, when the script cannot run", async () => {
+    const { rt } = make({
+      ...FIRST_RUN,
+      [CONFIG]: new Error(`Command failed: podman ${CONFIG}\nError: ssh: connect to host localhost: Connection refused`),
+    });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("CONFIG_WRITE_FAILED");
+    expect(err.detail).toBe("Error: ssh: connect to host localhost: Connection refused");
+  });
+
+  // Failure: a script that could not write the file is taken as a success, and the pod starts with no secrets.
+  it("reports CONFIG_WRITE_FAILED when the script could not create or check the file", async () => {
+    const { rt } = make({ ...FIRST_RUN, [CONFIG]: "config=failed\nend=ok\n" });
+    await expect(rt.start()).rejects.toMatchObject({
+      code: "CONFIG_WRITE_FAILED",
+      detail: "the machine could not create config.toml, or could not check the one already there",
+    });
+  });
+
+  // Failure: a report cut short, or one that says nothing about the file, reads as a written config.
+  it("reports CONFIG_WRITE_FAILED when the report has no end line or no answer about the file", async () => {
+    const cut = make({ ...FIRST_RUN, [CONFIG]: "config=created\n" });
+    await expect(cut.rt.start()).rejects.toMatchObject({
+      code: "CONFIG_WRITE_FAILED",
+      detail: "the script stopped before it finished",
+    });
+    const silent = make({ ...FIRST_RUN, [CONFIG]: "end=ok\n" });
+    await expect(silent.rt.start()).rejects.toMatchObject({
+      code: "CONFIG_WRITE_FAILED",
+      detail: "the script answered config=(nothing)",
+    });
+  });
+
+  // Failure: Retry after a failed config step skips it, or cannot run it again, and the first run is stuck.
+  it("runs the config step again on Retry", async () => {
+    let runs = 0;
+    const { rt, calls } = make({
+      ...FIRST_RUN,
+      [CONFIG]: () => (++runs === 1 ? "config=failed\nend=ok\n" : CONFIG_CREATED),
+    });
+    await expect(rt.start()).rejects.toMatchObject({ code: "CONFIG_WRITE_FAILED" });
+    calls.length = 0;
+    await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
+  });
+
+  // Failure: a quit during the config step is reported as a missing pod, and an error page opens while the app quits.
+  it("reports START_CANCELLED when the app quits during the config step", async () => {
+    let finish;
+    const { rt, calls } = make({
+      ...FIRST_RUN,
+      [CONFIG]: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      [STOP]: "",
+    });
+    const starting = rt.start();
+    await vi.waitFor(() => expect(calls).toContain(CONFIG));
+    const stopping = rt.stop();
+    finish(CONFIG_CREATED);
+    await stopping;
+    await expect(starting).rejects.toMatchObject({ code: "START_CANCELLED" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG, STOP]);
+  });
+
+  // Failure: the loading page shows a stage it has no label for.
+  it("adds no loading stage", async () => {
+    const stages = [];
+    const { rt } = make(FIRST_RUN, { onProgress: (stage) => stages.push(stage) });
+    await rt.start().catch(() => {});
+    expect(stages).toEqual(["machine", "pod"]);
   });
 });
 
@@ -1015,6 +1134,7 @@ describe("LocalRuntimeError messages", () => {
     "POD_MISSING",
     "POD_START_FAILED",
     "POD_STOP_FAILED",
+    "CONFIG_WRITE_FAILED",
     "HEALTH_TIMEOUT",
     "NODE_TIMEOUT",
   ];
