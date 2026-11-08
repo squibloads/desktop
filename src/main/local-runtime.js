@@ -9,11 +9,22 @@ const POD = "turnstone";
 // exists), so pod commands name this connection explicitly.
 const PODMAN_CONNECTION = "turnstone";
 
+// A fresh machine on WSL 2.9 and later could not run a container under older Podman, over the pids cgroup; 6.1.4 fixed
+// it (Phase 2 Analysis). Only a create checks it: a machine that already exists was made by a Podman that worked.
+const MIN_PODMAN = [6, 1, 4];
+// The machine's user. machine-hardening.js writes `default=user` into wsl.conf, so the create names it rather than
+// leave it to the provider's default.
+const MACHINE_USER = "user";
+const MACHINE_INIT = ["machine", "init", MACHINE, "--username", MACHINE_USER];
+// Init downloads the machine image, which every other call's two minutes do not cover on most links.
+const INIT_TIMEOUT_MS = 15 * 60 * 1000;
+
 const USER_MESSAGES = {
   PODMAN_NOT_FOUND:
     "Podman is not installed. Install Podman, then reopen Turnstone.",
-  MACHINE_MISSING:
-    "The Turnstone Podman machine does not exist. Create it, then reopen Turnstone.",
+  PODMAN_TOO_OLD:
+    "Podman is older than 6.1.4, which Turnstone needs to create its machine. Update Podman, then reopen Turnstone.",
+  MACHINE_CREATE_FAILED: "The Turnstone Podman machine could not be created.",
   MACHINE_LIST_FAILED:
     "Podman answered, but its machine list could not be read.",
   MACHINE_START_FAILED: "The Turnstone Podman machine would not start.",
@@ -50,15 +61,19 @@ function podArgs(args) {
   return ["--connection", PODMAN_CONNECTION, ...args];
 }
 
-/** Real podman runner. ENOENT is kept on the error so a missing binary is distinguishable. */
-function runPodman(args) {
+/**
+ * Real podman runner. ENOENT is kept on the error so a missing binary is distinguishable. timeoutMs is two minutes
+ * unless a call needs longer; the output limit is raised because a machine create can print a lot. A signal, when
+ * given, ends the call early: a quit uses it so it never waits out a machine create.
+ */
+function runPodman(args, { timeoutMs = 120000, signal } = {}) {
   return new Promise((resolve, reject) => {
     // Read per call; a malformed override rejects here (the app also checks it once at start).
     const cmd = podmanCommand();
     execFile(
       cmd.file,
       [...cmd.prefixArgs, ...args],
-      { windowsHide: true, timeout: 120000 },
+      { windowsHide: true, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, signal },
       (err, stdout, stderr) => {
         if (err) {
           err.message = `${err.message}${stderr ? `\n${stderr}` : ""}`;
@@ -130,8 +145,16 @@ function withoutCommandLine(err) {
   return "podman failed with no message";
 }
 
+// Negative, zero or positive as version a is older than, the same as, or newer than b; each is [major, minor, patch].
+function compareVersions(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
 /**
- * Drives the local Podman machine and pod. Pod lifecycle is stop-then-start
+ * Drives the local Podman machine and pod, and creates the machine on first run. Pod lifecycle is stop-then-start
  * only: `pod restart`, or restarting a single container, kills conmon and
  * strands the pod. A failed read is an error, never a default.
  *
@@ -163,6 +186,8 @@ class LocalRuntime {
     this.started = false;
     this._starting = null;
     this._cancelled = false;
+    // Set while a machine create runs, so a quit can end it instead of waiting up to its 15 minutes.
+    this._createAbort = null;
     // Latest progress stage; the loading page asks for it when it attaches
     // after the event was already sent.
     this.stage = null;
@@ -195,9 +220,15 @@ class LocalRuntime {
 
   async _start() {
     this._progress("machine");
-    const running = await this._machineRunning();
+    let machine = await this._machineState();
     this._checkCancelled();
-    if (!running) {
+    if (machine === "missing") {
+      await this._createMachine();
+      this._checkCancelled();
+      this._progress("machine");
+      machine = "stopped";
+    }
+    if (machine !== "running") {
       await this._podman(["machine", "start", MACHINE], "MACHINE_START_FAILED");
       this._checkCancelled();
     }
@@ -236,6 +267,8 @@ class LocalRuntime {
 
   async stop() {
     this._cancelled = true;
+    // A machine create can run for minutes; it is ended, and its half-made machine removed, rather than waited for.
+    if (this._createAbort) this._createAbort.abort();
     // A pod start still in flight would bring the pod back up after this
     // stop, so let it settle first; its own error is reported to its caller.
     if (this._starting) await this._starting.catch(() => {});
@@ -257,7 +290,8 @@ class LocalRuntime {
     return new LocalRuntimeError(failCode, err && err.message);
   }
 
-  async _machineRunning() {
+  /** "missing", "running" or "stopped", from the machine list. A list that cannot be read is an error, never empty. */
+  async _machineState() {
     const out = await this._podman(
       ["machine", "list", "--format", "json"],
       "MACHINE_LIST_FAILED",
@@ -272,8 +306,67 @@ class LocalRuntime {
       throw new LocalRuntimeError("MACHINE_LIST_FAILED", "not a JSON array");
     }
     const m = list.find((x) => x.Name === MACHINE);
-    if (!m) throw new LocalRuntimeError("MACHINE_MISSING", MACHINE);
-    return m.Running === true;
+    if (!m) return "missing";
+    return m.Running === true ? "running" : "stopped";
+  }
+
+  /**
+   * First run on this PC: no turnstone machine exists, so the app makes one instead of asking the user to. The start
+   * goes on from there as for a stopped machine, so the safety settings are put back and checked before any pod runs.
+   * A create that fails is removed, so Retry starts clean; it did not exist before this create, so nothing of the
+   * user's goes with it. A removal that fails is logged and named on the error page.
+   */
+  async _createMachine() {
+    await this._checkPodmanVersion();
+    this._checkCancelled();
+    this._progress("create");
+    const abort = new AbortController();
+    this._createAbort = abort;
+    try {
+      await this.run(MACHINE_INIT, { timeoutMs: INIT_TIMEOUT_MS, signal: abort.signal });
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err, "MACHINE_CREATE_FAILED");
+      const cleanup = await this._removeHalfMadeMachine();
+      if (abort.signal.aborted) throw new LocalRuntimeError("START_CANCELLED", "stopped during the machine create");
+      const reason = withoutCommandLine(err);
+      throw new LocalRuntimeError(
+        "MACHINE_CREATE_FAILED",
+        cleanup ? `${reason}\nThe half-made machine could not be removed: ${cleanup}` : reason,
+      );
+    } finally {
+      this._createAbort = null;
+    }
+  }
+
+  /**
+   * Removes what a failed or ended create left; null when that worked, else what went wrong, which is also logged.
+   * Podman cannot remove a create it stopped before writing the machine's settings, and WSL can then still hold the
+   * podman-turnstone distribution, which a Retry's create meets. The app does not remove a distribution Podman does
+   * not know: it could be a working machine whose Podman settings were lost. The error says so, and the README gives
+   * the command.
+   */
+  async _removeHalfMadeMachine() {
+    try {
+      await this.run(["machine", "rm", "--force", MACHINE]);
+      return null;
+    } catch (rmErr) {
+      const cleanup = withoutCommandLine(rmErr);
+      console.error("machine create cleanup failed:", cleanup);
+      return cleanup;
+    }
+  }
+
+  // A version that cannot be read is an error, never taken as new enough.
+  async _checkPodmanVersion() {
+    const out = await this._podman(["version", "--format", "{{.Client.Version}}"], "MACHINE_CREATE_FAILED");
+    const text = String(out).trim();
+    const parsed = /^(\d+)\.(\d+)\.(\d+)/.exec(text);
+    if (!parsed) {
+      throw new LocalRuntimeError("MACHINE_CREATE_FAILED", `Podman's version could not be read: ${text || "(no output)"}`);
+    }
+    if (compareVersions(parsed.slice(1).map(Number), MIN_PODMAN) < 0) {
+      throw new LocalRuntimeError("PODMAN_TOO_OLD", `found Podman ${text}; ${MIN_PODMAN.join(".")} or later is needed`);
+    }
   }
 
   /**
@@ -390,4 +483,4 @@ class LocalRuntime {
   }
 }
 
-module.exports = { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED };
+module.exports = { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED, runPodman };

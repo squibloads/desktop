@@ -79,6 +79,21 @@ describe("local loading stages", () => {
     expect(states).toEqual({ machine: "done", pod: "active", console: "pending", node: "pending" });
     expect(page.document.getElementById("status").textContent).toBe("Starting Turnstone");
   });
+
+  // Failure: a first run spends minutes creating the machine under "Starting the Podman machine", so it looks hung.
+  it("shows the create stage on the machine row, then goes back to starting", () => {
+    const page = loadPage("local-loading", createFakeBridge());
+
+    page.hub.emitLocalProgress("create");
+    expect(stageStates(page.document)).toEqual(STARTING);
+    expect(page.document.getElementById("status").textContent).toBe(
+      "Creating the Podman machine (first run only; this can take several minutes)",
+    );
+
+    page.hub.emitLocalProgress("machine");
+    expect(stageStates(page.document)).toEqual(STARTING);
+    expect(page.document.getElementById("status").textContent).toBe("Starting the Podman machine");
+  });
 });
 
 describe("theme", () => {

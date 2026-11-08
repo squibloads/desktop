@@ -131,6 +131,47 @@ describe("fake-podman known calls", () => {
     expect(savedState().machine).toBe("stopped");
     expect(logLines()).toEqual(["machine stop turnstone"]);
   });
+
+  // Failure: the version check before a create gets no version, so every create test fails before it starts.
+  it("answers the client version, 6.1.4 by default or the version the state names", () => {
+    expect(callPodman(["version", "--format", "{{.Client.Version}}"]).stdout.trim()).toBe("6.1.4");
+    expect(callPodman(["version", "--format", "{{.Client.Version}}"], { podmanVersion: "6.0.2" }).stdout.trim()).toBe(
+      "6.0.2",
+    );
+  });
+
+  // Failure: a create leaves the machine missing, so the start after it fails as if nothing was made.
+  it("creates a missing machine as stopped", () => {
+    const result = callPodman(["machine", "init", "turnstone", "--username", "user"], { machine: "missing" });
+
+    expect(result.status).toBe(0);
+    expect(savedState().machine).toBe("stopped");
+  });
+
+  // Failure: a failed create cannot be tested, so the app's cleanup and its error page go unchecked.
+  it("fails a create when failInit is set, leaving a half-made machine", () => {
+    const result = callPodman(["machine", "init", "turnstone", "--username", "user"], { machine: "missing", failInit: true });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Error:");
+    expect(savedState().machine).toBe("stopped");
+  });
+
+  // Failure: the cleanup after a failed create leaves the half-made machine, so Retry meets it again.
+  it("removes the machine", () => {
+    const result = callPodman(["machine", "rm", "--force", "turnstone"], { machine: "stopped" });
+
+    expect(result.status).toBe(0);
+    expect(savedState().machine).toBe("missing");
+  });
+
+  // Failure: creating over an existing machine succeeds in the fake, so a test misses the app creating twice.
+  it("refuses to create a machine that exists", () => {
+    const result = callPodman(["machine", "init", "turnstone", "--username", "user"], { machine: "running" });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("already exists");
+  });
 });
 
 describe("fake-podman rejects unknown calls", () => {

@@ -1,10 +1,10 @@
-// Stands in for the podman binary. It implements only the seven calls local-runtime.js makes,
+// Stands in for the podman binary. It implements only the ten calls local-runtime.js makes,
 // each matched as its exact argv, and keeps the machine and pod state in a JSON file so a test
 // can change them while the app is running.
 //
 // The app runs it as `node fake-podman.js <args>`, because TURNSTONE_PODMAN is a JSON array that
 // names this file. Environment variables:
-//   FAKE_PODMAN_STATE          state file: { machine, pod, failStart, failStop, hardening }
+//   FAKE_PODMAN_STATE          state file: { machine, pod, failStart, failStop, failInit, hardening, podmanVersion }
 //   FAKE_PODMAN_LOG            receives one line per call, the arguments joined with spaces
 //   FAKE_PODMAN_STOP_DELAY_MS  optional, default 0: `pod stop` takes this long, then logs `pod stop done`
 //
@@ -14,6 +14,8 @@
 //            a hardened machine, a machine whose user has passwordless sudo, or exits 1. The script it
 //            is given is not run: machine-hardening.test.js and a real machine cover what it does.
 // failStart makes `machine start` and `pod start` exit 1; failStop does the same for `pod stop`.
+// failInit makes `machine init` exit 1 after leaving a half-made machine, as an interrupted create can.
+// podmanVersion is what `version` reports, "6.1.4" when absent.
 //
 // Any other call exits 1, so a new podman call in the app fails the test that makes it instead of
 // passing silently.
@@ -26,9 +28,12 @@ const MACHINE = "turnstone";
 const POD = "turnstone";
 const CONNECTION = "turnstone";
 
-// The seven calls, as the argv local-runtime.js passes them. Matched element by element, so the same
+// The ten calls, as the argv local-runtime.js passes them. Matched element by element, so the same
 // words split differently are not one of these calls. The machine check is this prefix and then
 // exactly one argument, the encoded script.
+const VERSION = ["version", "--format", "{{.Client.Version}}"];
+const MACHINE_INIT = ["machine", "init", MACHINE, "--username", "user"];
+const MACHINE_RM = ["machine", "rm", "--force", MACHINE];
 const MACHINE_LIST = ["machine", "list", "--format", "json"];
 const MACHINE_START = ["machine", "start", MACHINE];
 const MACHINE_STOP = ["machine", "stop", MACHINE];
@@ -77,7 +82,19 @@ function save() {
   fs.writeFileSync(statePath, JSON.stringify(state));
 }
 
-if (sameArgv(args, MACHINE_LIST)) {
+if (sameArgv(args, VERSION)) {
+  console.log(state.podmanVersion ?? "6.1.4");
+} else if (sameArgv(args, MACHINE_INIT)) {
+  if (state.machine !== "missing") fail(`Error: machine "${MACHINE}" already exists`);
+  state.machine = "stopped";
+  save();
+  if (state.failInit) fail("Error: could not download the machine image: connection reset");
+  console.log(`Machine init complete`);
+} else if (sameArgv(args, MACHINE_RM)) {
+  state.machine = "missing";
+  save();
+  console.log(`Machine "${MACHINE}" removed`);
+} else if (sameArgv(args, MACHINE_LIST)) {
   if (state.machine === "list-fails") fail("Error: machine list unavailable");
   const machines =
     state.machine === "missing" ? [] : [{ Name: MACHINE, Running: state.machine === "running" }];

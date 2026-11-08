@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { installSteppedClock } from "../helpers/fake-clock.js";
 import { fakeElectronNet, removeFakeElectron } from "../helpers/fake-electron-net.js";
 
-const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED } = require("../../src/main/local-runtime.js");
+const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED, runPodman } = require("../../src/main/local-runtime.js");
 const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
 
 /**
@@ -14,12 +14,13 @@ const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
  */
 function makeRunner(script) {
   const calls = [];
-  const run = vi.fn(async (args) => {
+  const run = vi.fn(async (args, options) => {
     const key = args.join(" ");
     calls.push(key);
     if (!(key in script)) throw new Error(`unscripted podman call: ${key}`);
-    // A function answers each call afresh, so one call can answer differently the second time.
-    const out = typeof script[key] === "function" ? script[key]() : script[key];
+    // A function answers each call afresh, so one call can answer differently the second time. It gets the call's
+    // options, such as the abort signal a create is given.
+    const out = typeof script[key] === "function" ? script[key](options) : script[key];
     if (out instanceof Error) throw out;
     return out;
   });
@@ -68,8 +69,14 @@ function make(script, opts = {}) {
     healthUrl: HEALTH_URL,
     onProgress: opts.onProgress,
   });
-  return { rt, calls: runner.calls, fetchHealth };
+  return { rt, calls: runner.calls, fetchHealth, run: runner.run };
 }
+
+// The calls that create a missing machine, as local-runtime.js passes them.
+const VERSION = "version --format {{.Client.Version}}";
+const MACHINE_INIT = "machine init turnstone --username user";
+const MACHINE_RM = "machine rm --force turnstone";
+const MACHINE_START = "machine start turnstone";
 
 describe("LocalRuntime.start", () => {
   it("starts a stopped machine, then the pod, then waits for health", async () => {
@@ -117,11 +124,139 @@ describe("LocalRuntime.start", () => {
     await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_NOT_FOUND" });
   });
 
-  it("reports MACHINE_MISSING when no turnstone machine exists", async () => {
-    const { rt } = make({
+  // Failure: a PC with Podman but no turnstone machine stops at an error asking the user to build the machine by hand.
+  it("creates a missing machine, then starts it and checks it before the pod", async () => {
+    const { rt, calls } = make({
       [MACHINE_LIST]: JSON.stringify([{ Name: "other", Running: true }]),
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: "",
+      [MACHINE_START]: "",
+      [POD_STATE]: "Exited",
+      [POD_START]: "",
     });
-    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_MISSING" });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_START, HARDEN, POD_STATE, POD_START]);
+  });
+
+  // Failure: init downloads the machine image, so the two-minute limit every other call gets kills it on most links.
+  it("gives machine init a long time limit", async () => {
+    const { rt, run } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: "",
+      [MACHINE_START]: "",
+      [POD_STATE]: "Running",
+    });
+    await rt.start();
+    const [, options] = run.mock.calls.find(([args]) => args.join(" ") === MACHINE_INIT);
+    expect(options?.timeoutMs).toBeGreaterThanOrEqual(15 * 60 * 1000);
+  });
+
+  // Failure: the loading page says "Starting" through a create that takes minutes, so the user thinks it has hung.
+  it("reports the create stage before init, then the machine stage again", async () => {
+    const stages = [];
+    const { rt } = make(
+      {
+        [MACHINE_LIST]: "[]",
+        [VERSION]: "6.1.4\n",
+        [MACHINE_INIT]: "",
+        [MACHINE_START]: "",
+        [POD_STATE]: "Running",
+      },
+      { onProgress: (stage) => stages.push(stage) },
+    );
+    await rt.start();
+    expect(stages).toEqual(["machine", "create", "machine", "pod", "console", "node"]);
+  });
+
+  // Failure: a Podman with the fresh-machine pids cgroup bug (fixed in 6.1.4) creates a machine where no container runs.
+  it("refuses a Podman older than 6.1.4, and creates nothing", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: "[]", [VERSION]: "6.1.3\n" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_TOO_OLD", detail: expect.stringContaining("6.1.3") });
+    expect(calls).toEqual([MACHINE_LIST, VERSION]);
+  });
+
+  // Failure: a newer Podman, or a pre-release of one, is refused as too old.
+  it.each([["6.2.0"], ["7.0.0-rc1"], ["6.10.0"]])("accepts Podman %s", async (version) => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: `${version}\n`,
+      [MACHINE_INIT]: "",
+      [MACHINE_START]: "",
+      [POD_STATE]: "Running",
+    });
+    await rt.start();
+    expect(calls).toContain(MACHINE_INIT);
+  });
+
+  // Failure: an unreadable version is taken as new enough, so the check passes on a guess.
+  it("reports MACHINE_CREATE_FAILED when Podman's version cannot be read, and creates nothing", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: "[]", [VERSION]: "unknown\n" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_CREATE_FAILED" });
+    expect(calls).toEqual([MACHINE_LIST, VERSION]);
+  });
+
+  // Failure: a create that stops halfway leaves a broken machine, and every Retry then fails to start it.
+  it("removes a half-made machine when init fails, so Retry starts clean", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: new Error("Command failed: podman machine init\nError: image download failed"),
+      [MACHINE_RM]: "",
+    });
+    await expect(rt.start()).rejects.toMatchObject({
+      code: "MACHINE_CREATE_FAILED",
+      detail: expect.stringContaining("image download failed"),
+    });
+    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_RM]);
+  });
+
+  // Failure: quitting during a first-run create waits for init, up to its 15 minutes, so the app looks hung on quit.
+  it("stops a create when the app quits, removes the half-made machine, and does not wait for init", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      // Init never finishes on its own: only the abort the quit sends ends it.
+      [MACHINE_INIT]: (options) =>
+        new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })),
+          );
+        }),
+      [MACHINE_RM]: "",
+      [STOP]: "",
+    });
+    const starting = rt.start();
+    await vi.waitFor(() => expect(calls).toContain(MACHINE_INIT));
+
+    await rt.stop();
+
+    await expect(starting).rejects.toMatchObject({ code: "START_CANCELLED" });
+    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_RM, STOP]);
+  });
+
+  // Failure: a cleanup that fails replaces the reason the create failed, or vanishes silently, so a Retry meets the
+  // leftover WSL distribution and nothing says why.
+  it("keeps the init error, and says and logs that the cleanup failed too", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rt } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: new Error("Command failed: podman machine init\nError: image download failed"),
+      [MACHINE_RM]: new Error("Command failed: podman machine rm\nError: turnstone: VM does not exist"),
+    });
+    try {
+      const err = await rt.start().catch((e) => e);
+
+      expect(err.code).toBe("MACHINE_CREATE_FAILED");
+      expect(err.detail).toContain("image download failed");
+      expect(err.detail).toContain("The half-made machine could not be removed: Error: turnstone: VM does not exist");
+      expect(err.detail).not.toContain("Command failed");
+      expect(logged).toHaveBeenCalledWith("machine create cleanup failed:", "Error: turnstone: VM does not exist");
+    } finally {
+      // Restoring also clears the recorded calls, so it comes after the assertions.
+      logged.mockRestore();
+    }
   });
 
   it("treats unparseable machine list output as an error, not as empty", async () => {
@@ -615,7 +750,8 @@ describe("LocalRuntime.starting", () => {
 describe("LocalRuntimeError messages", () => {
   const CODES = [
     "PODMAN_NOT_FOUND",
-    "MACHINE_MISSING",
+    "PODMAN_TOO_OLD",
+    "MACHINE_CREATE_FAILED",
     "MACHINE_LIST_FAILED",
     "MACHINE_START_FAILED",
     "POD_MISSING",
@@ -923,5 +1059,24 @@ describe("fetchHealthJson", () => {
     fakeElectronNet(vi.fn().mockRejectedValue(new Error("net::ERR_CONNECTION_REFUSED")));
 
     expect(await fetchHealthJson("http://127.0.0.1:8090")).toBe(null);
+  });
+});
+
+describe("runPodman", () => {
+  // Failure: the abort a quit sends never reaches the podman process, so the quit still waits for it to finish.
+  it("stops a call when its signal aborts, without waiting for the call to end", async () => {
+    // A stand-in podman that would run for a minute. The override is read per call.
+    vi.stubEnv("TURNSTONE_PODMAN", JSON.stringify([process.execPath, "-e", "setTimeout(() => {}, 60000)"]));
+    try {
+      const controller = new AbortController();
+      const started = performance.now();
+      const call = runPodman(["machine", "init"], { signal: controller.signal });
+      setTimeout(() => controller.abort(), 200);
+
+      await expect(call).rejects.toMatchObject({ name: "AbortError" });
+      expect(performance.now() - started).toBeLessThan(10000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

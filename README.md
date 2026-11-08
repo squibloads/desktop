@@ -50,21 +50,22 @@ Open Settings with `Ctrl+,` (`Cmd+,` on macOS). The dialog has these fields:
 
 Local mode runs Turnstone in a Podman pod on this PC and opens its Console at `http://127.0.0.1:8090`. The Console URL field is hidden in this mode, and the app always uses that address.
 
-**Before you use it.** The app does not create anything. These must already exist:
+**Before you use it.** These must already exist:
 
-- Podman is installed, and `podman` runs from the PATH the app sees.
-- A Podman machine named `turnstone`.
-- A Podman connection named `turnstone`, with a pod named `turnstone` on it. The pod commands use this connection.
+- Podman 6.1.4 or later is installed, and `podman` runs from the PATH the app sees.
+- A Podman connection named `turnstone`, with a pod named `turnstone` on it. The pod commands use this connection. The app does not create the pod yet.
 - A Console that answers `/health` at `http://127.0.0.1:8090`.
+
+The Podman machine named `turnstone` need not exist: the app creates it on first run (below).
 
 **What happens on launch.** The loading screen, titled **Starting Local Turnstone**, shows these stages in order:
 
-1. **Starting the Podman machine.** If the `turnstone` machine is not running, the app starts it. Then it puts back and checks the machine's safety settings (below).
+1. **Starting the Podman machine.** If there is no `turnstone` machine, the app creates one first, and the stage reads **Creating the Podman machine (first run only; this can take several minutes)**: it checks that Podman is 6.1.4 or later, then runs `podman machine init turnstone --username user`, which downloads the machine image. It allows the create 15 minutes. A create that fails is removed (`podman machine rm --force turnstone`), so Retry starts clean. Quitting during the create ends it and removes the half-made machine, so the quit does not wait for it. If the `turnstone` machine is not running, the app starts it. Then it puts back and checks the machine's safety settings (below), which a new machine needs on its first start.
 2. **Starting Turnstone.** If the pod is not running, the app starts it. A pod that is already running is left alone.
 3. **Waiting for the console.** The app checks `/health` once a second for up to 2 minutes, until it reports `ok`.
 4. **Waiting for the node to come online (this can take about a minute).** The app checks once a second until a node is registered, for up to 3 minutes. If none has registered after 3 minutes, the Console opens anyway, provided the Console is still healthy. If the Console stopped answering, or answers with anything other than a healthy status, during the wait, you get the `HEALTH_TIMEOUT` error page instead.
 
-The app starts the Podman machine when it is stopped and starts or stops the existing pod. It stops the machine only to restart it after putting `/etc/wsl.conf` back.
+The app creates the Podman machine when there is none, starts it when it is stopped, and starts or stops the existing pod. It stops the machine only to restart it after putting `/etc/wsl.conf` back, and removes it only after its own create failed.
 
 **The machine's safety settings.** These keep Windows out of the machine, and nothing in the machine holds them in place, so on every start, before the pod, the app runs a script as root inside the machine (`podman machine ssh --username root turnstone`). It puts these back:
 
@@ -76,7 +77,7 @@ Then it checks that the gaps are closed: no `WSLInterop` handler is registered, 
 
 **What happens on quit.** By default, closing the window only hides it to the tray and the pod keeps running (see *When the window closes*). Quit in the tray, or closing the window with *Quit the app* chosen, quits the app, and the Settings field *When the app quits* then controls the pod:
 
-- **Stop Turnstone server** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. If startup was already running a Podman step when you quit, that step finishes first, so quitting can take longer. A failed stop is ignored.
+- **Stop Turnstone server** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. If startup was already running a Podman step when you quit, that step finishes first, so quitting can take longer. A machine create is the exception: it is ended, not waited for. A failed stop is ignored.
 - **Keep Turnstone server running**: the pod is left running. The next launch does not start the machine or the pod if they are already running.
 
 The app never stops the Podman machine on quit. If you switch away from Local mode during a session, Stop Turnstone server still stops the pod on quit.
@@ -189,7 +190,8 @@ If startup fails, the loading screen is replaced by an error page. It shows the 
 | Code | Message on screen | What to check |
 |---|---|---|
 | `PODMAN_NOT_FOUND` | Podman is not installed. Install Podman, then reopen Turnstone. | Install Podman. Check that `podman` runs from a terminal on this PC. |
-| `MACHINE_MISSING` | The Turnstone Podman machine does not exist. Create it, then reopen Turnstone. | Create a machine named `turnstone` in Podman. `podman machine list` should show it. |
+| `PODMAN_TOO_OLD` | Podman is older than 6.1.4, which Turnstone needs to create its machine. Update Podman, then reopen Turnstone. | Update Podman. The detail line shows the version found. Only a first run, which creates the machine, checks it. |
+| `MACHINE_CREATE_FAILED` | The Turnstone Podman machine could not be created. | Read the detail line, which shows Podman's error or why its version could not be read. The half-made machine was removed, so Retry tries again from the start. To see the error yourself, run `podman machine init turnstone --username user`. If the detail says the half-made machine could not be removed, or that a WSL distribution named `podman-turnstone` already exists, a create was interrupted before Podman saved the machine: if that distribution holds nothing you need, run `wsl --unregister podman-turnstone`, then Retry. The app never removes a distribution Podman does not know, since it could hold a machine whose Podman settings were lost. |
 | `MACHINE_LIST_FAILED` | Podman answered, but its machine list could not be read. | Run `podman machine list --format json` by hand and read its error. |
 | `MACHINE_START_FAILED` | The Turnstone Podman machine would not start. | Run `podman machine start turnstone` by hand and read its error. |
 | `MACHINE_CHECK_FAILED` | The Turnstone machine's safety settings could not be checked, so Turnstone was not started. | Run `podman machine ssh --username root turnstone id -u` by hand. It must print `0`. The detail line shows Podman's error. |

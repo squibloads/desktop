@@ -6,6 +6,10 @@ import { pollUntil, waitForText, waitForTitle } from "../helpers/poll.js";
 // The podman call Retry makes first. The health poller only reads /health and never calls podman,
 // so a new line for this call after Retry can only come from a start that Retry began.
 const MACHINE_LIST = "machine list --format json";
+// The calls that create a missing machine, in the form fake-podman.js logs them.
+const VERSION = "version --format {{.Client.Version}}";
+const MACHINE_INIT = "machine init turnstone --username user";
+const MACHINE_RM = "machine rm --force turnstone";
 
 // Starts a console to learn a free port, then stops it. The console stays down until a
 // test starts it again, so the health poller never sees it come up during the error.
@@ -24,8 +28,9 @@ function countMachineLists(app) {
 afterEach(closeEverything);
 
 describe("local start errors", () => {
-  // Failure: a machine that does not exist shows a generic "unable to connect" page, and the user cannot tell that Podman needs the machine created.
-  it("shows MACHINE_MISSING, and Retry starts Turnstone once the machine exists", async () => {
+  // Failure: a create that fails shows a generic "unable to connect" page and leaves a half-made machine, so Retry meets
+  // the broken machine instead of creating a new one.
+  it("shows MACHINE_CREATE_FAILED, removes the half-made machine, and Retry creates it", async () => {
     // The console is up but reports status error. The health poller reloads a view only on status
     // ok, so the console can load only through a start that Retry began. The start polls /health
     // until it reads ok, so the status is flipped to ok only after Retry has been seen to start one.
@@ -33,21 +38,17 @@ describe("local start errors", () => {
     await fake.start();
     const app = await launchApp({
       settings: { mode: "local" },
-      podmanState: { machine: "missing" },
+      podmanState: { machine: "missing", failInit: true },
       consolePort: fake.port,
     });
 
     const errorPage = await app.findPage(urlEndsWith("local-error.html"), { description: "local error page" });
-    await waitForText(errorPage, "#error-title", "MACHINE_MISSING");
-    await waitForText(
-      errorPage,
-      "#error-message",
-      "The Turnstone Podman machine does not exist. Create it, then reopen Turnstone.",
-    );
-    expect(countMachineLists(app)).toBe(1);
+    await waitForText(errorPage, "#error-title", "MACHINE_CREATE_FAILED");
+    await waitForText(errorPage, "#error-message", "The Turnstone Podman machine could not be created.");
+    expect(app.readPodmanLog()).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_RM]);
 
-    // The machine is fixed, then Retry is clicked. A second machine list line is the start that Retry began.
-    await app.setPodmanState({ machine: "running" });
+    // The cause is gone, then Retry is clicked. A second machine list line is the start that Retry began.
+    await app.setPodmanState({ failInit: false });
     await errorPage.click("#btn-retry");
     await pollUntil(() => countMachineLists(app) === 2, {
       description: "a second machine list call after Retry",
@@ -57,8 +58,23 @@ describe("local start errors", () => {
     fake.setHealth("ok");
     const page = await app.findPage(urlIs(`${fake.url}/`), { description: "console page after Retry" });
     await waitForTitle(page, "fake console");
-    const listCalls = app.readPodmanLog().filter((line) => line === MACHINE_LIST);
-    expect(listCalls).toEqual([MACHINE_LIST, MACHINE_LIST]);
+    const initCalls = app.readPodmanLog().filter((line) => line === MACHINE_INIT);
+    expect(initCalls).toEqual([MACHINE_INIT, MACHINE_INIT]);
+  });
+
+  // Failure: a Podman with the fresh-machine pids cgroup bug creates a machine where no container can run.
+  it("shows PODMAN_TOO_OLD with the version found, and creates nothing", async () => {
+    const { port } = await reservedConsole();
+    const app = await launchApp({
+      settings: { mode: "local" },
+      podmanState: { machine: "missing", podmanVersion: "6.0.2" },
+      consolePort: port,
+    });
+
+    const errorPage = await app.findPage(urlEndsWith("local-error.html"), { description: "local error page" });
+    await waitForText(errorPage, "#error-title", "PODMAN_TOO_OLD");
+    expect(await errorPage.textContent("#error-detail")).toContain("6.0.2");
+    expect(app.readPodmanLog()).toEqual([MACHINE_LIST, VERSION]);
   });
 
   // Failure: a missing pod shows a generic error, so the user does not learn that the pod must be created on the Turnstone connection.
