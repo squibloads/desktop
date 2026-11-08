@@ -943,6 +943,66 @@ describe("LocalRuntime pinned image", () => {
   });
 });
 
+// A podman failure whose command line and stderr both carry a secret, as a future call with a secret in it could.
+function leakyFailure() {
+  return new Error(
+    "Command failed: podman --connection turnstone run --env TURNSTONE_JWT_SECRET=leak-in-argv\n" +
+      "Error: TURNSTONE_JWT_SECRET=leak-in-stderr was rejected",
+  );
+}
+
+describe("LocalRuntime error text", () => {
+  // Failure: a secret in Podman's stderr reaches the error page and the log through the error's detail (L-11).
+  it("masks secret values in an error's detail and message", () => {
+    const e = new LocalRuntimeError("POD_START_FAILED", 'Error: bad config\njwt_secret = "abc123"');
+    expect(e.detail).toBe("Error: bad config\njwt_secret = [redacted]");
+    expect(e.message).toBe("POD_START_FAILED: Error: bad config\njwt_secret = [redacted]");
+  });
+
+  // Failure: an error raised without a detail gains the text "undefined" or a mask, and reads as if podman said it.
+  it("keeps a missing detail missing", () => {
+    expect(new LocalRuntimeError("START_CANCELLED").detail).toBeUndefined();
+  });
+
+  // Failure: these codes kept execFile's whole "Command failed:" line, so any secret on a command line reached the
+  // error page and the log, and the detail opened with a command the user cannot act on.
+  it.each([
+    ["MACHINE_START_FAILED", { [MACHINE_LIST]: machines(false), [MACHINE_START]: leakyFailure }],
+    ["POD_START_FAILED", { [MACHINE_LIST]: machines(true), [POD_STATE]: "Exited", [POD_START]: leakyFailure }],
+    ["POD_MISSING", { [MACHINE_LIST]: machines(true), [POD_STATE]: leakyFailure, [IMAGE_EXISTS]: "" }],
+  ])("%s shows Podman's error without the command line, with the secret masked", async (code, script) => {
+    const { rt } = make(script);
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe(code);
+    expect(err.detail).toBe("Error: TURNSTONE_JWT_SECRET=[redacted] was rejected");
+    expect(err.message).not.toContain("leak");
+  });
+
+  // Failure: the quit-time stop logs the whole command line and any secret in it ("pod stop failed:" in main.js).
+  it("POD_STOP_FAILED shows Podman's error without the command line, with the secret masked", async () => {
+    const { rt } = make({ [STOP]: leakyFailure });
+    const err = await rt.stop().catch((e) => e);
+    expect(err.code).toBe("POD_STOP_FAILED");
+    expect(err.detail).toBe("Error: TURNSTONE_JWT_SECRET=[redacted] was rejected");
+    expect(err.message).not.toContain("leak");
+  });
+
+  // Failure: the cleanup of a half-made machine logs Podman's stderr unmasked, before any LocalRuntimeError exists.
+  it("masks the half-made machine cleanup line it logs", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { rt } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: new Error("Command failed: podman machine init\nError: image download failed"),
+      [MACHINE_RM]: new Error("Command failed: podman machine rm\nError: api_key=leak-in-cleanup refused"),
+    });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("MACHINE_CREATE_FAILED");
+    expect(logged).toHaveBeenCalledWith("machine create cleanup failed:", "Error: api_key=[redacted] refused");
+    expect(err.detail).not.toContain("leak");
+  });
+});
+
 describe("LocalRuntimeError messages", () => {
   const CODES = [
     "PODMAN_NOT_FOUND",

@@ -4,6 +4,7 @@ const { sessionFetch, isRefusedRedirect } = require("./session-fetch.js");
 const { machineCheckCommand, parseMachineReport, hardeningGaps } = require("./machine-hardening.js");
 const { TURNSTONE_IMAGE, pinnedImageRef } = require("./turnstone-image.js");
 const { freeDiskBytes: readFreeDiskBytes, podmanDataDir } = require("./disk-space.js");
+const { redactSecrets } = require("./redact-secrets.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
@@ -53,11 +54,14 @@ const USER_MESSAGES = {
     "Turnstone is running, but its node has not come online yet; opening the console anyway.",
 };
 
+// Every detail is masked here, once, because the error page, the start log and the quit log all read it from this
+// object (L-11). A missing detail stays missing.
 class LocalRuntimeError extends Error {
   constructor(code, detail) {
-    super(`${code}: ${detail}`);
+    const clean = detail == null ? detail : redactSecrets(detail);
+    super(`${code}: ${clean}`);
     this.code = code;
-    this.detail = detail;
+    this.detail = clean;
     this.userMessage = USER_MESSAGES[code];
   }
 }
@@ -310,7 +314,7 @@ class LocalRuntime {
     if (err && err.code === "ENOENT") {
       return new LocalRuntimeError("PODMAN_NOT_FOUND", err.message);
     }
-    return new LocalRuntimeError(failCode, err && err.message);
+    return new LocalRuntimeError(failCode, withoutCommandLine(err));
   }
 
   /** "missing", "running" or "stopped", from the machine list. A list that cannot be read is an error, never empty. */
@@ -375,7 +379,8 @@ class LocalRuntime {
       return null;
     } catch (rmErr) {
       const cleanup = withoutCommandLine(rmErr);
-      console.error("machine create cleanup failed:", cleanup);
+      // Logged before any LocalRuntimeError exists, so it is masked here.
+      console.error("machine create cleanup failed:", redactSecrets(cleanup));
       return cleanup;
     }
   }
@@ -538,7 +543,7 @@ class LocalRuntime {
       );
     } catch (err) {
       if (err && err.code === "ENOENT") throw this._wrap(err);
-      throw new LocalRuntimeError("POD_MISSING", err && err.message);
+      throw new LocalRuntimeError("POD_MISSING", withoutCommandLine(err));
     }
     return String(out).trim();
   }
