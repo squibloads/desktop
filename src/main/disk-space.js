@@ -8,9 +8,14 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-/** Podman's machine folder, where each machine's disk file lives. It need not exist yet. */
-function podmanDataDir(home = os.homedir()) {
-  return path.join(home, ".local", "share", "containers", "podman", "machine");
+/**
+ * Podman's machine folder, where each machine's disk file lives. It need not exist yet. Podman keeps its data under
+ * XDG_DATA_HOME when that is set, on Windows too, and under ~/.local/share otherwise, so the check follows the same
+ * rule and reads the drive the machine actually grows on.
+ */
+function podmanDataDir(home = os.homedir(), env = process.env) {
+  const dataHome = env.XDG_DATA_HOME ? env.XDG_DATA_HOME : path.join(home, ".local", "share");
+  return path.join(dataHome, "containers", "podman", "machine");
 }
 
 /**
