@@ -19,6 +19,7 @@ async function openSettings(overrides = {}, pageOptions = {}) {
       serverUrl: SERVER,
       consoleUrl: CONSOLE,
       quitBehavior: "stop",
+      closeBehavior: "tray",
       activeTab: "server",
       ...overrides,
     },
@@ -64,6 +65,13 @@ describe("field visibility per mode", () => {
     expect(localGroup).toEqual(localState);
   });
 
+  // Failure: the close row is hidden in some mode, so a user of that mode cannot choose what X does.
+  it.each([["server"], ["console"], ["both"], ["local"]])("mode %s shows the close row", async (mode) => {
+    const page = await openSettings({ mode });
+
+    expect(stateOf(page.document.getElementById("close-group"))).toEqual([]);
+  });
+
   // Failure: picking a mode radio leaves the previous mode's fields on screen until the window is reopened.
   it("updates the visible fields when the mode radio changes, without reading settings again", async () => {
     const page = await openSettings({ mode: "both" });
@@ -89,12 +97,14 @@ describe("initial values", () => {
       serverUrl: "https://turnstone.example.test",
       consoleUrl: "https://console.example.test:9000",
       quitBehavior: "keep",
+      closeBehavior: "quit",
     });
     const doc = page.document;
 
     expect(doc.getElementById("server-url").value).toBe("https://turnstone.example.test");
     expect(doc.getElementById("console-url").value).toBe("https://console.example.test:9000");
     expect(doc.getElementById("quit-behavior").value).toBe("keep");
+    expect(doc.getElementById("close-behavior").value).toBe("quit");
     expect(doc.querySelector('input[name="mode"]:checked').id).toBe("mode-server");
   });
 
@@ -125,29 +135,30 @@ describe("save payload per mode", () => {
   it.each([
     [
       "server",
-      { server: "https://server.example.test:8080/", console: "not a url", quit: "keep" },
-      { mode: "server", serverUrl: SERVER, consoleUrl: "not a url", quitBehavior: "keep" },
+      { server: "https://server.example.test:8080/", console: "not a url", quit: "keep", close: "quit" },
+      { mode: "server", serverUrl: SERVER, consoleUrl: "not a url", quitBehavior: "keep", closeBehavior: "quit" },
     ],
     [
       "console",
-      { server: "  also not a url  ", console: "https://console.example.test:9000/", quit: "stop" },
-      { mode: "console", serverUrl: "also not a url", consoleUrl: "https://console.example.test:9000", quitBehavior: "stop" },
+      { server: "  also not a url  ", console: "https://console.example.test:9000/", quit: "stop", close: "tray" },
+      { mode: "console", serverUrl: "also not a url", consoleUrl: "https://console.example.test:9000", quitBehavior: "stop", closeBehavior: "tray" },
     ],
     [
       "both",
-      { server: "  https://server.example.test:8080//  ", console: "https://console.example.test:8090/", quit: "stop" },
-      { mode: "both", serverUrl: SERVER, consoleUrl: CONSOLE, quitBehavior: "stop" },
+      { server: "  https://server.example.test:8080//  ", console: "https://console.example.test:8090/", quit: "stop", close: "quit" },
+      { mode: "both", serverUrl: SERVER, consoleUrl: CONSOLE, quitBehavior: "stop", closeBehavior: "quit" },
     ],
     [
       "local",
-      { server: "not a url", console: "not a url", quit: "keep" },
-      { mode: "local", serverUrl: "not a url", consoleUrl: "not a url", quitBehavior: "keep" },
+      { server: "not a url", console: "not a url", quit: "keep", close: "tray" },
+      { mode: "local", serverUrl: "not a url", consoleUrl: "not a url", quitBehavior: "keep", closeBehavior: "tray" },
     ],
   ])("mode %s sends the expected payload", async (mode, input, payload) => {
     const page = await openSettings({ mode });
     setValue(page, "server-url", input.server);
     setValue(page, "console-url", input.console);
     page.document.getElementById("quit-behavior").value = input.quit;
+    page.document.getElementById("close-behavior").value = input.close;
 
     page.document.getElementById("btn-save").click();
 
@@ -168,6 +179,7 @@ describe("save payload per mode", () => {
       serverUrl: "https://turnstone.example.test",
       consoleUrl: "https://console.example.test:9443",
       quitBehavior: "stop",
+      closeBehavior: "tray",
     });
   });
 });
@@ -376,7 +388,7 @@ describe("closing and keyboard", () => {
   });
 
   // Failure: Enter on a mode radio or the quit select saves the form, so changing the mode with the keyboard saves too early.
-  it.each([["mode-console"], ["quit-behavior"]])("Enter on %s does not save", async (id) => {
+  it.each([["mode-console"], ["quit-behavior"], ["close-behavior"]])("Enter on %s does not save", async (id) => {
     const page = await openSettings({ mode: "server" });
     const control = page.document.getElementById(id);
     control.focus();

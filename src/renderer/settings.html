@@ -254,6 +254,15 @@
       <label for="mode-local">Local</label>
     </div>
 
+    <div class="url-group" id="close-group">
+      <label for="close-behavior">When the window closes</label>
+      <select id="close-behavior" aria-describedby="close-behavior-help">
+        <option value="tray">Keep running in the tray</option>
+        <option value="quit">Quit the app</option>
+      </select>
+      <div class="hint" id="close-behavior-help">Keeping it running keeps the health checks, notifications and the Local pod going; quit from the tray icon's menu. On macOS the app always keeps running after its window closes. <a href="https://github.com/squibloads/desktop#system-tray" target="_blank" rel="noopener">Learn more</a></div>
+    </div>
+
     <div class="url-group gone" id="local-group">
       <label for="quit-behavior">When the app quits</label>
       <select id="quit-behavior" aria-describedby="quit-behavior-help">

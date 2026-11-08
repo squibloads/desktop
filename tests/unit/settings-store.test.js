@@ -26,6 +26,7 @@ describe("SettingsStore", () => {
       activeTab: "server",
       hasLaunched: false,
       quitBehavior: "stop",
+      closeBehavior: "tray",
       ...initial,
     };
     for (const [k, v] of Object.entries(defaults)) {
@@ -98,6 +99,7 @@ describe("SettingsStore", () => {
         consoleUrl: "http://test:5678",
         activeTab: "console",
         quitBehavior: "stop",
+        closeBehavior: "tray",
       });
     });
   });
@@ -105,7 +107,7 @@ describe("SettingsStore", () => {
 
 describe("SettingsStore local mode", () => {
   function createLocal(initial = {}) {
-    const data = { mode: "local", quitBehavior: "stop", serverUrl: "http://x:1", consoleUrl: "http://y:2", ...initial };
+    const data = { mode: "local", quitBehavior: "stop", closeBehavior: "tray", serverUrl: "http://x:1", consoleUrl: "http://y:2", ...initial };
     return new SettingsStore({
       get: (k) => data[k],
       set: (k, v) => {
@@ -200,5 +202,52 @@ describe("SettingsStore local console override", () => {
   it("throws naming the variable on read in local mode when the override is malformed", () => {
     vi.stubEnv("TURNSTONE_LOCAL_CONSOLE_URL", "http://example.com:9191");
     expect(() => local().consoleUrl).toThrow(/TURNSTONE_LOCAL_CONSOLE_URL/);
+  });
+});
+
+describe("SettingsStore closeBehavior", () => {
+  const make = (v) => new SettingsStore({ get: () => v, set: () => {} });
+
+  // Failure: a stored choice is read back as something else, so closing the window does the opposite of what was chosen.
+  it("returns stored tray and quit", () => {
+    expect(make("tray").closeBehavior).toBe("tray");
+    expect(make("quit").closeBehavior).toBe("quit");
+  });
+
+  // Failure: a corrupt value is read as a valid choice, so the window quits or hides on a guess.
+  it("throws on an unreadable value instead of inventing one", () => {
+    expect(() => make("bogus").closeBehavior).toThrow(/invalid closeBehavior/);
+    expect(() => make(undefined).closeBehavior).toThrow(/invalid closeBehavior/);
+  });
+
+  // Failure: a bad value is written, and every later close reads a corrupt setting.
+  it("refuses to store anything but tray or quit", () => {
+    const data = {};
+    const s = new SettingsStore({ get: (k) => data[k], set: (k, v) => { data[k] = v; } });
+    s.closeBehavior = "quit";
+    expect(data.closeBehavior).toBe("quit");
+    expect(() => {
+      s.closeBehavior = "minimize";
+    }).toThrow(/invalid closeBehavior/);
+    expect(data.closeBehavior).toBe("quit");
+  });
+});
+
+describe("SettingsStore trayHintShown", () => {
+  // Failure: the one-time notice is shown on every close, or never, because the flag does not round-trip.
+  it("reads and writes the flag", () => {
+    const data = { trayHintShown: false };
+    const s = new SettingsStore({ get: (k) => data[k], set: (k, v) => { data[k] = v; } });
+    expect(s.trayHintShown).toBe(false);
+    s.trayHintShown = true;
+    expect(data.trayHintShown).toBe(true);
+    expect(s.trayHintShown).toBe(true);
+  });
+
+  // Failure: the flag leaks into the Settings dialog, where it has no field and a save could overwrite it.
+  it("is not part of getAll", () => {
+    const data = { mode: "both", quitBehavior: "stop", closeBehavior: "tray", trayHintShown: true };
+    const s = new SettingsStore({ get: (k) => data[k], set: () => {} });
+    expect("trayHintShown" in s.getAll()).toBe(false);
   });
 });

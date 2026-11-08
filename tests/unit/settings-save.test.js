@@ -115,6 +115,32 @@ describe("planSettingsSave valid saves", () => {
     expect("quitBehavior" in result.apply).toBe(false);
   });
 
+  // Failure: choosing to quit when the window closes is dropped on save, so X keeps hiding the window.
+  it("saves a quit close behaviour when one is sent", () => {
+    const result = planSettingsSave(savedBoth(), {
+      mode: "both",
+      serverUrl: SERVER_URL,
+      consoleUrl: CONSOLE_URL,
+      closeBehavior: "quit",
+    });
+    expect(result.apply).toEqual({
+      mode: "both",
+      serverUrl: SERVER_URL,
+      consoleUrl: CONSOLE_URL,
+      closeBehavior: "quit",
+    });
+  });
+
+  // Failure: a save that omits the close behaviour resets the user's stored choice.
+  it("leaves the stored close behaviour alone when the save does not send one", () => {
+    const result = planSettingsSave(savedBoth(), {
+      mode: "both",
+      serverUrl: SERVER_URL,
+      consoleUrl: CONSOLE_URL,
+    });
+    expect("closeBehavior" in result.apply).toBe(false);
+  });
+
   // Failure: a save with no mode field switches the user out of their current mode.
   it("saves a payload with no mode as both", () => {
     const result = planSettingsSave(savedBoth(), {
@@ -249,6 +275,17 @@ describe("planSettingsSave refused saves", () => {
       quitBehavior: "maybe",
     });
     expect(result).toEqual({ error: "Invalid quit behaviour" });
+  });
+
+  // Failure: an unknown close behaviour is stored and every later close reads a corrupt setting.
+  it.each([["minimize"], [null], [true]])("refuses the close behaviour %s and applies nothing", (value) => {
+    const result = planSettingsSave(savedBoth(), {
+      mode: "both",
+      serverUrl: SERVER_URL,
+      consoleUrl: CONSOLE_URL,
+      closeBehavior: value,
+    });
+    expect(result).toEqual({ error: "Invalid close behaviour" });
   });
 
   // Failure: null for quit behaviour is treated as "not sent" and the stored choice is overwritten.
@@ -428,13 +465,14 @@ describe("writeSavePlan", () => {
   // Failure: a save drops one of the fields the plan carries, so the stored settings differ from what the user saved.
   it("writes every field the plan carries", () => {
     const store = { mode: "both", serverUrl: SERVER_URL, consoleUrl: CONSOLE_URL, quitBehavior: "stop" };
-    writeSavePlan(store, { mode: "server", serverUrl: NEW_SERVER_URL, quitBehavior: "keep" });
+    writeSavePlan(store, { mode: "server", serverUrl: NEW_SERVER_URL, quitBehavior: "keep", closeBehavior: "quit" });
 
     expect(store).toEqual({
       mode: "server",
       serverUrl: NEW_SERVER_URL,
       consoleUrl: CONSOLE_URL,
       quitBehavior: "keep",
+      closeBehavior: "quit",
     });
   });
 });

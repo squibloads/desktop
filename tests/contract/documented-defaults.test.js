@@ -91,6 +91,14 @@ describe("README settings reference matches the code", () => {
     expect(schemaDefault("quitBehavior")).toEqual("stop");
   });
 
+  // Failure: the README says closing the window keeps the app in the tray while the app quits, or the other way round.
+  it("When the window closes defaults to Keep running in the tray, which is schema closeBehavior tray", () => {
+    const readmeClose = readmeMatch(/^\| \*\*When the window closes\*\* \| ([^|]+?) \|/m);
+
+    expect(readmeClose).toEqual("Keep running in the tray");
+    expect(schemaDefault("closeBehavior")).toEqual("tray");
+  });
+
   // Failure: the README gives one Local Console address and the app uses another, so the Console opens on the wrong port.
   it("the Local Console address equals DEFAULT_LOCAL_CONSOLE_URL and the local health default", () => {
     const constant = capture(/const DEFAULT_LOCAL_CONSOLE_URL = "([^"]*)"/, runtimeConfig, "DEFAULT_LOCAL_CONSOLE_URL");

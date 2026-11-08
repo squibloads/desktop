@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   serverUrl: "http://server.example.test:8080",
   consoleUrl: "http://console.example.test:8090",
   quitBehavior: "stop",
+  closeBehavior: "tray",
   activeTab: "server",
 };
 
