@@ -4,14 +4,21 @@
 //
 // No electron here, so the rule runs under plain Node in the unit tier.
 
-// The keys Turnstone reads secrets from, then any key whose name says it holds one. The generic rule over-masks a
-// harmless value now and then (max_tokens), which costs a number on an error page; under-masking would cost a secret.
-const SECRET_KEY = String.raw`jwt_secret|mcp_token_encryption_keys?|api_key|turnstone_jwt_secret|turnstone_oidc_client_secret|\w*(?:password|token|secret)\w*`;
+// The keys Turnstone reads secrets from, then any key whose name says it holds one, whatever word characters and
+// hyphens surround it (OPENAI_API_KEY, --api-key, x-client-secret-value). The generic rule over-masks a harmless value
+// now and then (max_tokens), which costs a number on an error page; under-masking would cost a secret. Its bounds keep
+// a long run of hyphenated words from backtracking without limit.
+const SECRET_KEY = String.raw`jwt_secret|mcp_token_encryption_keys?|turnstone_jwt_secret|turnstone_oidc_client_secret|[\w-]{0,64}(?:password|token|secret|api[_-]?key)[\w-]{0,64}`;
 
-// key = value, key: value, KEY=value, and "key": value in JSON. The value is a TOML array, a quoted string or the rest
-// of the word, never past the end of the line, so a key with nothing after it cannot take the next line.
+// A TOML or JSON array read entry by entry, so a bracket inside a quoted entry does not end it; an array the line cuts
+// off is masked to the end of the line.
+const ARRAY = String.raw`\[(?:"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|[^\]"'\n])*\]|\[[^\n]*`;
+
+// key = value, key: value, KEY=value, and "key": value in JSON. The value is an array, a quoted string or the rest of
+// the word, never past the end of the line, so a key with nothing after it cannot take the next line. Both parts are
+// fixed text above; nothing from the input is built into the pattern.
 const SECRET_VALUE = new RegExp(
-  String.raw`\b(${SECRET_KEY})(["']?[ \t]*[:=][ \t]*)(\[[^\]\n]*\]|"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|\S+)`,
+  String.raw`\b(${SECRET_KEY})(["']?[ \t]*[:=][ \t]*)(${ARRAY}|"(?:[^"\\\n]|\\.)*"|'[^'\n]*'|\S+)`,
   "gi",
 );
 

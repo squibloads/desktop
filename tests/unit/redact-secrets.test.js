@@ -19,8 +19,33 @@ describe("redactSecrets", () => {
     ["db_password=hunter2", "db_password=[redacted]"],
     ["--token=abc123", "--token=[redacted]"],
     ["Client_Secret : xyz", "Client_Secret : [redacted]"],
+    ["OPENAI_API_KEY=sk-live", "OPENAI_API_KEY=[redacted]"],
+    ["--api-key=sk-live", "--api-key=[redacted]"],
+    ["x-api-key: sk-live", "x-api-key: [redacted]"],
+    ["--client-secret-value=abc", "--client-secret-value=[redacted]"],
+    ["apikey=sk-live", "apikey=[redacted]"],
   ])("masks %s", (input, expected) => {
     expect(redactSecrets(input)).toBe(expected);
+  });
+
+  // Failure: a closing bracket inside a quoted entry ends the array early, and the rest of the array is shown.
+  it("masks a whole array whose quoted entries contain brackets, and keeps what follows it", () => {
+    expect(redactSecrets('mcp_token_encryption_keys = ["a]b", "other"]')).toBe("mcp_token_encryption_keys = [redacted]");
+    expect(redactSecrets(`mcp_token_encryption_keys = ['a]b', "c\\"]d"]`)).toBe("mcp_token_encryption_keys = [redacted]");
+    expect(redactSecrets('{"api_keys":["a]b","c"],"model":"m"}')).toBe('{"api_keys":[redacted],"model":"m"}');
+  });
+
+  // Failure: an array cut off by the end of the line falls through to the one-word rule, and its tail is shown.
+  it("masks an unterminated array to the end of its line, and keeps the next line", () => {
+    expect(redactSecrets('jwt_secret = ["abc def\nError: next')).toBe("jwt_secret = [redacted]\nError: next");
+  });
+
+  // Failure: a long run of hyphenated words makes the key rule backtrack without bound, and an error page hangs.
+  it("stays fast on a long run of hyphenated words with no secret in it", () => {
+    const text = `${"a-".repeat(100_000)}=x`;
+    const started = Date.now();
+    expect(redactSecrets(text)).toBe(text);
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 
   // Failure: masking eats the image digest or ordinary text, and the error page loses what the user needs to act on.
