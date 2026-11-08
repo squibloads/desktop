@@ -860,6 +860,22 @@ describe("LocalRuntime pinned image", () => {
     expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
   });
 
+  // Failure: a digest check that cannot run leaves the pulled image in place unchecked, against "check after every pull".
+  it("removes the pulled image when its digests cannot be read, and reports why", async () => {
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: "",
+      [IMAGE_DIGESTS]: new Error("Command failed: podman image inspect\nError: storage is locked"),
+      [IMAGE_RM]: "",
+    });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("IMAGE_PULL_FAILED");
+    expect(err.detail).toContain("Error: storage is locked");
+    expect(err.detail).not.toContain("Command failed");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
+  });
+
   // Failure: podman failing to say whether the image is there is read as "not there", and a pull starts on a guess.
   it("reports IMAGE_PULL_FAILED when podman cannot say whether the image is there", async () => {
     const { rt, calls } = make({
