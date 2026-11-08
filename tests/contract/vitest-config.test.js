@@ -49,6 +49,7 @@ describe("vitest.config.mjs hermetic env", () => {
     vi.stubEnv("VITEST_SHUFFLE", "0");
     vi.stubEnv("VITEST_SEED", "");
     vi.stubEnv("TURNSTONE_E2E", "");
+    vi.stubEnv("TURNSTONE_SCRIPT_SHELL", "");
     const { test } = config();
     const cleared = { TURNSTONE_PODMAN: "", TURNSTONE_LOCAL_CONSOLE_URL: "" };
 
@@ -63,6 +64,7 @@ describe("vitest.config.mjs e2e project", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.stubEnv("VITEST_SHUFFLE", "0");
     vi.stubEnv("VITEST_SEED", "");
+    vi.stubEnv("TURNSTONE_SCRIPT_SHELL", "");
     return config().test.projects.map((p) => p.test.name);
   }
 
@@ -108,5 +110,43 @@ describe("vitest.config.mjs e2e project", () => {
     expect(e2eProject().maxWorkers).toBe(3);
     vi.stubEnv("VITEST_MAX_WORKERS", "1");
     expect(e2eProject().maxWorkers).toBe(1);
+  });
+});
+
+// The script project runs scripts as root in a Linux shell, so it must exist only when a root shell is named.
+describe("vitest.config.mjs script project", () => {
+  function projectNames(shell, e2e = "") {
+    vi.stubEnv("VITEST_SHUFFLE", "0");
+    vi.stubEnv("VITEST_SEED", "");
+    vi.stubEnv("TURNSTONE_E2E", e2e);
+    vi.stubEnv("TURNSTONE_SCRIPT_SHELL", shell);
+    return config().test.projects.map((p) => p.test.name);
+  }
+
+  it("lists the script tier in tierGlobs", () => {
+    expect(tierGlobs.script).toBe("tests/script/**/*.test.js");
+  });
+
+  // Failure: a plain run tries to open a root shell on a machine that has none, and fails or hangs.
+  it("has no script project when TURNSTONE_SCRIPT_SHELL is unset", () => {
+    expect(projectNames("")).toEqual(["unit", "contract", "renderer"]);
+  });
+
+  // Failure: the script command runs without its project, so it passes having run zero scripts.
+  it("has the script project, before e2e, when TURNSTONE_SCRIPT_SHELL is set", () => {
+    const shell = '["podman","machine","ssh","--username","root","turnstone"]';
+    expect(projectNames(shell)).toEqual(["unit", "contract", "renderer", "script"]);
+    expect(projectNames(shell, "1")).toEqual(["unit", "contract", "renderer", "script", "e2e"]);
+  });
+
+  // Failure: an ssh round trip per case hits the default 10 s test timeout on a cold machine.
+  it("gives the script project a longer test timeout and clears the smoke overrides", () => {
+    vi.stubEnv("VITEST_SHUFFLE", "0");
+    vi.stubEnv("VITEST_SEED", "");
+    vi.stubEnv("TURNSTONE_SCRIPT_SHELL", '["sh","-c"]');
+    const script = config().test.projects.find((p) => p.test.name === "script").test;
+    expect(script.include).toEqual(["tests/script/**/*.test.js"]);
+    expect(script.testTimeout).toBe(60000);
+    expect(script.env).toEqual({ TURNSTONE_PODMAN: "", TURNSTONE_LOCAL_CONSOLE_URL: "" });
   });
 });

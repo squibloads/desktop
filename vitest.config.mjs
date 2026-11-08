@@ -18,8 +18,14 @@ export const tierGlobs = {
   unit: "tests/unit/**/*.test.js",
   contract: "tests/contract/**/*.test.js",
   renderer: "tests/renderer/**/*.test.js",
+  script: "tests/script/**/*.test.js",
   e2e: "tests/e2e/**/*.test.js",
 };
+
+// Each script test runs a shell as root through TURNSTONE_SCRIPT_SHELL, which for the Podman machine is an ssh session.
+function scriptOverrides() {
+  return { testTimeout: 60_000 };
+}
 
 // Each e2e test launches Electron. The test timeout leaves room for chained 30 s waits; the hook
 // timeout covers the launch and the quit (the quit guard is 25 s). At most
@@ -94,14 +100,18 @@ export default defineConfig(() => {
   // The e2e project opens real windows, so it is built only when the run asks for it. Without the
   // gate, a plain `npx vitest run` would launch Electron.
   const e2eEnabled = env.TURNSTONE_E2E === "1";
+  // The script project runs shell scripts as root in Linux, so it is built only when a root shell is named. Its tests
+  // validate the value and fail on a bad one, so the tier cannot pass by skipping.
+  const scriptEnabled = (env.TURNSTONE_SCRIPT_SHELL ?? "") !== "";
   const projects = Object.entries(tierGlobs)
-    .filter(([name]) => name !== "e2e" || e2eEnabled)
+    .filter(([name]) => (name !== "e2e" || e2eEnabled) && (name !== "script" || scriptEnabled))
     .map(([name, include]) => ({
       test: {
         ...shared,
         name,
         include: [include],
         ...(name === "e2e" ? e2eOverrides(maxWorkers) : {}),
+        ...(name === "script" ? scriptOverrides() : {}),
       },
     }));
 

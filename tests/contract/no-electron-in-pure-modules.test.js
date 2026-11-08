@@ -25,6 +25,7 @@ const PURE_MODULES = [
   "ipc-senders.js",
   "session-fetch.js",
   "redact-secrets.js",
+  "turnstone-config.js",
 ];
 
 // A line starting at column 0 with a require or import of "electron". Indented
