@@ -453,4 +453,17 @@ describe("main.js wiring", () => {
       expect((main.match(pattern) || []).length, String(pattern)).toBe(expected);
     }
   });
+
+  // Failure: an error that is not a LocalRuntimeError skips the constructor's masking, and its message and stack reach
+  // the log and the error page with any secret in them (L-11).
+  it("masks the unexpected start error before it logs or shows it", () => {
+    expect(main).toMatch(/^const \{ redactSecrets \} = require\("\.\/redact-secrets\.js"\);\r?$/m);
+    expect(main).toContain(
+      'console.error("local start failed unexpectedly:", redactSecrets((err && err.stack) || err));',
+    );
+    expect(main).toContain(
+      'showLocalError(view, "UNEXPECTED", "Local startup failed unexpectedly.", redactSecrets(err && err.message));',
+    );
+    expect(main).not.toContain('console.error("local start failed unexpectedly:", err);');
+  });
 });

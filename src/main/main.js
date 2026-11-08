@@ -28,6 +28,7 @@ const { TurnStoneTray } = require("./tray.js");
 const { notificationLabel } = require("./tray-status.js");
 const { NotificationManager, createNotificationLifecycle } = require("./notifications.js");
 const { LocalRuntime } = require("./local-runtime.js");
+const { redactSecrets } = require("./redact-secrets.js");
 const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 const { planRecovery } = require("./recovery.js");
 const { planSettingsSave, writeSavePlan, isValidUrl, reachableSettings } = require("./settings-save.js");
@@ -486,9 +487,10 @@ async function startLocalRuntime() {
       return;
     }
     if (!err.userMessage) {
-      // Not a runtime error: a bug. Show it instead of spinning forever.
-      console.error("local start failed unexpectedly:", err);
-      showLocalError(view, "UNEXPECTED", "Local startup failed unexpectedly.", err && err.message);
+      // Not a runtime error: a bug. Show it instead of spinning forever. It never passed through LocalRuntimeError, so
+      // it is masked here before the log and the page see it.
+      console.error("local start failed unexpectedly:", redactSecrets((err && err.stack) || err));
+      showLocalError(view, "UNEXPECTED", "Local startup failed unexpectedly.", redactSecrets(err && err.message));
       return;
     }
     showLocalError(view, err.code, err.userMessage, err.detail);

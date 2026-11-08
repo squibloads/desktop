@@ -24,6 +24,7 @@ const PURE_MODULES = [
   "redirect-refusals.js",
   "ipc-senders.js",
   "session-fetch.js",
+  "redact-secrets.js",
 ];
 
 // A line starting at column 0 with a require or import of "electron". Indented
