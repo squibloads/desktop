@@ -340,7 +340,12 @@ ${appOutput || "(none)"}`,
       } catch (err) {
         firstError ??= err;
       }
-      if (ownDir) rmSync(ownDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      try {
+        if (ownDir) rmSync(ownDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch (err) {
+        // Windows can still hold a file after the retries; the next copy is ended all the same.
+        firstError ??= err;
+      }
     }
     seconds.clear();
     if (firstError) throw firstError;
