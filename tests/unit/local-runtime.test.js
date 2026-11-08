@@ -68,8 +68,14 @@ function make(script, opts = {}) {
     healthUrl: HEALTH_URL,
     onProgress: opts.onProgress,
   });
-  return { rt, calls: runner.calls, fetchHealth };
+  return { rt, calls: runner.calls, fetchHealth, run: runner.run };
 }
+
+// The calls that create a missing machine, as local-runtime.js passes them.
+const VERSION = "version --format {{.Client.Version}}";
+const MACHINE_INIT = "machine init turnstone --username user";
+const MACHINE_RM = "machine rm --force turnstone";
+const MACHINE_START = "machine start turnstone";
 
 describe("LocalRuntime.start", () => {
   it("starts a stopped machine, then the pod, then waits for health", async () => {
@@ -117,11 +123,105 @@ describe("LocalRuntime.start", () => {
     await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_NOT_FOUND" });
   });
 
-  it("reports MACHINE_MISSING when no turnstone machine exists", async () => {
-    const { rt } = make({
+  // Failure: a PC with Podman but no turnstone machine stops at an error asking the user to build the machine by hand.
+  it("creates a missing machine, then starts it and checks it before the pod", async () => {
+    const { rt, calls } = make({
       [MACHINE_LIST]: JSON.stringify([{ Name: "other", Running: true }]),
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: "",
+      [MACHINE_START]: "",
+      [POD_STATE]: "Exited",
+      [POD_START]: "",
     });
-    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_MISSING" });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_START, HARDEN, POD_STATE, POD_START]);
+  });
+
+  // Failure: init downloads the machine image, so the two-minute limit every other call gets kills it on most links.
+  it("gives machine init a long time limit", async () => {
+    const { rt, run } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: "",
+      [MACHINE_START]: "",
+      [POD_STATE]: "Running",
+    });
+    await rt.start();
+    const [, options] = run.mock.calls.find(([args]) => args.join(" ") === MACHINE_INIT);
+    expect(options?.timeoutMs).toBeGreaterThanOrEqual(15 * 60 * 1000);
+  });
+
+  // Failure: the loading page says "Starting" through a create that takes minutes, so the user thinks it has hung.
+  it("reports the create stage before init, then the machine stage again", async () => {
+    const stages = [];
+    const { rt } = make(
+      {
+        [MACHINE_LIST]: "[]",
+        [VERSION]: "6.1.4\n",
+        [MACHINE_INIT]: "",
+        [MACHINE_START]: "",
+        [POD_STATE]: "Running",
+      },
+      { onProgress: (stage) => stages.push(stage) },
+    );
+    await rt.start();
+    expect(stages).toEqual(["machine", "create", "machine", "pod", "console", "node"]);
+  });
+
+  // Failure: a Podman with the fresh-machine pids cgroup bug (fixed in 6.1.4) creates a machine where no container runs.
+  it("refuses a Podman older than 6.1.4, and creates nothing", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: "[]", [VERSION]: "6.1.3\n" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_TOO_OLD", detail: expect.stringContaining("6.1.3") });
+    expect(calls).toEqual([MACHINE_LIST, VERSION]);
+  });
+
+  // Failure: a newer Podman, or a pre-release of one, is refused as too old.
+  it.each([["6.2.0"], ["7.0.0-rc1"], ["6.10.0"]])("accepts Podman %s", async (version) => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: `${version}\n`,
+      [MACHINE_INIT]: "",
+      [MACHINE_START]: "",
+      [POD_STATE]: "Running",
+    });
+    await rt.start();
+    expect(calls).toContain(MACHINE_INIT);
+  });
+
+  // Failure: an unreadable version is taken as new enough, so the check passes on a guess.
+  it("reports MACHINE_CREATE_FAILED when Podman's version cannot be read, and creates nothing", async () => {
+    const { rt, calls } = make({ [MACHINE_LIST]: "[]", [VERSION]: "unknown\n" });
+    await expect(rt.start()).rejects.toMatchObject({ code: "MACHINE_CREATE_FAILED" });
+    expect(calls).toEqual([MACHINE_LIST, VERSION]);
+  });
+
+  // Failure: a create that stops halfway leaves a broken machine, and every Retry then fails to start it.
+  it("removes a half-made machine when init fails, so Retry starts clean", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: new Error("Command failed: podman machine init\nError: image download failed"),
+      [MACHINE_RM]: "",
+    });
+    await expect(rt.start()).rejects.toMatchObject({
+      code: "MACHINE_CREATE_FAILED",
+      detail: expect.stringContaining("image download failed"),
+    });
+    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_RM]);
+  });
+
+  // Failure: a cleanup that fails replaces the reason the create failed, so the error page names the wrong problem.
+  it("keeps the init error when the cleanup fails too", async () => {
+    const { rt } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      [MACHINE_INIT]: new Error("Command failed: podman machine init\nError: image download failed"),
+      [MACHINE_RM]: new Error("Error: machine turnstone does not exist"),
+    });
+    await expect(rt.start()).rejects.toMatchObject({
+      code: "MACHINE_CREATE_FAILED",
+      detail: expect.stringContaining("image download failed"),
+    });
   });
 
   it("treats unparseable machine list output as an error, not as empty", async () => {
@@ -615,7 +715,8 @@ describe("LocalRuntime.starting", () => {
 describe("LocalRuntimeError messages", () => {
   const CODES = [
     "PODMAN_NOT_FOUND",
-    "MACHINE_MISSING",
+    "PODMAN_TOO_OLD",
+    "MACHINE_CREATE_FAILED",
     "MACHINE_LIST_FAILED",
     "MACHINE_START_FAILED",
     "POD_MISSING",

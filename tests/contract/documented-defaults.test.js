@@ -204,15 +204,33 @@ describe("README timing claims match the code", () => {
   // Failure: the README says quitting can wait 2 minutes for the pod to stop, but the stop call is cut off at a different time, or the stop does not go through the runner that has the timeout.
   it("the quit wait of up to 2 minutes equals the podman timeout 120000 on the pod stop path", () => {
     const readmeMinutes = readmeMatch(/Quit can wait up to (\d+) minutes while the pod stops/);
-    const codeMs = Number(capture(/\{ windowsHide: true, timeout: (\d+) \}/, localRuntime, "podman runner timeout"));
-    const stopUsesRunner = /this\._podman\(podArgs\(\["pod", "stop", POD\]\)/.test(localRuntime);
+    const codeMs = Number(
+      capture(/function runPodman\(args, \{ timeoutMs = (\d+) \} = \{\}\)/, localRuntime, "podman runner default timeout"),
+    );
+    const runnerUsesIt = /\{ windowsHide: true, timeout: timeoutMs,/.test(localRuntime);
+    // The stop passes no options, so it gets the runner's default.
+    const stopUsesRunner = /this\._podman\(podArgs\(\["pod", "stop", POD\]\), "POD_STOP_FAILED"\)/.test(localRuntime);
     const runnerDefault = /run = runPodman,/.test(localRuntime);
 
     expect(readmeMinutes).toEqual("2");
     expect(Number(readmeMinutes) * 60000).toEqual(codeMs);
     expect(codeMs).toEqual(120000);
+    expect(runnerUsesIt).toBe(true);
     expect(stopUsesRunner).toBe(true);
     expect(runnerDefault).toBe(true);
+  });
+
+  // Failure: the README says a first-run create gets 15 minutes, but init is cut off at another time.
+  it("the create's 15 minutes equal INIT_TIMEOUT_MS, and init is the call that gets it", () => {
+    const readmeMinutes = readmeMatch(/It allows the create (\d+) minutes/);
+    // Written as a product, such as 15 * 60 * 1000.
+    const codeMs = capture(/const INIT_TIMEOUT_MS = ([\d *]+);/, localRuntime, "INIT_TIMEOUT_MS")
+      .split("*")
+      .reduce((product, factor) => product * Number(factor.trim()), 1);
+    const initGetsIt = /this\.run\(MACHINE_INIT, \{ timeoutMs: INIT_TIMEOUT_MS \}\)/.test(localRuntime);
+
+    expect(Number(readmeMinutes) * 60000).toEqual(codeMs);
+    expect(initGetsIt).toBe(true);
   });
 
   // Failure: the podman names differ between the constants and the README, so the manual fix the README gives targets a machine, pod or connection the app does not use.
