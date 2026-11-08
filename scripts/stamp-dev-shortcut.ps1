@@ -11,7 +11,7 @@ If the taskbar still shows two buttons afterwards, unpin the shortcut and pin it
 it read when the shortcut was first pinned.
 
 .EXAMPLE
-powershell -NoProfile -File scripts\stamp-dev-shortcut.ps1 -Path "$env:APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Turnstone Desktop (dev).lnk"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\stamp-dev-shortcut.ps1 -Path "$env:APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\Turnstone Desktop (dev).lnk"
 #>
 param(
   [Parameter(Mandatory = $true)][string]$Path,
