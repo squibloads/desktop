@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { installSteppedClock } from "../helpers/fake-clock.js";
 import { fakeElectronNet, removeFakeElectron } from "../helpers/fake-electron-net.js";
 
-const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED } = require("../../src/main/local-runtime.js");
+const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED, runPodman } = require("../../src/main/local-runtime.js");
 const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
 
 /**
@@ -14,12 +14,13 @@ const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
  */
 function makeRunner(script) {
   const calls = [];
-  const run = vi.fn(async (args) => {
+  const run = vi.fn(async (args, options) => {
     const key = args.join(" ");
     calls.push(key);
     if (!(key in script)) throw new Error(`unscripted podman call: ${key}`);
-    // A function answers each call afresh, so one call can answer differently the second time.
-    const out = typeof script[key] === "function" ? script[key]() : script[key];
+    // A function answers each call afresh, so one call can answer differently the second time. It gets the call's
+    // options, such as the abort signal a create is given.
+    const out = typeof script[key] === "function" ? script[key](options) : script[key];
     if (out instanceof Error) throw out;
     return out;
   });
@@ -208,6 +209,30 @@ describe("LocalRuntime.start", () => {
       detail: expect.stringContaining("image download failed"),
     });
     expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_RM]);
+  });
+
+  // Failure: quitting during a first-run create waits for init, up to its 15 minutes, so the app looks hung on quit.
+  it("stops a create when the app quits, removes the half-made machine, and does not wait for init", async () => {
+    const { rt, calls } = make({
+      [MACHINE_LIST]: "[]",
+      [VERSION]: "6.1.4\n",
+      // Init never finishes on its own: only the abort the quit sends ends it.
+      [MACHINE_INIT]: (options) =>
+        new Promise((_, reject) => {
+          options.signal.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" })),
+          );
+        }),
+      [MACHINE_RM]: "",
+      [STOP]: "",
+    });
+    const starting = rt.start();
+    await vi.waitFor(() => expect(calls).toContain(MACHINE_INIT));
+
+    await rt.stop();
+
+    await expect(starting).rejects.toMatchObject({ code: "START_CANCELLED" });
+    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_RM, STOP]);
   });
 
   // Failure: a cleanup that fails replaces the reason the create failed, or vanishes silently, so a Retry meets the
@@ -1034,5 +1059,24 @@ describe("fetchHealthJson", () => {
     fakeElectronNet(vi.fn().mockRejectedValue(new Error("net::ERR_CONNECTION_REFUSED")));
 
     expect(await fetchHealthJson("http://127.0.0.1:8090")).toBe(null);
+  });
+});
+
+describe("runPodman", () => {
+  // Failure: the abort a quit sends never reaches the podman process, so the quit still waits for it to finish.
+  it("stops a call when its signal aborts, without waiting for the call to end", async () => {
+    // A stand-in podman that would run for a minute. The override is read per call.
+    vi.stubEnv("TURNSTONE_PODMAN", JSON.stringify([process.execPath, "-e", "setTimeout(() => {}, 60000)"]));
+    try {
+      const controller = new AbortController();
+      const started = performance.now();
+      const call = runPodman(["machine", "init"], { signal: controller.signal });
+      setTimeout(() => controller.abort(), 200);
+
+      await expect(call).rejects.toMatchObject({ name: "AbortError" });
+      expect(performance.now() - started).toBeLessThan(10000);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

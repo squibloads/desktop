@@ -63,16 +63,17 @@ function podArgs(args) {
 
 /**
  * Real podman runner. ENOENT is kept on the error so a missing binary is distinguishable. timeoutMs is two minutes
- * unless a call needs longer; the output limit is raised because a machine create can print a lot.
+ * unless a call needs longer; the output limit is raised because a machine create can print a lot. A signal, when
+ * given, ends the call early: a quit uses it so it never waits out a machine create.
  */
-function runPodman(args, { timeoutMs = 120000 } = {}) {
+function runPodman(args, { timeoutMs = 120000, signal } = {}) {
   return new Promise((resolve, reject) => {
     // Read per call; a malformed override rejects here (the app also checks it once at start).
     const cmd = podmanCommand();
     execFile(
       cmd.file,
       [...cmd.prefixArgs, ...args],
-      { windowsHide: true, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 },
+      { windowsHide: true, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, signal },
       (err, stdout, stderr) => {
         if (err) {
           err.message = `${err.message}${stderr ? `\n${stderr}` : ""}`;
@@ -185,6 +186,8 @@ class LocalRuntime {
     this.started = false;
     this._starting = null;
     this._cancelled = false;
+    // Set while a machine create runs, so a quit can end it instead of waiting up to its 15 minutes.
+    this._createAbort = null;
     // Latest progress stage; the loading page asks for it when it attaches
     // after the event was already sent.
     this.stage = null;
@@ -264,6 +267,8 @@ class LocalRuntime {
 
   async stop() {
     this._cancelled = true;
+    // A machine create can run for minutes; it is ended, and its half-made machine removed, rather than waited for.
+    if (this._createAbort) this._createAbort.abort();
     // A pod start still in flight would bring the pod back up after this
     // stop, so let it settle first; its own error is reported to its caller.
     if (this._starting) await this._starting.catch(() => {});
@@ -315,23 +320,39 @@ class LocalRuntime {
     await this._checkPodmanVersion();
     this._checkCancelled();
     this._progress("create");
+    const abort = new AbortController();
+    this._createAbort = abort;
     try {
-      await this.run(MACHINE_INIT, { timeoutMs: INIT_TIMEOUT_MS });
+      await this.run(MACHINE_INIT, { timeoutMs: INIT_TIMEOUT_MS, signal: abort.signal });
     } catch (err) {
       if (err && err.code === "ENOENT") throw this._wrap(err, "MACHINE_CREATE_FAILED");
+      const cleanup = await this._removeHalfMadeMachine();
+      if (abort.signal.aborted) throw new LocalRuntimeError("START_CANCELLED", "stopped during the machine create");
       const reason = withoutCommandLine(err);
-      try {
-        await this.run(["machine", "rm", "--force", MACHINE]);
-      } catch (rmErr) {
-        // Podman cannot remove a create it stopped before writing the machine's settings, and WSL can then still hold
-        // the podman-turnstone distribution, which a Retry's create meets. The app does not remove a distribution
-        // Podman does not know: it could be a working machine whose Podman settings were lost. The error says so, and
-        // the README gives the command.
-        const cleanup = withoutCommandLine(rmErr);
-        console.error("machine create cleanup failed:", cleanup);
-        throw new LocalRuntimeError("MACHINE_CREATE_FAILED", `${reason}\nThe half-made machine could not be removed: ${cleanup}`);
-      }
-      throw new LocalRuntimeError("MACHINE_CREATE_FAILED", reason);
+      throw new LocalRuntimeError(
+        "MACHINE_CREATE_FAILED",
+        cleanup ? `${reason}\nThe half-made machine could not be removed: ${cleanup}` : reason,
+      );
+    } finally {
+      this._createAbort = null;
+    }
+  }
+
+  /**
+   * Removes what a failed or ended create left; null when that worked, else what went wrong, which is also logged.
+   * Podman cannot remove a create it stopped before writing the machine's settings, and WSL can then still hold the
+   * podman-turnstone distribution, which a Retry's create meets. The app does not remove a distribution Podman does
+   * not know: it could be a working machine whose Podman settings were lost. The error says so, and the README gives
+   * the command.
+   */
+  async _removeHalfMadeMachine() {
+    try {
+      await this.run(["machine", "rm", "--force", MACHINE]);
+      return null;
+    } catch (rmErr) {
+      const cleanup = withoutCommandLine(rmErr);
+      console.error("machine create cleanup failed:", cleanup);
+      return cleanup;
     }
   }
 
@@ -462,4 +483,4 @@ class LocalRuntime {
   }
 }
 
-module.exports = { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED };
+module.exports = { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED, runPodman };
