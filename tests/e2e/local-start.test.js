@@ -11,6 +11,8 @@ const MACHINE_START = "machine start turnstone";
 const MACHINE_CHECK = `machine ssh --username root turnstone ${machineCheckCommand()}`;
 const POD_INSPECT = "--connection turnstone pod inspect turnstone --format {{.State}}";
 const POD_START = "--connection turnstone pod start turnstone";
+const VERSION = "version --format {{.Client.Version}}";
+const MACHINE_INIT = "machine init turnstone --username user";
 
 // The text local-loading.js shows for the node stage (STAGE_LABELS).
 const NODE_STAGE_LABEL = "Waiting for the node to come online (this can take about a minute)";
@@ -52,6 +54,29 @@ describe("local start", () => {
     const page = await app.findPage(urlIs(`${fake.url}/`), { description: "console page" });
     await waitForTitle(page, "fake console");
     expect(app.readPodmanLog()).toEqual([MACHINE_LIST, MACHINE_START, MACHINE_CHECK, POD_INSPECT, POD_START]);
+  });
+
+  // Failure: a PC with Podman but no turnstone machine stops at an error, and the user has to build the machine by hand.
+  it("creates a missing machine, checks Podman's version first, then starts and checks it before the pod", async () => {
+    const fake = startConsole({ nodes: 1 });
+    await fake.start();
+    const app = await launchApp({
+      settings: { mode: "local" },
+      podmanState: { machine: "missing", pod: "Exited" },
+      consolePort: fake.port,
+    });
+
+    const page = await app.findPage(urlIs(`${fake.url}/`), { description: "console page" });
+    await waitForTitle(page, "fake console");
+    expect(app.readPodmanLog()).toEqual([
+      MACHINE_LIST,
+      VERSION,
+      MACHINE_INIT,
+      MACHINE_START,
+      MACHINE_CHECK,
+      POD_INSPECT,
+      POD_START,
+    ]);
   });
 
   // Failure: the console opens while no node is registered, so the user lands on a console that cannot run a session.
