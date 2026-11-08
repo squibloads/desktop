@@ -32,6 +32,21 @@ describe("freeDiskBytes", () => {
 describe("podmanDataDir", () => {
   // Failure: the check reads another drive than the one the machine's disk grows on.
   it("is Podman's machine folder under the user's home", () => {
-    expect(podmanDataDir("C:\\Users\\joe").replace(/\\/g, "/")).toBe("C:/Users/joe/.local/share/containers/podman/machine");
+    expect(podmanDataDir("C:\\Users\\joe", {}).replace(/\\/g, "/")).toBe("C:/Users/joe/.local/share/containers/podman/machine");
+  });
+
+  // Failure: with XDG_DATA_HOME on another drive, Podman puts the machine there but the check reads the home drive,
+  // so it refuses a create that has room, or lets one through that does not.
+  it("follows XDG_DATA_HOME when it is set, as Podman does", () => {
+    expect(podmanDataDir("C:\\Users\\joe", { XDG_DATA_HOME: "D:\\data" }).replace(/\\/g, "/")).toBe(
+      "D:/data/containers/podman/machine",
+    );
+  });
+
+  // Failure: an empty XDG_DATA_HOME is read as a folder, and the check reads the current directory's drive.
+  it("ignores an empty XDG_DATA_HOME", () => {
+    expect(podmanDataDir("C:\\Users\\joe", { XDG_DATA_HOME: "" }).replace(/\\/g, "/")).toBe(
+      "C:/Users/joe/.local/share/containers/podman/machine",
+    );
   });
 });
