@@ -58,6 +58,7 @@ window.electronAPI.getSettings().then((settings) => {
   document.getElementById("server-url").value = settings.serverUrl;
   document.getElementById("console-url").value = settings.consoleUrl;
   document.getElementById("quit-behavior").value = settings.quitBehavior;
+  document.getElementById("close-behavior").value = settings.closeBehavior;
 
   const modeRadio = document.getElementById(
     "mode-" + (settings.mode || "both"),
@@ -149,6 +150,7 @@ saveBtn.addEventListener("click", async () => {
       serverUrl,
       consoleUrl,
       quitBehavior: document.getElementById("quit-behavior").value,
+      closeBehavior: document.getElementById("close-behavior").value,
     });
     if (result && result.error) {
       saveBtn.disabled = false;

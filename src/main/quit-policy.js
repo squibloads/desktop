@@ -18,4 +18,26 @@ function shouldStopPodOnQuit({ getQuitBehavior, runtime, quitting }) {
   }
 }
 
-module.exports = { shouldStopPodOnQuit };
+/**
+ * What closing the main window does: "hide" keeps the app, its checks and the
+ * Local pod running in the tray; "close" lets the window close, which quits
+ * the app on Windows and Linux. Only the exact string "quit" closes.
+ *
+ * A close that is allowed (a quit has begun, Windows is ending the session,
+ * or a mode change is rebuilding the window) always closes, and the setting
+ * is not read: a throw there would block a quit or a shutdown. macOS keeps
+ * its own behaviour, where the app outlives its window.
+ *
+ * An unreadable setting hides, the default, and the error is returned for
+ * the caller to log. A hide never traps the user: Quit in the tray still works.
+ */
+function windowCloseAction({ getCloseBehavior, allowClose, platform }) {
+  if (allowClose || platform === "darwin") return { action: "close" };
+  try {
+    return { action: getCloseBehavior() === "quit" ? "close" : "hide" };
+  } catch (error) {
+    return { action: "hide", error };
+  }
+}
+
+module.exports = { shouldStopPodOnQuit, windowCloseAction };

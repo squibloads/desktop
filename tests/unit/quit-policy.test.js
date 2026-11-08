@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-const { shouldStopPodOnQuit } = require("../../src/main/quit-policy.js");
+const { shouldStopPodOnQuit, windowCloseAction } = require("../../src/main/quit-policy.js");
 
 // A runtime this session manages: the pod is running and was inspected.
 const MANAGED = { active: true };
@@ -101,5 +101,58 @@ describe("shouldStopPodOnQuit", () => {
       },
     };
     expect(shouldStopPodOnQuit({ getQuitBehavior: () => "keep", runtime, quitting: false })).toEqual({ stop: false });
+  });
+});
+
+describe("windowCloseAction", () => {
+  const close = (overrides) =>
+    windowCloseAction({ getCloseBehavior: () => "tray", allowClose: false, platform: "win32", ...overrides });
+
+  // Failure: closing the window quits the app and stops the pod, so the next launch starts it again from nothing.
+  it("hides the window by default", () => {
+    expect(close()).toEqual({ action: "hide" });
+  });
+
+  // Failure: a user who chose to quit on close is left with an app still running in the tray.
+  it("closes the window when the user chose to quit", () => {
+    expect(close({ getCloseBehavior: () => "quit" })).toEqual({ action: "close" });
+  });
+
+  // Failure: a quit from the tray, a Windows shutdown or a mode rebuild is cancelled by a hide, so the app cannot quit,
+  // blocks the shutdown, or ends up with two windows.
+  it("closes the window whenever the close is allowed, whatever the setting", () => {
+    expect(close({ allowClose: true })).toEqual({ action: "close" });
+  });
+
+  // Failure: macOS, which already keeps the app running after its window closes, is left with a hidden window the Dock
+  // icon does not bring back.
+  it("leaves macOS to close the window as before", () => {
+    expect(close({ platform: "darwin" })).toEqual({ action: "close" });
+  });
+
+  // Failure: a stored value that is not exactly "quit" (for example a boolean) quits the app on close.
+  it("closes only on the exact string quit", () => {
+    expect(close({ getCloseBehavior: () => true })).toEqual({ action: "hide" });
+    expect(close({ getCloseBehavior: () => "QUIT" })).toEqual({ action: "hide" });
+  });
+
+  // Failure: an unreadable setting throws inside the close handler, and the window neither hides nor closes.
+  it("hides, the default, and returns the read error when the setting cannot be read", () => {
+    const readError = new Error("invalid closeBehavior in settings store: maybe");
+    expect(
+      close({
+        getCloseBehavior: () => {
+          throw readError;
+        },
+      }),
+    ).toEqual({ action: "hide", error: readError });
+  });
+
+  // Failure: a close that is allowed still reads the setting, where a throw would block a quit or a shutdown.
+  it("does not read the setting when the close is allowed", () => {
+    const getCloseBehavior = () => {
+      throw new Error("should not be read");
+    };
+    expect(close({ allowClose: true, getCloseBehavior })).toEqual({ action: "close" });
   });
 });

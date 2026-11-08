@@ -45,19 +45,22 @@ describe("bridge calls from pages that hold the bridge", () => {
     expect(fromErrorPage.save).toContain("Refused");
     expect(fromErrorPage.get).toContain("Refused");
 
-    // Window controls belong to the shell. A close from the error page must not close the window.
+    // Window controls belong to the shell. A close from the error page must not close the window, nor hide it to the
+    // tray, which is what a close does by default.
+    const visible = () => app.mainEvaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible());
     await errorPage.evaluate(() => window.electronAPI.windowClose());
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(await app.windowCount()).toBe(1);
+    expect(await visible()).toBe(true);
 
     const shell = await app.findPage(urlEndsWith("shell.html"), { description: "shell" });
     const mode = await shell.evaluate(async () => (await window.electronAPI.getSettings()).mode);
     expect(mode).toBe("console");
 
-    // The same close from the shell does close the window, so the channel itself is wired.
+    // The same close from the shell does close the window, here to the tray, so the channel itself is wired.
     await shell.evaluate(() => window.electronAPI.windowClose());
     await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(await app.windowCount()).toBe(0);
+    expect(await visible()).toBe(false);
   });
 
   // Failure: the error page's Settings button is refused, so a stopped console's address cannot be fixed from the page that reports it.
