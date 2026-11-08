@@ -845,6 +845,40 @@ describe("LocalRuntime pinned image", () => {
     expect(calls).not.toContain(IMAGE_DIGESTS);
   });
 
+  // Failure: a pull cut off halfway leaves the app stuck, so Retry fails again without pulling, or skips the digest
+  // check on what the broken pull left behind.
+  it("pulls again on Retry after a pull that failed, and checks the new image's digest", async () => {
+    let pulls = 0;
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: () => (++pulls === 1 ? new Error("Command failed: podman pull\nError: reading blob: unexpected EOF") : ""),
+      [IMAGE_DIGESTS]: JSON.stringify([PLATFORM, PINNED]),
+    });
+    await expect(rt.start()).rejects.toMatchObject({ code: "IMAGE_PULL_FAILED" });
+    calls.length = 0;
+    // Creating the pod is #1681; until then a Retry that gets the image stops at the missing pod.
+    await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+  });
+
+  // Failure: after an image is refused for its digest, Retry finds nothing to pull, or finds the refused image and
+  // uses it.
+  it("pulls again on Retry after an image was refused for its digest", async () => {
+    let inspects = 0;
+    const { rt, calls } = make({
+      ...NEW_MACHINE,
+      [IMAGE_EXISTS]: IMAGE_ABSENT,
+      [PULL]: "",
+      [IMAGE_DIGESTS]: () => JSON.stringify(++inspects === 1 ? [PLATFORM] : [PLATFORM, PINNED]),
+      [IMAGE_RM]: "",
+    });
+    await expect(rt.start()).rejects.toMatchObject({ code: "IMAGE_PULL_FAILED" });
+    calls.length = 0;
+    await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+  });
+
   // Failure: an image that does not carry the pinned digest is used anyway, and the pod runs code nobody pinned (D-2).
   it("refuses and removes an image that does not carry the pinned digest", async () => {
     const { rt, calls } = make({
