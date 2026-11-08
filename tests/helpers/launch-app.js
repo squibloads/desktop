@@ -296,16 +296,16 @@ ${appOutput || "(none)"}`,
 
   /**
    * Starts another copy of the app the way a second double-click would: same environment and, by default, this app's
-   * user-data directory. With ownUserData it gets a directory of its own, seeded for console mode on the closed port,
-   * so it holds a lock of its own. close() kills a copy that is still running.
+   * user-data directory. With ownUserData it gets a directory of its own, seeded for console mode, so it holds a lock
+   * of its own; its console is ownConsoleUrl, or this app's closed port. close() kills a copy that is still running.
    */
-  function spawnSecondInstance({ ownUserData = false } = {}) {
+  function spawnSecondInstance({ ownUserData = false, ownConsoleUrl = consoleUrl } = {}) {
     let dir = userDataDir;
     if (ownUserData) {
       dir = mkdtempSync(join(tmpdir(), "turnstone-e2e-"));
       writeFileSync(
         join(dir, "turnstone-desktop.json"),
-        JSON.stringify({ hasLaunched: true, mode: "console", consoleUrl }),
+        JSON.stringify({ hasLaunched: true, mode: "console", consoleUrl: ownConsoleUrl }),
       );
     }
     const secondArgs = [REPO_ROOT, `--user-data-dir=${dir}`];
@@ -328,23 +328,35 @@ ${appOutput || "(none)"}`,
     };
   }
 
+  // Every copy is killed and every directory removed even when one kill fails; the first failure is rethrown after.
   async function endSecondInstances() {
+    let firstError = null;
     for (const { child, ownDir } of seconds) {
-      if (child.exitCode === null && child.signalCode === null) {
-        killTree(child);
-        await waitForGone(child);
+      try {
+        if (child.exitCode === null && child.signalCode === null) {
+          killTree(child);
+          await waitForGone(child);
+        }
+      } catch (err) {
+        firstError ??= err;
       }
       if (ownDir) rmSync(ownDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
     seconds.clear();
+    if (firstError) throw firstError;
   }
 
   async function close() {
     if (closed) return;
     closed = true;
     live.delete(handle);
+    // A second copy that would not die must not keep this app running: the quit goes on, and the failure is
+    // rethrown once this app is gone.
+    let secondsError = null;
     try {
-      await endSecondInstances();
+      await endSecondInstances().catch((err) => {
+        secondsError = err;
+      });
       await quitWithGuard(app, () => `
 podman calls: ${JSON.stringify(readLines(logPath))}
 app output:
@@ -354,6 +366,7 @@ ${appOutput || "(none)"}`);
       finalLog ??= readLines(logPath);
       rmSync(userDataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
+    if (secondsError) throw secondsError;
   }
 
   const handle = {
