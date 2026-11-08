@@ -205,7 +205,7 @@ describe("README timing claims match the code", () => {
   it("the quit wait of up to 2 minutes equals the podman timeout 120000 on the pod stop path", () => {
     const readmeMinutes = readmeMatch(/Quit can wait up to (\d+) minutes while the pod stops/);
     const codeMs = Number(
-      capture(/function runPodman\(args, \{ timeoutMs = (\d+) \} = \{\}\)/, localRuntime, "podman runner default timeout"),
+      capture(/function runPodman\(args, \{ timeoutMs = (\d+), signal \} = \{\}\)/, localRuntime, "podman runner default timeout"),
     );
     const runnerUsesIt = /\{ windowsHide: true, timeout: timeoutMs,/.test(localRuntime);
     // The stop passes no options, so it gets the runner's default.
@@ -227,7 +227,8 @@ describe("README timing claims match the code", () => {
     const codeMs = capture(/const INIT_TIMEOUT_MS = ([\d *]+);/, localRuntime, "INIT_TIMEOUT_MS")
       .split("*")
       .reduce((product, factor) => product * Number(factor.trim()), 1);
-    const initGetsIt = /this\.run\(MACHINE_INIT, \{ timeoutMs: INIT_TIMEOUT_MS \}\)/.test(localRuntime);
+    // The quit's abort signal rides on the same call, so a quit ends the create instead of waiting it out.
+    const initGetsIt = /this\.run\(MACHINE_INIT, \{ timeoutMs: INIT_TIMEOUT_MS, signal: abort\.signal \}\)/.test(localRuntime);
 
     expect(Number(readmeMinutes) * 60000).toEqual(codeMs);
     expect(initGetsIt).toBe(true);
