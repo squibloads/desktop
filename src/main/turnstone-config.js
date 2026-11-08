@@ -47,7 +47,11 @@ function configScript({ dir = CONFIG_DIR, subuidFile = "/etc/subuid", owner = "u
     `s=$(awk -F: '$1 == "${owner}" { print $2; exit }' '${subuidFile}')`,
     "case \"$s\" in ''|*[!0-9]*) echo config=failed; echo end=ok; exit 0 ;; esac",
     `o=$((s + ${SERVER_UID_IN_CONTAINER - 1}))`,
-    'if [ ! -d "$d" ]; then',
+    // The folder belongs to the machine user, who can swap it for a link to any folder; root would then write, re-own
+    // and delete files there. A link is refused before anything is done inside the folder.
+    'if [ -L "$d" ]; then',
+    "  echo config=failed; echo end=ok; exit 0",
+    'elif [ ! -d "$d" ]; then',
     `  mkdir -m 0700 "$d" && chown '${owner}:' "$d" || { echo config=failed; echo end=ok; exit 0; }`,
     "fi",
     // A run killed after the write and before the rename leaves its temp file; the next run removes it.
