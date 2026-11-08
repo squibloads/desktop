@@ -195,18 +195,57 @@ describe("the config script, as root in Linux", () => {
     expect(f["full.stale"]).toBe("yes");
   });
 
-  // Failure: a machine without the folder gets no config, or a folder other accounts can enter.
-  it("creates a missing folder for the machine user, mode 0700", () => {
+  // Failure: a machine without the folder gets no config; or the folder belongs to an account other than root, which
+  // can swap a path between root's check and root's write; or the server's account cannot reach its own file.
+  it("creates a missing folder owned by root, mode 0711, and puts that mode back on an existing root folder", () => {
     const base = workspace();
     const f = run(base, [
+      'mkdir -m 0700 "$base/old"',
       install(base, "a", { dir: `${base}/newdir`, owner: "nobody" }),
+      install(base, "b", { dir: `${base}/old` }),
       'sh "$base/a.sh" | sed "s/^/a.report./"',
-      'echo "dir.stat=$(stat -c \'%a %U\' "$base/newdir")"',
+      'sh "$base/b.sh" | sed "s/^/b.report./"',
+      'echo "new.stat=$(stat -c \'%a %u\' "$base/newdir")"',
+      'echo "old.stat=$(stat -c \'%a %u\' "$base/old")"',
       'facts "$base/newdir/config.toml" a',
+      'facts "$base/old/config.toml" b',
     ]);
-    expect(f["a.report.config"]).toBe("created");
-    expect(f["dir.stat"]).toBe("700 nobody");
+    expect([f["a.report.config"], f["b.report.config"]]).toEqual(["created", "created"]);
+    expect(f["new.stat"]).toBe("711 0");
+    expect(f["old.stat"]).toBe("711 0");
     expect(f["a.stat"]).toBe("600 300999");
+    expect(f["b.stat"]).toBe("600 200999");
+  });
+
+  // Failure: a folder another account owns or can write is used anyway; that account may have planted a hard link
+  // to another file at the file's path, which root would then re-own, or can swap a path while the script runs.
+  it("refuses a folder another account owns or can write, and touches nothing inside it", () => {
+    const base = workspace();
+    const plant = (dir) => [
+      `printf 'root file\\n' > "${dir}/config.toml"`,
+      `chmod 0644 "${dir}/config.toml"`,
+      `printf 'stale\\n' > "${dir}/.config.abcdef"`,
+    ];
+    const f = run(base, [
+      'mkdir -m 0700 "$base/owned"',
+      'mkdir -m 0777 "$base/open"',
+      ...plant("$base/owned"),
+      ...plant("$base/open"),
+      'chown nobody: "$base/owned"',
+      install(base, "a", { dir: `${base}/owned` }),
+      install(base, "b", { dir: `${base}/open` }),
+      'sh "$base/a.sh" | sed "s/^/owned.report./"',
+      'sh "$base/b.sh" | sed "s/^/open.report./"',
+      'for p in owned open; do',
+      '  echo "$p.config=$(stat -c \'%a %u\' "$base/$p/config.toml")"',
+      '  echo "$p.dir=$(stat -c \'%a %U\' "$base/$p")"',
+      '  echo "$p.stale=$([ -f "$base/$p/.config.abcdef" ] && echo yes || echo no)"',
+      "done",
+    ]);
+    expect([f["owned.report.config"], f["owned.report.end"]]).toEqual(["failed", "ok"]);
+    expect([f["owned.config"], f["owned.dir"], f["owned.stale"]]).toEqual(["644 0", "700 nobody", "yes"]);
+    expect([f["open.report.config"], f["open.report.end"]]).toEqual(["failed", "ok"]);
+    expect([f["open.config"], f["open.dir"], f["open.stale"]]).toEqual(["644 0", "777 root", "yes"]);
   });
 
   // Failure: with no subuid range the script guesses an owner, and the server cannot read its own config.

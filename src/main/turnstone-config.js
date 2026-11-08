@@ -6,8 +6,10 @@
 // script inside the machine as root and reads its report back with parseConfigReport; tests/script runs it as root
 // in a real Linux shell.
 
-// Where the hand-built pod (POC #1499) keeps its config, beside the data folder. #1681 mounts this file read-only.
-const CONFIG_DIR = "/home/user/turnstone";
+// A folder under /etc, so only root can change any part of the path. The hand-built pod (POC #1499) kept its config in
+// /home/user/turnstone, but the machine user owns that folder and could swap a path between the script's check and its
+// write, so root would overwrite or re-own a file of the user's choosing. #1681 mounts this file read-only.
+const CONFIG_DIR = "/etc/turnstone";
 const CONFIG_PATH = `${CONFIG_DIR}/config.toml`;
 
 // Rootless Podman maps container UID 0 to the machine user and container UIDs 1 and up onto the user's subordinate
@@ -32,8 +34,9 @@ function checked(value, pattern, what) {
 /**
  * The script run as root inside the machine. It creates config.toml only when it is missing, never rewrites one that
  * exists, and puts an existing file's owner and mode back. It reports one config= line and judges nothing; the last
- * line says it finished, so a report cut short is never read as a success. The options exist for tests/script, which
- * points the script at a temp folder; the app always uses the defaults.
+ * line says it finished, so a report cut short is never read as a success. The folder's parent must be one only root
+ * can change, as /etc is; the script checks the folder, not its parents. The options exist for tests/script, which
+ * points the script at a root-owned temp folder; the app always uses the defaults.
  */
 function configScript({ dir = CONFIG_DIR, subuidFile = "/etc/subuid", owner = "user" } = {}) {
   checked(dir, SAFE_PATH, "folder");
@@ -47,17 +50,22 @@ function configScript({ dir = CONFIG_DIR, subuidFile = "/etc/subuid", owner = "u
     `s=$(awk -F: '$1 == "${owner}" { print $2; exit }' '${subuidFile}')`,
     "case \"$s\" in ''|*[!0-9]*) echo config=failed; echo end=ok; exit 0 ;; esac",
     `o=$((s + ${SERVER_UID_IN_CONTAINER - 1}))`,
-    // The folder belongs to the machine user, who can swap it for a link to any folder; root would then write, re-own
-    // and delete files there. A link is refused before anything is done inside the folder.
-    'if [ -L "$d" ]; then',
-    "  echo config=failed; echo end=ok; exit 0",
-    'elif [ ! -d "$d" ]; then',
-    `  mkdir -m 0700 "$d" && chown '${owner}:' "$d" || { echo config=failed; echo end=ok; exit 0; }`,
+    'if [ ! -e "$d" ] && [ ! -L "$d" ]; then',
+    '  mkdir -m 0711 "$d" || { echo config=failed; echo end=ok; exit 0; }',
     "fi",
+    // Only a real folder that root owns and no other account can write is used. A link could point anywhere, and an
+    // account that owns or can write the folder could have planted a link or a hard link at the file's path, or swap
+    // a path while the script runs. Such a folder is refused before anything is done inside it. find does not follow
+    // a link, so a link fails -type d.
+    'if [ -z "$(find "$d" -maxdepth 0 -type d -user 0 ! -perm /022)" ]; then',
+    "  echo config=failed; echo end=ok; exit 0",
+    "fi",
+    // 0711: the server's account can reach its file; no other account can list or change the folder.
+    'chmod 0711 "$d" || { echo config=failed; echo end=ok; exit 0; }',
     // A run killed after the write and before the rename leaves its temp file; the next run removes it.
     'rm -f "$d"/.config.??????',
-    // Root's chown and chmod follow links, and the folder belongs to the machine user, so a link planted at the path
-    // could make root re-own another file. A link or a non-file is refused, never followed or replaced.
+    // Only root can make an entry in the folder, so a link or a non-file at the path is root's own mistake. It is
+    // refused all the same, never followed or replaced, since root's chown and chmod follow links.
     'if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then',
     "  echo config=failed",
     'elif [ -f "$f" ]; then',

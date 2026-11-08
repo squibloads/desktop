@@ -8,9 +8,11 @@ const {
 } = require("../../src/main/turnstone-config.js");
 
 describe("CONFIG_PATH", () => {
-  // Failure: the app writes the file somewhere other than where the hand-built pod, and #1681's mount, read it.
-  it("is the file the hand-built pod reads", () => {
-    expect(CONFIG_PATH).toBe("/home/user/turnstone/config.toml");
+  // Failure: the file sits under a folder the machine user can change, so it can swap a path between root's check and
+  // root's write and have root overwrite or re-own any file in the machine (review of #45). Or the app writes it
+  // somewhere other than where #1681's mount reads it.
+  it("is in a folder under /etc, which only root can change", () => {
+    expect(CONFIG_PATH).toBe("/etc/turnstone/config.toml");
   });
 });
 
