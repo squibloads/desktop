@@ -245,6 +245,7 @@ npm run test:contract   # tests/contract only
 npm run test:renderer   # tests/renderer only (jsdom)
 npm run test:shuffle    # files and tests in random order; prints the seed
 npm run test:e2e        # Electron smoke tier: opens real app windows; needs the Electron binary (opt-in)
+npm run test:script     # scripts the app runs in the machine, as root in Linux; needs TURNSTONE_SCRIPT_SHELL (opt-in)
 npm run test:packaged   # after npm run package or make: checks the packaged build's fuses and dropped launch switches
 ```
 
@@ -252,6 +253,12 @@ Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to chang
 
 Tests live in `tests/unit` (one module under `src/main`), `tests/contract` (checks on static files and the test layout), and
 `tests/renderer` (each renderer page in jsdom). The rules for writing tests are in `tests/helpers/README.md`.
+
+`tests/script` runs the scripts the app sends into the Podman machine, such as the one that writes `config.toml`, as root in a real Linux shell, each case in its own folder under `/tmp`. `TURNSTONE_SCRIPT_SHELL` names that shell as a JSON array, the program first; the tier appends one shell command line. From Windows, use the Turnstone machine; on a Linux runner, `["sudo","sh","-c"]`:
+
+```bash
+TURNSTONE_SCRIPT_SHELL='["podman","machine","ssh","--username","root","turnstone"]' npm run test:script
+```
 
 **For developers: smoke-test overrides.** Two environment variables exist for the opt-in Electron smoke tests and are off by default. A packaged build ignores both: only an unpackaged run, such as `npm start` or the smoke tier, reads them. `TURNSTONE_PODMAN` replaces the `podman` command with a JSON array of strings: the executable first, then any arguments that go before the Podman arguments, for example `["C:\\node.exe","C:\\fake-podman.js"]`. `TURNSTONE_LOCAL_CONSOLE_URL` replaces the Local Console address with an `http://` URL on `127.0.0.1`, `localhost` or `[::1]`, for example `http://localhost:9191`; a URL with credentials or any other host is rejected. The console address keeps only the origin, so any path or query on the value is dropped. A malformed value is an error that names the variable, never a silent fallback: an empty value counts as unset, and a bad value of either variable stops the app at start with that message.
 

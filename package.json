@@ -13,6 +13,7 @@
     "test:renderer": "vitest run --project renderer",
     "test:shuffle": "node tests/helpers/run-shuffled.mjs",
     "test:e2e": "node tests/helpers/run-e2e.mjs",
+    "test:script": "vitest run --project script",
     "test:packaged": "node tests/helpers/check-packaged-build.mjs"
   },
   "devDependencies": {
