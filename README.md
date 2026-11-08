@@ -32,7 +32,7 @@ Open Settings with `Ctrl+,` (`Cmd+,` on macOS). The dialog has these fields:
 | **Server URL** | `http://localhost:8080` | Server Only, Both | Address of the Turnstone server. Loads the Server view, is health-checked, and is the source for notifications. | Required in these modes. Must start with `https://`, or with `http://` for this computer only (`localhost`, `127.0.0.1` or `[::1]`). Trailing slashes are removed. A redirect to another site is not followed. |
 | **Console URL** | `http://localhost:8090` | Console Only, Both | Address of the Console. Loads the Console view and is health-checked. | Required in these modes. Same rules as Server URL. |
 | **When the window closes** | Keep running in the tray | Always | What closing the window (the X button, `Alt+F4`, or the taskbar's Close) does on Windows and Linux. Keep running in the tray hides the window, and the app, its checks, notifications and the Local pod carry on; Quit in the tray menu shuts it down. Quit the app quits, as Quit in the tray does. See [System tray](#system-tray). | Keep running in the tray or Quit the app. Has no effect on macOS, where the app always keeps running after its window closes. |
-| **When the app quits** | Stop Turnstone | Local only | Whether the Local pod is stopped when the app quits. See [Local mode](#local-mode). | Stop Turnstone or Keep Turnstone running. |
+| **When the app quits** | Stop Turnstone server | Local only | Whether the Local pod, which runs the Turnstone server, is stopped when the app quits. See [Local mode](#local-mode). | Stop Turnstone server or Keep Turnstone server running. |
 
 **What saving does**
 
@@ -76,10 +76,10 @@ Then it checks that the gaps are closed: no `WSLInterop` handler is registered, 
 
 **What happens on quit.** By default, closing the window only hides it to the tray and the pod keeps running (see *When the window closes*). Quit in the tray, or closing the window with *Quit the app* chosen, quits the app, and the Settings field *When the app quits* then controls the pod:
 
-- **Stop Turnstone** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. If startup was already running a Podman step when you quit, that step finishes first, so quitting can take longer. A failed stop is ignored.
-- **Keep Turnstone running**: the pod is left running. The next launch does not start the machine or the pod if they are already running.
+- **Stop Turnstone server** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. If startup was already running a Podman step when you quit, that step finishes first, so quitting can take longer. A failed stop is ignored.
+- **Keep Turnstone server running**: the pod is left running. The next launch does not start the machine or the pod if they are already running.
 
-The app never stops the Podman machine on quit. If you switch away from Local mode during a session, Stop Turnstone still stops the pod on quit.
+The app never stops the Podman machine on quit. If you switch away from Local mode during a session, Stop Turnstone server still stops the pod on quit.
 
 ## Everyday use
 
