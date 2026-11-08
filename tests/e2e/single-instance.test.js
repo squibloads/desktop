@@ -17,10 +17,6 @@ function withDeadline(promise, ms, description) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function sleepFor(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 describe("one copy at a time", () => {
   // Failure: a second launch runs its own Local start against the same machine and pod, and quitting either copy
   // stops the pod under the other.
@@ -61,7 +57,7 @@ describe("one copy at a time", () => {
   });
 
   // Control for the two tests above: the lock belongs to one user-data directory. A copy with a directory of its own
-  // keeps running, so an exit above comes from the lock, not from a copy that cannot start at all.
+  // starts in full and keeps running, so an exit above comes from the lock, not from a copy that cannot start at all.
   it("lets a copy with its own user-data directory run alongside", async () => {
     const fake = registerConsole(createFakeConsole({ nodes: 1 }));
     await fake.start();
@@ -69,8 +65,15 @@ describe("one copy at a time", () => {
     const sameDir = app.spawnSecondInstance();
     await withDeadline(sameDir.exited, EXIT_WITHIN_MS, "the same-directory copy's exit");
 
-    const ownDir = app.spawnSecondInstance({ ownUserData: true });
-    await sleepFor(8000);
+    // A console of its own, so a health check there can only come from this copy: proof it built its window and
+    // started its checks, rather than an exit that has not happened yet.
+    const ownFake = registerConsole(createFakeConsole({ nodes: 1 }));
+    await ownFake.start();
+    const ownDir = app.spawnSecondInstance({ ownUserData: true, ownConsoleUrl: ownFake.url });
+    await pollUntil(() => ownFake.healthHits >= 1, {
+      description: "a health check from the copy with its own directory",
+      timeoutMs: EXIT_WITHIN_MS,
+    });
 
     expect(ownDir.running(), ownDir.output()).toBe(true);
   });
