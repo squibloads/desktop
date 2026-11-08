@@ -187,7 +187,7 @@ To fix a wrong address, open Settings with `Ctrl+,` or from the tray menu. On ma
 
 ### Local mode errors
 
-If startup fails, the loading screen is replaced by an error page. It shows the error code as its title, a message, and a detail line with Podman's error. The detail leaves out the command the app ran, and shows `[redacted]` in place of any value under a key that names a secret: `jwt_secret`, or any key containing `password`, `token`, `secret` or `api_key` (also `apikey` and `api-key`, as in `OPENAI_API_KEY` or `--api-key`). The log is masked the same way. The **Retry** button runs the startup again. The **Settings** button opens Settings.
+If startup fails, the loading screen is replaced by an error page. It shows the error code as its title, a message, and a detail line with Podman's error. The detail leaves out the command the app ran, and shows `[redacted]` in place of any value under a key that names a secret: `jwt_secret`, or any key containing `password`, `token`, `secret` or `api_key` (also `apikey` and `api-key`, as in `OPENAI_API_KEY` or `--api-key`). Only a value joined to its key by `=` or `:` is masked (`KEY=value`, `key = value`, `key: value`, `"key": value`); one after a plain space, as in `--api-key sk-live`, is not, so read a detail before you share it. The log is masked the same way. The **Retry** button runs the startup again. The **Settings** button opens Settings.
 
 | Code | Message on screen | What to check |
 |---|---|---|
