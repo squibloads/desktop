@@ -452,13 +452,20 @@ class LocalRuntime {
     }
   }
 
-  // The pulled image must carry the pinned index digest among its repo digests. One that does not is removed, so the
-  // next start does not find it "there" and use it.
+  // The pulled image must carry the pinned index digest among its repo digests. One that does not, or whose digests
+  // cannot be read, is removed, so the next start does not find it "there" and skip the check.
   async _verifyImageDigest(ref) {
-    const out = await this._podman(
-      podArgs(["image", "inspect", ref, "--format", "{{json .RepoDigests}}"]),
-      "IMAGE_PULL_FAILED",
-    );
+    let out;
+    try {
+      out = await this.run(podArgs(["image", "inspect", ref, "--format", "{{json .RepoDigests}}"]));
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err, "IMAGE_PULL_FAILED");
+      await this.run(podArgs(["image", "rm", ref])).catch(() => {});
+      throw new LocalRuntimeError(
+        "IMAGE_PULL_FAILED",
+        `the downloaded image's digest could not be checked, so it was removed: ${withoutCommandLine(err)}`,
+      );
+    }
     let digests = null;
     try {
       digests = JSON.parse(out);
