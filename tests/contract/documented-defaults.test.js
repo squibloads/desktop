@@ -84,10 +84,10 @@ describe("README settings reference matches the code", () => {
   });
 
   // Failure: the README says quit stops the pod by default, but the app leaves it running, or the reverse.
-  it("When the app quits defaults to Stop Turnstone, which is schema quitBehavior stop", () => {
+  it("When the app quits defaults to Stop Turnstone server, which is schema quitBehavior stop", () => {
     const readmeQuit = readmeMatch(/^\| \*\*When the app quits\*\* \| ([^|]+?) \|/m);
 
-    expect(readmeQuit).toEqual("Stop Turnstone");
+    expect(readmeQuit).toEqual("Stop Turnstone server");
     expect(schemaDefault("quitBehavior")).toEqual("stop");
   });
 

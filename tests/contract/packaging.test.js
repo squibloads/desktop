@@ -64,3 +64,18 @@ describe("packaging", () => {
     expect(readerCallsWithArguments("podmanCommand(); localConsoleUrl(); firstConfigError(); other(1);")).toEqual([]);
   });
 });
+
+describe("installed app identity", () => {
+  // Failure: the ID the app sets drifts from the one Squirrel stamps on the shortcuts it makes, so an installed copy
+  // never shares the pinned taskbar button and its notifications may not show.
+  it("matches Squirrel's com.squirrel.<maker name>.<executable name> from forge.config.js", () => {
+    const forge = readFileSync(join(ROOT, "forge.config.js"), "utf8");
+    const exe = /\bexecutableName: "([^"]+)"/.exec(forge)?.[1];
+    const squirrel = /name: "@electron-forge\/maker-squirrel",\s*config: \{ name: "([^"]+)"/.exec(forge)?.[1];
+    const { INSTALLED_APP_ID } = require("../../src/main/app-identity.js");
+
+    expect(exe, "executableName in forge.config.js").toBeTruthy();
+    expect(squirrel, "maker-squirrel name in forge.config.js").toBeTruthy();
+    expect(INSTALLED_APP_ID).toBe(`com.squirrel.${squirrel}.${exe}`);
+  });
+});

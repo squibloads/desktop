@@ -65,6 +65,17 @@ describe("field visibility per mode", () => {
     expect(localGroup).toEqual(localState);
   });
 
+  // Failure: the quit choices read "Stop Turnstone", which a user can take for stopping this app, not the server it runs.
+  it("names the Turnstone server in the quit choices", async () => {
+    const page = await openSettings({ mode: "local" });
+    const options = [...page.document.getElementById("quit-behavior").options].map((o) => [o.value, o.textContent]);
+
+    expect(options).toEqual([
+      ["stop", "Stop Turnstone server"],
+      ["keep", "Keep Turnstone server running"],
+    ]);
+  });
+
   // Failure: the close row is hidden in some mode, so a user of that mode cannot choose what X does.
   it.each([["server"], ["console"], ["both"], ["local"]])("mode %s shows the close row", async (mode) => {
     const page = await openSettings({ mode });
