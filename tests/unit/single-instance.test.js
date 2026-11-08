@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
 
-const { claimSingleInstance, bringToFront } = require("../../src/main/single-instance.js");
+const { claimSingleInstance, bringToFront, reopensOnSecondLaunch } = require("../../src/main/single-instance.js");
 
 function fakeApp(granted) {
   const app = new EventEmitter();
@@ -103,5 +103,23 @@ describe("bringToFront", () => {
     const gone = fakeWindow({ destroyed: true });
     expect(bringToFront(gone)).toBe(false);
     expect(gone.focus).not.toHaveBeenCalled();
+  });
+});
+
+describe("reopensOnSecondLaunch", () => {
+  // Failure: on macOS, where the app keeps running after its window closes, a second launch brings up nothing.
+  it("reopens on macOS once startup has built the window", () => {
+    expect(reopensOnSecondLaunch({ platform: "darwin", started: true })).toBe(true);
+  });
+
+  // Failure: a launch while startup is still building the window builds a second one beside it.
+  it("does not reopen during startup", () => {
+    expect(reopensOnSecondLaunch({ platform: "darwin", started: false })).toBe(false);
+  });
+
+  // Failure: on Windows or Linux, where no window means the app is quitting, a launch reopens a window mid-quit.
+  it("does not reopen on Windows or Linux", () => {
+    expect(reopensOnSecondLaunch({ platform: "win32", started: true })).toBe(false);
+    expect(reopensOnSecondLaunch({ platform: "linux", started: true })).toBe(false);
   });
 });
