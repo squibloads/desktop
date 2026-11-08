@@ -43,7 +43,7 @@ describe("quit", () => {
     expect(app.readPodmanLog()).toContain(POD_STOP_DONE);
   });
 
-  // Failure: a user who chose Keep Turnstone running finds the pod stopped anyway when they close the app.
+  // Failure: a user who chose Keep Turnstone server running finds the pod stopped anyway when they close the app.
   it("leaves the pod running when quitBehavior is keep", async () => {
     const fake = registerConsole(createFakeConsole({ nodes: 1 }));
     await fake.start();
