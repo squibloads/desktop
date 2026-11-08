@@ -210,6 +210,16 @@ npm install
 npm start
 ```
 
+### A pinned dev shortcut on Windows
+
+Windows puts a window on a pinned taskbar button only when both carry the same AppUserModelID. A dev run sets `turnstone-desktop.dev`, and an installed build sets the ID its installer gives its shortcuts. A shortcut you make by hand for a dev run carries no ID, so a dev copy that the shortcut did not start gets a taskbar button of its own. Stamp the shortcut once:
+
+```bash
+powershell -NoProfile -File scripts/stamp-dev-shortcut.ps1 -Path "C:\path\to\Turnstone Desktop (dev).lnk"
+```
+
+A pinned shortcut lives in `%APPDATA%\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar`. If two buttons still show afterwards, unpin the shortcut and pin it again.
+
 ### Running the tests
 
 ```bash

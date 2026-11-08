@@ -44,7 +44,13 @@ const { createRedirectRefusals } = require("./redirect-refusals.js");
 const { installEventPlan, runInstallEvent } = require("./install-events.js");
 const { watchSleep } = require("./power-events.js");
 const { claimSingleInstance, bringToFront, reopensOnSecondLaunch } = require("./single-instance.js");
+const { appUserModelId } = require("./app-identity.js");
 const { spawn } = require("node:child_process");
+
+// The Windows taskbar identity, set before any window opens so the window lands on the pinned button however the app
+// was started; see app-identity.js. Null on macOS and Linux.
+const appId = appUserModelId();
+if (appId) app.setAppUserModelId(appId);
 
 // Set when Squirrel started this run for an install, update or uninstall, which whenReady answers instead of starting
 // the app; see install-events.js.

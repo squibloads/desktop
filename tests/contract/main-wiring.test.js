@@ -220,6 +220,19 @@ describe("main.js wiring", () => {
     expect(main.includes(text)).toBe(true);
   });
 
+  // Failure: the window opens before the app has its AppUserModelID, so Windows files it under another taskbar button
+  // than the pinned shortcut; or the ID is set inside a callback that a launch does not reach.
+  it("sets the AppUserModelID at the top level, before whenReady builds any window", () => {
+    expect(main).toMatch(/const \{ appUserModelId \} = require\("\.\/app-identity\.js"\);/);
+    const read = main.search(/^const appId = appUserModelId\(\);\r?$/m);
+    const set = main.search(/^if \(appId\) app\.setAppUserModelId\(appId\);\r?$/m);
+    const ready = main.search(/^app\.whenReady\(\)/m);
+
+    expect(read).toBeGreaterThan(-1);
+    expect(set).toBeGreaterThan(read);
+    expect(ready).toBeGreaterThan(set);
+  });
+
   // Failure: the startup check is not imported or the dialog is not required, so the call throws and the app never reaches its window.
   it("imports firstConfigError from runtime-config.js and dialog from electron", () => {
     expect(main).toMatch(/const \{ firstConfigError \} = require\("\.\/runtime-config\.js"\);/);
