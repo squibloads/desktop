@@ -226,7 +226,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\stamp-dev-shortcut.p
 
 1. Unpin the old button. This deletes the pinned shortcut file.
 2. Make a dev shortcut elsewhere, for example in `%APPDATA%\Microsoft\Windows\Start Menu\Programs`, and stamp it as above. A Start menu shortcut with the ID is also what Windows uses to show the app's notifications.
-3. In Explorer, right-click the stamped shortcut, choose **Show more options**, then **Pin to taskbar**. Start's search can take a while to list a new shortcut, so Explorer is the quicker way.
+3. In Explorer, right-click the stamped shortcut and choose **Pin to taskbar**. On Windows 11 it can sit under **Show more options**. Start's search can take a while to list a new shortcut, so Explorer is the quicker way.
 
 Do not pin the running window's taskbar button instead: Windows pins bare `electron.exe` without the repo argument, and that pin opens Electron's default screen rather than the app.
 
