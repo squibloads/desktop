@@ -3,6 +3,7 @@ const { localConsoleUrl } = require("./runtime-config.js");
 const schema = {
   mode: { type: "string", default: "both" }, // 'server', 'console', 'both', 'local'
   quitBehavior: { type: "string", enum: ["stop", "keep"], default: "stop" }, // local mode: 'stop' | 'keep'
+  closeBehavior: { type: "string", enum: ["tray", "quit"], default: "tray" }, // what closing the window does
   serverUrl: { type: "string", default: "http://localhost:8080" },
   consoleUrl: { type: "string", default: "http://localhost:8090" },
   windowBounds: {
@@ -17,6 +18,8 @@ const schema = {
   },
   activeTab: { type: "string", default: "server" },
   hasLaunched: { type: "boolean", default: false },
+  // Set once the one-time "still running in the tray" notice has been shown.
+  trayHintShown: { type: "boolean", default: false },
 };
 
 class SettingsStore {
@@ -89,6 +92,29 @@ class SettingsStore {
     this.store.set("quitBehavior", v);
   }
 
+  // Same contract as quitBehavior: an absent key reads as the schema default, and anything that is not tray/quit
+  // is a failed read and throws.
+  get closeBehavior() {
+    const raw = this.store.get("closeBehavior");
+    if (raw !== "tray" && raw !== "quit") {
+      throw new Error(`invalid closeBehavior in settings store: ${raw}`);
+    }
+    return raw;
+  }
+  set closeBehavior(v) {
+    if (v !== "tray" && v !== "quit") {
+      throw new Error(`invalid closeBehavior: ${v}`);
+    }
+    this.store.set("closeBehavior", v);
+  }
+
+  get trayHintShown() {
+    return this.store.get("trayHintShown");
+  }
+  set trayHintShown(v) {
+    this.store.set("trayHintShown", v);
+  }
+
   get isLocal() {
     return this.mode === "local";
   }
@@ -113,6 +139,7 @@ class SettingsStore {
       consoleUrl: this.store.get("consoleUrl"),
       activeTab: this.activeTab,
       quitBehavior: this.quitBehavior,
+      closeBehavior: this.closeBehavior,
     };
   }
 }

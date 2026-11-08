@@ -32,8 +32,8 @@ function isValidUrl(str) {
  * A mode change rebuilds the window, so the per-view reload flags are false
  * then. Without a mode change, the flags say which views to reload.
  *
- * current.quitBehavior is deliberately unused: reading it can throw on a
- * corrupt store, and a save never depended on it.
+ * current.quitBehavior and current.closeBehavior are deliberately unused:
+ * reading either can throw on a corrupt store, and a save never depended on them.
  */
 function planSettingsSave(current, incoming) {
   const mode = incoming.mode || "both";
@@ -54,11 +54,19 @@ function planSettingsSave(current, incoming) {
   ) {
     return { error: "Invalid quit behaviour" };
   }
+  if (
+    incoming.closeBehavior !== undefined &&
+    incoming.closeBehavior !== "tray" &&
+    incoming.closeBehavior !== "quit"
+  ) {
+    return { error: "Invalid close behaviour" };
+  }
 
   const apply = { mode };
   if (needsServer) apply.serverUrl = incoming.serverUrl;
   if (needsConsole) apply.consoleUrl = incoming.consoleUrl;
   if (incoming.quitBehavior !== undefined) apply.quitBehavior = incoming.quitBehavior;
+  if (incoming.closeBehavior !== undefined) apply.closeBehavior = incoming.closeBehavior;
 
   const modeChanged = mode !== current.mode;
   // A URL the mode does not use is not written, so editing it changes nothing the
@@ -84,6 +92,7 @@ function planSettingsSave(current, incoming) {
  */
 function writeSavePlan(store, apply) {
   if (apply.quitBehavior !== undefined) store.quitBehavior = apply.quitBehavior;
+  if (apply.closeBehavior !== undefined) store.closeBehavior = apply.closeBehavior;
   if (apply.serverUrl !== undefined) store.serverUrl = apply.serverUrl;
   if (apply.consoleUrl !== undefined) store.consoleUrl = apply.consoleUrl;
   store.mode = apply.mode;

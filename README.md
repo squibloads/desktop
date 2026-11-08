@@ -31,19 +31,20 @@ Open Settings with `Ctrl+,` (`Cmd+,` on macOS). The dialog has these fields:
 | **Mode** | Both | Always | Chooses which views load, which health dots show, and whether notifications run. | One of Server Only, Console Only, Both, Local. |
 | **Server URL** | `http://localhost:8080` | Server Only, Both | Address of the Turnstone server. Loads the Server view, is health-checked, and is the source for notifications. | Required in these modes. Must start with `https://`, or with `http://` for this computer only (`localhost`, `127.0.0.1` or `[::1]`). Trailing slashes are removed. A redirect to another site is not followed. |
 | **Console URL** | `http://localhost:8090` | Console Only, Both | Address of the Console. Loads the Console view and is health-checked. | Required in these modes. Same rules as Server URL. |
+| **When the window closes** | Keep running in the tray | Always | What closing the window (the X button, `Alt+F4`, or the taskbar's Close) does on Windows and Linux. Keep running in the tray hides the window, and the app, its checks, notifications and the Local pod carry on; Quit in the tray menu shuts it down. Quit the app quits, as Quit in the tray does. See [System tray](#system-tray). | Keep running in the tray or Quit the app. Has no effect on macOS, where the app always keeps running after its window closes. |
 | **When the app quits** | Stop Turnstone | Local only | Whether the Local pod is stopped when the app quits. See [Local mode](#local-mode). | Stop Turnstone or Keep Turnstone running. |
 
 **What saving does**
 
 - **A mode change** closes and rebuilds the window. The menu, views, health checks and notifications are set up again for the new mode.
 - **A URL change** reloads only the affected view. Health checks run right away. If the Server URL changed, notifications restart.
-- **Changing only *When the app quits*** takes effect immediately, with no reload.
+- **Changing only *When the app quits* or *When the window closes*** takes effect immediately, with no reload.
 - **Switching into Local** starts the pod startup sequence. See [Local mode](#local-mode).
 - **Hidden fields are not validated or changed.** For example, in Local mode your saved remote Console URL is kept.
 - **If validation fails**, the dialog stays open with an error message and nothing is saved.
 - **Cancel** or `Esc` closes the dialog without saving. `Enter` in a text field saves.
 
-**Where settings are stored.** Settings are saved in `turnstone-desktop.json` in the app's user-data folder. The app also saves the window size and position, the last active tab, and whether it has launched before. These are not shown in the dialog.
+**Where settings are stored.** Settings are saved in `turnstone-desktop.json` in the app's user-data folder. The app also saves the window size and position, the last active tab, whether it has launched before, and whether the tray notice has been shown. These are not shown in the dialog.
 
 ## Local mode
 
@@ -73,7 +74,7 @@ The app starts the Podman machine when it is stopped and starts or stops the exi
 
 Then it checks that the gaps are closed: no `WSLInterop` handler is registered, the machine user (uid 1000) cannot run `sudo -n true`, and every Windows folder mounted in the machine is listed in `/etc/fstab` (WSL's own mounts under `/usr/lib/wsl` aside). If any check fails, the app stops the pod and shows `MACHINE_NOT_HARDENED`, with each gap in the detail line. A check that cannot run (`MACHINE_CHECK_FAILED`) or a restart that fails (`MACHINE_RESTART_FAILED`) also stops a pod left running, because the machine has not been shown to be safe. The app does not change `/etc/fstab`: which folders the machine sees is still set there.
 
-**What happens on quit.** The Settings field *When the app quits* controls this:
+**What happens on quit.** By default, closing the window only hides it to the tray and the pod keeps running (see *When the window closes*). Quit in the tray, or closing the window with *Quit the app* chosen, quits the app, and the Settings field *When the app quits* then controls the pod:
 
 - **Stop Turnstone** (the default): the app runs `podman --connection turnstone pod stop turnstone` before it exits. This happens if the app is starting or has inspected the pod this session. If startup failed before the pod was found (for example `POD_MISSING`), nothing is stopped. Quitting while startup is still running cancels the wait. Quit can wait up to 2 minutes while the pod stops. If startup was already running a Podman step when you quit, that step finishes first, so quitting can take longer. A failed stop is ignored.
 - **Keep Turnstone running**: the pod is left running. The next launch does not start the machine or the pod if they are already running.
@@ -113,7 +114,10 @@ When the PC sleeps, the checks stop and the one in flight is cancelled, so a sle
 - **Icon colour:** green when every active service is Connected, yellow when some are, red when none are. Grey until the first check.
 - **Click the icon** to show the window. On Linux, which gesture activates the icon depends on the desktop environment; if clicking does nothing, use the tray menu.
 - **Menu:** a read-only status line for each active service (for example `Server: Connected`). Local and Console Only show only Console, and Server Only shows only Server. In Server Only and Both, a line then says whether notifications work, from the end of the first poll on (see [Notifications](#notifications)). Then **Show Window**, **Settings...**, and **Quit**. **Quit** exits the app and applies the *When the app quits* setting.
-- On **Windows and Linux**, closing the window quits the app. On **macOS**, the app keeps running after the window closes. On macOS, use the Dock icon, not the tray, to reopen a closed window.
+- On **Windows and Linux**, closing the window hides it to the tray by default, and the app keeps running: its health checks and notifications carry on, and in Local mode the pod stays up. Click the tray icon, choose **Show Window**, or start the app again to bring the window back; nothing restarts. The first time the window hides, a notification says the app is still running and how to quit it. To quit, use **Quit** in the tray menu. To make closing the window quit instead, set *When the window closes* to Quit the app.
+- A Windows shutdown or sign-out quits the app normally, and a mode change in Settings still closes and rebuilds the window.
+- On some Linux desktops there is no tray. A hidden window comes back when you start the app again.
+- On **macOS**, the app keeps running after the window closes, whatever the setting. Use the Dock icon, not the tray, to reopen a closed window.
 
 ### One copy at a time
 

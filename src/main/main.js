@@ -8,6 +8,7 @@ const {
   dialog,
   session,
   powerMonitor,
+  Notification,
 } = require("electron");
 const { switchesToDrop } = require("./debug-switches.js");
 
@@ -30,7 +31,7 @@ const { LocalRuntime } = require("./local-runtime.js");
 const { shouldShowErrorPage, errorPageQuery } = require("./load-failure.js");
 const { planRecovery } = require("./recovery.js");
 const { planSettingsSave, writeSavePlan, isValidUrl, reachableSettings } = require("./settings-save.js");
-const { shouldStopPodOnQuit } = require("./quit-policy.js");
+const { shouldStopPodOnQuit, windowCloseAction } = require("./quit-policy.js");
 const { clampSettingsHeight, isValidHeight } = require("./settings-window.js");
 const { isFromAppPage } = require("./ipc-senders.js");
 const { pathToFileURL } = require("node:url");
@@ -83,6 +84,11 @@ let localRuntime = null;
 let quitting = false;
 // Set once startup has built the main window, so a second launch before then does not build another beside it.
 let windowBuilt = false;
+// Set once a quit has begun or Windows is ending the session: closing the window then closes it for real, instead of
+// hiding it to the tray, so the quit or the shutdown is never held up (see windowCloseAction).
+let closeAllowed = false;
+// Windows that rebuildWindow is closing, which must close for real rather than hide.
+const rebuilding = new WeakSet();
 
 // ─── Window Creation ─────────────────────────────────────────────────────
 
@@ -197,6 +203,26 @@ function createMainWindow() {
   mainWindow.on("move", saveBounds);
 
   const thisWindow = mainWindow;
+  // X, Alt+F4 and the taskbar's Close hide the window by default, so the app, its checks and the Local pod keep
+  // running in the tray; Quit in the tray is what shuts it all down.
+  mainWindow.on("close", (event) => {
+    const decision = windowCloseAction({
+      getCloseBehavior: () => settings.closeBehavior,
+      allowClose: closeAllowed || rebuilding.has(thisWindow),
+      platform: process.platform,
+    });
+    if (decision.error) {
+      console.error("closeBehavior unreadable, keeping the app in the tray:", decision.error.message);
+    }
+    if (decision.action !== "hide") return;
+    event.preventDefault();
+    thisWindow.hide();
+    showTrayNoticeOnce();
+  });
+  // Windows is shutting down or signing out: let every close through.
+  mainWindow.on("session-end", () => {
+    closeAllowed = true;
+  });
   mainWindow.on("closed", () => {
     // rebuildWindow closes the old window and builds the new one in the same
     // tick; a late "closed" must not null the new window's views.
@@ -554,6 +580,7 @@ function rebuildWindow() {
   notificationLifecycle.apply(reachable);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
+    rebuilding.add(mainWindow);
     mainWindow.close();
   }
 
@@ -747,6 +774,25 @@ function getActiveView() {
   return activeTab === "server" ? serverView : consoleView;
 }
 
+/**
+ * Says once, the first time the window hides to the tray, that the app is still running and how to quit it, so a
+ * user who expects X to quit is not left wondering. The flag is saved first, so a notification that fails to show is
+ * not retried on every close.
+ */
+function showTrayNoticeOnce() {
+  try {
+    if (settings.trayHintShown) return;
+    settings.trayHintShown = true;
+    if (!Notification.isSupported()) return;
+    new Notification({
+      title: "Still running in the tray",
+      body: "Closing the window keeps the app running. To quit, open the tray icon's menu and choose Quit.",
+    }).show();
+  } catch (err) {
+    console.error("tray notice:", err);
+  }
+}
+
 // ─── App Lifecycle ───────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -799,12 +845,7 @@ app.whenReady().then(async () => {
 
   // Tray
   tray = new TurnStoneTray({
-    showWindow: () => {
-      if (mainWindow) {
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    },
+    showWindow: () => bringToFront(mainWindow),
     openSettings,
     quit: () => app.quit(),
   });
@@ -865,6 +906,8 @@ function onSecondLaunch() {
 }
 
 app.on("before-quit", (event) => {
+  // From here on a window close is part of the quit, so it closes instead of hiding to the tray.
+  closeAllowed = true;
   // Stop the pod before exiting unless the user chose to keep it. Keyed on
   // whether this session managed the pod (it inspected it, whether or not it
   // had to start it), so a mode switch away from local still stops it.
