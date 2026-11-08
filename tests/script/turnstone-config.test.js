@@ -169,6 +169,32 @@ describe("the config script, as root in Linux", () => {
     expect(f["folder.still"]).toBe("yes");
   });
 
+  // Failure: the machine user swaps its folder for a link, and root writes, re-owns or deletes files in the link's
+  // target instead.
+  it("refuses a link at the folder's path, and writes nothing in its target", () => {
+    const base = workspace();
+    const f = run(base, [
+      'mkdir -m 0755 "$base/empty" "$base/full"',
+      `printf 'root file\\n' > "$base/full/config.toml"`,
+      'chmod 0644 "$base/full/config.toml"',
+      `printf 'stale\\n' > "$base/full/.config.abcdef"`,
+      'ln -s "$base/empty" "$base/dir"',
+      'ln -s "$base/full" "$base/dir2"',
+      install(base, "a", { dir: `${base}/dir` }),
+      install(base, "b", { dir: `${base}/dir2` }),
+      'sh "$base/a.sh" | sed "s/^/empty.report./"',
+      'sh "$base/b.sh" | sed "s/^/full.report./"',
+      'echo "empty.entries=$(ls -A "$base/empty" | wc -l | tr -d \' \')"',
+      'echo "full.config=$(stat -c \'%a %u\' "$base/full/config.toml")"',
+      'echo "full.stale=$([ -f "$base/full/.config.abcdef" ] && echo yes || echo no)"',
+    ]);
+    expect([f["empty.report.config"], f["empty.report.end"]]).toEqual(["failed", "ok"]);
+    expect(f["empty.entries"]).toBe("0");
+    expect([f["full.report.config"], f["full.report.end"]]).toEqual(["failed", "ok"]);
+    expect(f["full.config"]).toBe("644 0");
+    expect(f["full.stale"]).toBe("yes");
+  });
+
   // Failure: a machine without the folder gets no config, or a folder other accounts can enter.
   it("creates a missing folder for the machine user, mode 0700", () => {
     const base = workspace();
