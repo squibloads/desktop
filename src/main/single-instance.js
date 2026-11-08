@@ -37,4 +37,13 @@ function bringToFront(win) {
   return true;
 }
 
-module.exports = { claimSingleInstance, bringToFront };
+/**
+ * Whether a later launch that finds no window should build one. Only on macOS, which keeps the app running after its
+ * window closes, so a second launch reopens it the way the Dock icon does. Elsewhere no window means the app is
+ * quitting. Never during startup, which is building the window already.
+ */
+function reopensOnSecondLaunch({ platform, started }) {
+  return platform === "darwin" && started;
+}
+
+module.exports = { claimSingleInstance, bringToFront, reopensOnSecondLaunch };
