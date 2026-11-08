@@ -309,7 +309,7 @@ class LocalRuntime {
    * First run on this PC: no turnstone machine exists, so the app makes one instead of asking the user to. The start
    * goes on from there as for a stopped machine, so the safety settings are put back and checked before any pod runs.
    * A create that fails is removed, so Retry starts clean; it did not exist before this create, so nothing of the
-   * user's goes with it.
+   * user's goes with it. A removal that fails is logged and named on the error page.
    */
   async _createMachine() {
     await this._checkPodmanVersion();
@@ -319,8 +319,19 @@ class LocalRuntime {
       await this.run(MACHINE_INIT, { timeoutMs: INIT_TIMEOUT_MS });
     } catch (err) {
       if (err && err.code === "ENOENT") throw this._wrap(err, "MACHINE_CREATE_FAILED");
-      await this.run(["machine", "rm", "--force", MACHINE]).catch(() => {});
-      throw new LocalRuntimeError("MACHINE_CREATE_FAILED", withoutCommandLine(err));
+      const reason = withoutCommandLine(err);
+      try {
+        await this.run(["machine", "rm", "--force", MACHINE]);
+      } catch (rmErr) {
+        // Podman cannot remove a create it stopped before writing the machine's settings, and WSL can then still hold
+        // the podman-turnstone distribution, which a Retry's create meets. The app does not remove a distribution
+        // Podman does not know: it could be a working machine whose Podman settings were lost. The error says so, and
+        // the README gives the command.
+        const cleanup = withoutCommandLine(rmErr);
+        console.error("machine create cleanup failed:", cleanup);
+        throw new LocalRuntimeError("MACHINE_CREATE_FAILED", `${reason}\nThe half-made machine could not be removed: ${cleanup}`);
+      }
+      throw new LocalRuntimeError("MACHINE_CREATE_FAILED", reason);
     }
   }
 
