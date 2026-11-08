@@ -10,6 +10,11 @@ const MACHINE_LIST = "machine list --format json";
 const VERSION = "version --format {{.Client.Version}}";
 const MACHINE_INIT = "machine init turnstone --username user";
 const MACHINE_RM = "machine rm --force turnstone";
+// The calls that bring in the pinned image.
+const PINNED = require("../../src/main/turnstone-image.js").pinnedImageRef();
+const IMAGE_EXISTS = `--connection turnstone image exists ${PINNED}`;
+const PULL = `--connection turnstone pull ${PINNED}`;
+const IMAGE_DIGESTS = `--connection turnstone image inspect ${PINNED} --format {{json .RepoDigests}}`;
 
 // Starts a console to learn a free port, then stops it. The console stays down until a
 // test starts it again, so the health poller never sees it come up during the error.
@@ -75,6 +80,37 @@ describe("local start errors", () => {
     await waitForText(errorPage, "#error-title", "PODMAN_TOO_OLD");
     expect(await errorPage.textContent("#error-detail")).toContain("6.0.2");
     expect(app.readPodmanLog()).toEqual([MACHINE_LIST, VERSION]);
+  });
+
+  // Failure: a first run has no image for the pod, and nothing fetches the pinned one.
+  it("pulls the pinned image on a first run and checks its digest, then shows POD_MISSING", async () => {
+    const { port } = await reservedConsole();
+    const app = await launchApp({
+      settings: { mode: "local" },
+      podmanState: { machine: "running", pod: "missing", image: "missing" },
+      consolePort: port,
+    });
+
+    const errorPage = await app.findPage(urlEndsWith("local-error.html"), { description: "local error page" });
+    // Creating the pod is #1681; until then a first run stops here, with the image in place.
+    await waitForText(errorPage, "#error-title", "POD_MISSING");
+    expect(app.readPodmanLog().slice(-3)).toEqual([IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+  });
+
+  // Failure: a failed download shows a generic "unable to connect" page, and the user cannot tell the image is missing.
+  it("shows IMAGE_PULL_FAILED with Podman's error when the pull fails", async () => {
+    const { port } = await reservedConsole();
+    const app = await launchApp({
+      settings: { mode: "local" },
+      podmanState: { machine: "running", pod: "missing", image: "missing", failPull: true },
+      consolePort: port,
+    });
+
+    const errorPage = await app.findPage(urlEndsWith("local-error.html"), { description: "local error page" });
+    await waitForText(errorPage, "#error-title", "IMAGE_PULL_FAILED");
+    await waitForText(errorPage, "#error-message", "The Turnstone image could not be downloaded.");
+    expect(await errorPage.textContent("#error-detail")).toContain("connection reset");
+    expect(app.readPodmanLog()).not.toContain(IMAGE_DIGESTS);
   });
 
   // Failure: a missing pod shows a generic error, so the user does not learn that the pod must be created on the Turnstone connection.

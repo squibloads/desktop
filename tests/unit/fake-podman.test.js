@@ -174,6 +174,56 @@ describe("fake-podman known calls", () => {
   });
 });
 
+describe("fake-podman image calls", () => {
+  const PINNED = require("../../src/main/turnstone-image.js").pinnedImageRef();
+  const conn = (...rest) => ["--connection", "turnstone", ...rest];
+
+  // Failure: the image check before a pull has no answer, so every first-run test fails before it starts.
+  it("answers image exists with 0 when the image is there and 1 when it is not", () => {
+    expect(callPodman(conn("image", "exists", PINNED)).status).toBe(0);
+    expect(callPodman(conn("image", "exists", PINNED), { image: "missing" }).status).toBe(1);
+  });
+
+  // Failure: a pull leaves the image missing, so the digest check after it fails as if nothing came down.
+  it("pulls the pinned image", () => {
+    const result = callPodman(conn("pull", PINNED), { image: "missing" });
+
+    expect(result.status).toBe(0);
+    expect(savedState().image).toBe("present");
+  });
+
+  // Failure: a failed pull cannot be tested, so the app's error page for it goes unchecked.
+  it("fails a pull when failPull is set, leaving the image missing", () => {
+    const result = callPodman(conn("pull", PINNED), { image: "missing", failPull: true });
+
+    expect(result.status).toBe(1);
+    expect(savedState().image).toBe("missing");
+  });
+
+  // Failure: the digest check has nothing to read, or cannot be shown a wrong digest.
+  it("lists the image's digests, without the pinned one when wrongDigest is set", () => {
+    const args = conn("image", "inspect", PINNED, "--format", "{{json .RepoDigests}}");
+    expect(JSON.parse(callPodman(args).stdout)).toContain(PINNED);
+    expect(JSON.parse(callPodman(args, { wrongDigest: true }).stdout)).not.toContain(PINNED);
+  });
+
+  // Failure: an image refused for its digest stays in storage, and the next start finds it "there" and uses it.
+  it("removes the image", () => {
+    const result = callPodman(conn("image", "rm", PINNED));
+
+    expect(result.status).toBe(0);
+    expect(savedState().image).toBe("missing");
+  });
+
+  // Failure: a pull by tag, or of another image, passes as the pinned pull.
+  it("rejects a pull of anything but the pinned reference", () => {
+    const result = callPodman(conn("pull", "ghcr.io/turnstonelabs/turnstone:1.9.1"));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("fake-podman: unexpected call");
+  });
+});
+
 describe("fake-podman rejects unknown calls", () => {
   // Failure: a podman call the fake does not know passes silently, so the test that makes it never sees the call's effect.
   it("exits 1 for a call it does not implement", () => {

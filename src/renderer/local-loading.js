@@ -2,10 +2,12 @@
 // The page starts on the first stage; the main process replays the current
 // stage once this page has loaded, so a late attach still catches up.
 const STAGE_ORDER = ['machine', 'pod', 'console', 'node'];
-// A stage shown on another stage's row: creating the machine on first run is part of the machine step.
-const STAGE_ROW = { create: 'machine' };
+// A stage shown on another stage's row: on first run, creating the machine is part of the machine step, and
+// downloading the image is part of starting Turnstone.
+const STAGE_ROW = { create: 'machine', image: 'pod' };
 const STAGE_LABELS = {
   create: 'Creating the Podman machine (first run only; this can take several minutes)',
+  image: 'Downloading Turnstone (first run only; this can take several minutes)',
   machine: 'Starting the Podman machine',
   pod: 'Starting Turnstone',
   console: 'Waiting for the console',
