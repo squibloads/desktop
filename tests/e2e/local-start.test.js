@@ -4,11 +4,13 @@ import { closeEverything, launchApp, registerConsole, urlEndsWith, urlIs } from 
 import { pollUntil, waitForTitle } from "../helpers/poll.js";
 
 const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
+const { sessionCommand } = require("../../src/main/user-session.js");
 
 // The podman calls local-runtime.js makes, in the form fake-podman.js logs them.
 const MACHINE_LIST = "machine list --format json";
 const MACHINE_START = "machine start turnstone";
 const MACHINE_CHECK = `machine ssh --username root turnstone ${machineCheckCommand()}`;
+const SESSION = `machine ssh --username root turnstone ${sessionCommand()}`;
 const POD_INSPECT = "--connection turnstone pod inspect turnstone --format {{.State}}";
 const POD_START = "--connection turnstone pod start turnstone";
 const VERSION = "version --format {{.Client.Version}}";
@@ -38,7 +40,7 @@ describe("local start", () => {
     await waitForTitle(page, "fake console");
     const errorWindows = app.windowUrls().filter((url) => url.split("?")[0].endsWith("error.html"));
     expect(errorWindows).toEqual([]);
-    expect(app.readPodmanLog()).toEqual([MACHINE_LIST, MACHINE_CHECK, POD_INSPECT]);
+    expect(app.readPodmanLog()).toEqual([MACHINE_LIST, MACHINE_CHECK, SESSION, POD_INSPECT]);
   });
 
   // Failure: a stopped machine or pod is left stopped, and the user is shown a console that never answers.
@@ -53,7 +55,7 @@ describe("local start", () => {
 
     const page = await app.findPage(urlIs(`${fake.url}/`), { description: "console page" });
     await waitForTitle(page, "fake console");
-    expect(app.readPodmanLog()).toEqual([MACHINE_LIST, MACHINE_START, MACHINE_CHECK, POD_INSPECT, POD_START]);
+    expect(app.readPodmanLog()).toEqual([MACHINE_LIST, MACHINE_START, MACHINE_CHECK, SESSION, POD_INSPECT, POD_START]);
   });
 
   // Failure: a PC with Podman but no turnstone machine stops at an error, and the user has to build the machine by hand.
@@ -74,6 +76,7 @@ describe("local start", () => {
       MACHINE_INIT,
       MACHINE_START,
       MACHINE_CHECK,
+      SESSION,
       POD_INSPECT,
       POD_START,
     ]);

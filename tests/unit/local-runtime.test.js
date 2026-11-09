@@ -8,6 +8,7 @@ import { fakeElectronNet, removeFakeElectron } from "../helpers/fake-electron-ne
 const { LocalRuntime, LocalRuntimeError, fetchHealthJson, HEALTH_REDIRECTED, runPodman } = require("../../src/main/local-runtime.js");
 const { machineCheckCommand } = require("../../src/main/machine-hardening.js");
 const { configCommand } = require("../../src/main/turnstone-config.js");
+const { sessionCommand } = require("../../src/main/user-session.js");
 
 /**
  * Scripted podman: each entry maps a joined argv to a result. An unscripted
@@ -42,6 +43,11 @@ const READY = { status: "ok", nodes: 1 };
 // The machine check, run as root inside the machine, and what a machine holding every ADR-05 setting answers.
 const HARDEN = `machine ssh --username root turnstone ${machineCheckCommand()}`;
 const HARDENED = "wslconf=ok\nsudo=refused\nend=ok\n";
+// The user session check, run as root after the machine check, the same with one restart first, and what the check
+// answers when the session is up with its Podman socket (#1690).
+const SESSION = `machine ssh --username root turnstone ${sessionCommand()}`;
+const SESSION_RESTART = `machine ssh --username root turnstone ${sessionCommand({ restart: true })}`;
+const SESSION_UP = "uid=1000\nsession=active\nsocket=yes\nend=ok\n";
 // The config script, run as root inside the machine on a first run, and what it answers when it writes config.toml.
 const CONFIG = `machine ssh --username root turnstone ${configCommand()}`;
 const CONFIG_CREATED = "config=created\nend=ok\n";
@@ -62,7 +68,9 @@ function make(script, opts = {}) {
   installSteppedClock({ step: opts.step ?? 1 });
   // Every start checks the machine, so a test that is not about the check gets a machine that passes it; a first run
   // that reaches the config step gets a script that writes the file.
-  const runner = makeRunner({ [HARDEN]: HARDENED, [CONFIG]: CONFIG_CREATED, ...script });
+  const runner = makeRunner({ [HARDEN]: HARDENED, [SESSION]: SESSION_UP, [CONFIG]: CONFIG_CREATED, ...script });
+  // Only Turnstone's own distribution is running unless a test says otherwise.
+  const listDistros = opts.listDistros ?? vi.fn(async () => ["podman-turnstone"]);
   const fetchHealth = opts.fetchHealth || vi.fn(async () => READY);
   const rt = new LocalRuntime({
     run: runner.run,
@@ -71,13 +79,16 @@ function make(script, opts = {}) {
     healthTimeoutMs: opts.healthTimeoutMs ?? 3,
     nodeTimeoutMs: opts.nodeTimeoutMs ?? 3,
     healthIntervalMs: 1,
+    sessionTimeoutMs: opts.sessionTimeoutMs ?? 3,
+    sessionIntervalMs: 1,
+    listDistros,
     healthUrl: HEALTH_URL,
     onProgress: opts.onProgress,
     // Plenty of space unless a test says otherwise; the real reading is covered in disk-space.test.js.
     freeDiskBytes: opts.freeDiskBytes ?? (() => 100e9),
     diskPath: "C:\\Users\\joe\\.local\\share\\containers\\podman\\machine",
   });
-  return { rt, calls: runner.calls, fetchHealth, run: runner.run };
+  return { rt, calls: runner.calls, fetchHealth, run: runner.run, listDistros };
 }
 
 // The calls that create a missing machine, as local-runtime.js passes them.
@@ -99,6 +110,7 @@ describe("LocalRuntime.start", () => {
       MACHINE_LIST,
       "machine start turnstone",
       HARDEN,
+      SESSION,
       POD_STATE,
       POD_START,
     ]);
@@ -121,7 +133,7 @@ describe("LocalRuntime.start", () => {
       [POD_STATE]: "Running",
     });
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE]);
   });
 
   it("reports PODMAN_NOT_FOUND when the binary is missing", async () => {
@@ -143,7 +155,7 @@ describe("LocalRuntime.start", () => {
       [POD_START]: "",
     });
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_START, HARDEN, POD_STATE, POD_START]);
+    expect(calls).toEqual([MACHINE_LIST, VERSION, MACHINE_INIT, MACHINE_START, HARDEN, SESSION, POD_STATE, POD_START]);
   });
 
   // Failure: init downloads the machine image, so the two-minute limit every other call gets kills it on most links.
@@ -339,7 +351,7 @@ describe("LocalRuntime machine hardening", () => {
   it("checks the machine on every start, before the pod, also when it was already running", async () => {
     const { rt, calls } = make({ [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" });
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE]);
   });
 
   // Failure: a rewritten wsl.conf is trusted before the machine boots with it, so automount and interop stay on.
@@ -354,7 +366,7 @@ describe("LocalRuntime machine hardening", () => {
       [POD_START]: "",
     });
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, MACHINE_STOP, MACHINE_START, HARDEN, POD_STATE, POD_START]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, MACHINE_STOP, MACHINE_START, HARDEN, SESSION, POD_STATE, POD_START]);
   });
 
   // Failure: a machine with a gap runs the agent anyway, or a pod left running from before keeps running on it.
@@ -499,6 +511,208 @@ describe("LocalRuntime machine hardening", () => {
     await stopping;
     expect(calls).not.toContain(MACHINE_START);
     expect(calls).not.toContain(POD_STATE);
+  });
+});
+
+describe("LocalRuntime user session", () => {
+  // #1690: the machine user's session fails when another WSL distribution already runs one for the same UID (#1686),
+  // and the rootless API every pod call goes through never comes up.
+  const report = (session, socket, extra = "") => `uid=1000\n${extra}session=${session}\nsocket=${socket}\nend=ok\n`;
+  const FAILED = report("failed", "no");
+  const RESTART_FAILED = report("failed", "no", "restart=failed\n");
+  const RESTART_OK = report("active", "yes", "restart=ok\n");
+  const running = { [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" };
+
+  // Failure: the pod calls run before the session is known to be up, and meet "ssh: rejected: connect failed".
+  it("checks the session after the machine check and before the pod", async () => {
+    const { rt, calls, listDistros } = make(running);
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE]);
+    expect(listDistros).not.toHaveBeenCalled();
+  });
+
+  // Failure: a session still starting, as it is just after a machine start, is restarted, which ends it, or refused; or
+  // the reads come back to back with no pause.
+  it("waits while the session is activating, pausing between reads, then goes on without a restart", async () => {
+    const answers = [report("activating", "no"), report("activating", "no"), SESSION_UP];
+    const sleep = vi.fn(async () => {});
+    const { rt, calls } = make({ ...running, [SESSION]: () => answers.shift() }, { sessionTimeoutMs: 10, sleep });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION, SESSION, POD_STATE]);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(1);
+  });
+
+  // Failure: the pod calls go out in the moment between the session starting and its socket listening.
+  it("waits for the socket when the session is up without it", async () => {
+    const answers = [report("active", "no"), SESSION_UP];
+    const { rt, calls } = make({ ...running, [SESSION]: () => answers.shift() }, { sessionTimeoutMs: 10 });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION, POD_STATE]);
+  });
+
+  // Failure: a session that failed at boot stays failed after the other distribution has stopped, so the user has to
+  // restart the machine by hand.
+  it("restarts a failed session once, and goes on when it comes up", async () => {
+    const { rt, calls, listDistros } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: RESTART_OK });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART, POD_STATE]);
+    expect(listDistros).not.toHaveBeenCalled();
+  });
+
+  // Failure: a session that never started is left down, because only "failed" is restarted.
+  it("restarts a session that is not running at all", async () => {
+    const { rt, calls } = make({ ...running, [SESSION]: report("inactive", "no"), [SESSION_RESTART]: RESTART_OK });
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART, POD_STATE]);
+  });
+
+  // Failure: a restart that worked is refused because its socket came up a moment after it.
+  it("waits for the socket after a restart that worked", async () => {
+    const answers = [FAILED, SESSION_UP];
+    const { rt, calls } = make(
+      { ...running, [SESSION]: () => answers.shift(), [SESSION_RESTART]: report("active", "no", "restart=ok\n") },
+      { sessionTimeoutMs: 10 },
+    );
+    await rt.start();
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART, SESSION, POD_STATE]);
+  });
+
+  // Failure: a session that stays failed meets the cryptic "connect failed" at the pod, or an error that does not say
+  // which other distribution to close, or that tells the user to close Turnstone's own.
+  it("reports USER_SESSION_FAILED naming the other distributions when the restart does not help", async () => {
+    const listDistros = vi.fn(async () => ["podman-turnstone", "podman-machine-default"]);
+    const { rt, calls } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: RESTART_FAILED }, { listDistros });
+    const err = await rt.start().catch((e) => e);
+    expect(err).toBeInstanceOf(LocalRuntimeError);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toBe(
+      "user@1000.service is failed, also after a restart. Other WSL distributions are running: podman-machine-default. " +
+        "Another Podman machine, or a distribution with a newer systemd, can hold the session this machine needs: stop " +
+        "the one you do not need, for example with `wsl --terminate podman-machine-default`, then press Retry.",
+    );
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART]);
+    expect(rt.started).toBe(false);
+  });
+
+  // Failure: Retry after the other distribution stopped meets the same error, because the one restart was spent on the
+  // first start.
+  it("restarts again on Retry, and starts once the other distribution has stopped", async () => {
+    let restart = RESTART_FAILED;
+    const listDistros = vi.fn(async () => ["podman-turnstone", "Ubuntu-26.04"]);
+    const { rt, calls } = make(
+      { ...running, [SESSION]: FAILED, [SESSION_RESTART]: () => restart },
+      { listDistros },
+    );
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toContain("Other WSL distributions are running: Ubuntu-26.04.");
+    // The user closes Ubuntu-26.04 and presses Retry.
+    restart = RESTART_OK;
+    await rt.start();
+    expect(calls).toEqual([
+      MACHINE_LIST,
+      HARDEN,
+      SESSION,
+      SESSION_RESTART,
+      MACHINE_LIST,
+      HARDEN,
+      SESSION,
+      SESSION_RESTART,
+      POD_STATE,
+    ]);
+  });
+
+  // Failure: a session still starting at the deadline is restarted, which ends whatever it had started.
+  it("reports a session still activating at the deadline without restarting it", async () => {
+    const { rt, calls } = make({ ...running, [SESSION]: report("activating", "no") });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toMatch(/^user@1000\.service was still activating after \d+ s\. No other WSL distribution is running\.$/);
+    expect(calls).not.toContain(SESSION_RESTART);
+    expect(calls).not.toContain(POD_STATE);
+  });
+
+  // Failure: a running session whose socket never appears is restarted, which would end a pod running in it.
+  it("reports a running session whose socket never appears without restarting it", async () => {
+    const { rt, calls } = make({ ...running, [SESSION]: report("active", "no") });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toMatch(/^user@1000\.service is running, but its Podman socket did not appear within \d+ s\./);
+    expect(calls).not.toContain(SESSION_RESTART);
+  });
+
+  // Failure: a machine without its user is restarted, which cannot help, before the user is told.
+  it("never restarts a machine with no user account", async () => {
+    const { rt, calls } = make({ ...running, [SESSION]: "session=nouser\nend=ok\n" });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toMatch(/^the machine has no account named user, so it has no user session\./);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION]);
+  });
+
+  // Failure: a list that fails replaces the session error, or is shown as "nothing else is running".
+  it("still reports USER_SESSION_FAILED when the distributions cannot be listed", async () => {
+    const listDistros = vi.fn(async () => {
+      throw new Error("spawn wsl.exe ENOENT");
+    });
+    const { rt } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: RESTART_FAILED }, { listDistros });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toBe(
+      "user@1000.service is failed, also after a restart. The running WSL distributions could not be listed: " +
+        "spawn wsl.exe ENOENT.",
+    );
+  });
+
+  // Failure: a check that could not run is read as a failed session and restarted, or shows the encoded command line.
+  it("reports USER_SESSION_FAILED with Podman's error, not the command line, when the check cannot run", async () => {
+    const failure = new Error(`Command failed: podman ${SESSION}\nError: ssh: handshake failed`);
+    const { rt, calls } = make({ ...running, [SESSION]: failure });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toBe("the session could not be checked: Error: ssh: handshake failed");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION]);
+  });
+
+  // Failure: a restart that could not run is reported as a session that stayed failed, hiding Podman's error.
+  it("reports USER_SESSION_FAILED with Podman's error when the restart cannot run", async () => {
+    const failure = new Error(`Command failed: podman ${SESSION_RESTART}\nError: ssh: handshake failed`);
+    const { rt } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: failure });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toBe("the session could not be restarted: Error: ssh: handshake failed");
+  });
+
+  // Failure: a report cut short reads as a session that is up, or is restarted on no evidence.
+  it("reports USER_SESSION_FAILED when the report has no end line, and does not restart", async () => {
+    const { rt, calls } = make({ ...running, [SESSION]: "uid=1000\nsession=failed\n" });
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toBe("the session check stopped before it finished");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION]);
+  });
+
+  // Failure: podman disappearing between the machine check and the session check is reported as a session problem.
+  it("reports PODMAN_NOT_FOUND when podman disappears before the check", async () => {
+    const missing = Object.assign(new Error("spawn podman ENOENT"), { code: "ENOENT" });
+    const { rt } = make({ ...running, [SESSION]: missing });
+    await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_NOT_FOUND" });
+  });
+
+  // Failure: a quit during the wait is held until the session deadline, or a restart or pod call still goes out.
+  it("stop() during the wait cancels the start", async () => {
+    let rt;
+    let stopping;
+    const sleep = vi.fn(async () => {
+      stopping = rt.stop();
+    });
+    const made = make({ ...running, [SESSION]: report("activating", "no"), [STOP]: "" }, { sessionTimeoutMs: 10, sleep });
+    rt = made.rt;
+    const err = await rt.start().catch((e) => e);
+    await stopping;
+    expect(err.code).toBe("START_CANCELLED");
+    expect(made.calls).toEqual([MACHINE_LIST, HARDEN, SESSION, STOP]);
   });
 });
 
@@ -675,6 +889,7 @@ describe("LocalRuntime.start overlap guard", () => {
     const script = {
       [MACHINE_LIST]: new Error("podman busy"),
       [HARDEN]: HARDENED,
+      [SESSION]: SESSION_UP,
       [POD_STATE]: "Running",
     };
     const runner = makeRunner(script);
@@ -730,6 +945,7 @@ describe("LocalRuntime.starting", () => {
       const key = args.join(" ");
       if (key === MACHINE_LIST) return machines(true);
       if (key === HARDEN) return HARDENED;
+      if (key === SESSION) return SESSION_UP;
       if (key === POD_STATE) {
         await gate;
         return "Running";
@@ -781,14 +997,14 @@ describe("LocalRuntime pinned image", () => {
     });
     // Creating the pod is #1681; until then a start that has the image and the config stops at the missing pod.
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
   });
 
   // Failure: every start downloads 1.3 GB again, though the image is already there.
   it("does not pull when the pinned image is already there", async () => {
     const { rt, calls } = make({ ...NEW_MACHINE, [IMAGE_EXISTS]: "" });
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, CONFIG]);
   });
 
   // Failure: a download fills the disk, and the machine, the pod and the rest of the PC fail with it (NFR-04).
@@ -798,7 +1014,7 @@ describe("LocalRuntime pinned image", () => {
     expect(err.code).toBe("DISK_SPACE_LOW");
     expect(err.detail).toContain("GB free");
     expect(err.detail).toContain("podman");
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS]);
   });
 
   // Failure: the machine create downloads its image with no disk check, so the first download can fill the disk.
@@ -864,7 +1080,7 @@ describe("LocalRuntime pinned image", () => {
     calls.length = 0;
     // Creating the pod is #1681; until then a Retry that gets the image stops at the missing pod.
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
   });
 
   // Failure: after an image is refused for its digest, Retry finds nothing to pull, or finds the refused image and
@@ -881,7 +1097,7 @@ describe("LocalRuntime pinned image", () => {
     await expect(rt.start()).rejects.toMatchObject({ code: "IMAGE_PULL_FAILED" });
     calls.length = 0;
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
   });
 
   // Failure: an image that does not carry the pinned digest is used anyway, and the pod runs code nobody pinned (D-2).
@@ -896,7 +1112,7 @@ describe("LocalRuntime pinned image", () => {
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("IMAGE_PULL_FAILED");
     expect(err.detail).toContain("pinned digest");
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
   });
 
   // Failure: a digest check that cannot run leaves the pulled image in place unchecked, against "check after every pull".
@@ -912,7 +1128,7 @@ describe("LocalRuntime pinned image", () => {
     expect(err.code).toBe("IMAGE_PULL_FAILED");
     expect(err.detail).toContain("Error: storage is locked");
     expect(err.detail).not.toContain("Command failed");
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, PULL, IMAGE_DIGESTS, IMAGE_RM]);
   });
 
   // Failure: podman failing to say whether the image is there is read as "not there", and a pull starts on a guess.
@@ -944,7 +1160,7 @@ describe("LocalRuntime pinned image", () => {
     await rt.stop();
 
     await expect(starting).rejects.toMatchObject({ code: "START_CANCELLED" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, PULL, STOP]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, PULL, STOP]);
   });
 });
 
@@ -956,7 +1172,7 @@ describe("LocalRuntime config step", () => {
   it("writes config.toml on a first run, after the image and before the start stops at POD_MISSING", async () => {
     const { rt, calls } = make(FIRST_RUN);
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, CONFIG]);
   });
 
   // Failure: a file left by an earlier run is refused, so a removed pod can never be made again without losing the
@@ -964,7 +1180,7 @@ describe("LocalRuntime config step", () => {
   it("accepts a config.toml that is already there", async () => {
     const { rt, calls } = make({ ...FIRST_RUN, [CONFIG]: "config=kept\nend=ok\n" });
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, CONFIG]);
   });
 
   // Failure: every start runs a root script it does not need, and an existing pod waits on it.
@@ -1030,7 +1246,7 @@ describe("LocalRuntime config step", () => {
     await expect(rt.start()).rejects.toMatchObject({ code: "CONFIG_WRITE_FAILED" });
     calls.length = 0;
     await expect(rt.start()).rejects.toMatchObject({ code: "POD_MISSING" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, CONFIG]);
   });
 
   // Failure: a quit during the config step is reported as a missing pod, and an error page opens while the app quits.
@@ -1050,7 +1266,7 @@ describe("LocalRuntime config step", () => {
     finish(CONFIG_CREATED);
     await stopping;
     await expect(starting).rejects.toMatchObject({ code: "START_CANCELLED" });
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, POD_STATE, IMAGE_EXISTS, CONFIG, STOP]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, POD_STATE, IMAGE_EXISTS, CONFIG, STOP]);
   });
 
   // Failure: the loading page shows a stage it has no label for.
@@ -1135,6 +1351,7 @@ describe("LocalRuntimeError messages", () => {
     "POD_START_FAILED",
     "POD_STOP_FAILED",
     "CONFIG_WRITE_FAILED",
+    "USER_SESSION_FAILED",
     "HEALTH_TIMEOUT",
     "NODE_TIMEOUT",
   ];
@@ -1165,6 +1382,7 @@ describe("LocalRuntime stop and started semantics", () => {
       calls.push(key);
       if (key === MACHINE_LIST) return machines(true);
       if (key === HARDEN) return HARDENED;
+      if (key === SESSION) return SESSION_UP;
       if (key === POD_STATE) return "Exited";
       if (key === POD_START) {
         await gate;
@@ -1209,6 +1427,7 @@ describe("LocalRuntime cancellation", () => {
       const key = args.join(" ");
       if (key === MACHINE_LIST) return machines(true);
       if (key === HARDEN) return HARDENED;
+      if (key === SESSION) return SESSION_UP;
       if (key === POD_STATE) {
         await gate;
         return "Running";
@@ -1266,6 +1485,7 @@ describe("LocalRuntime cancellation", () => {
       calls.push(key);
       if (key === MACHINE_LIST) return machines(false);
       if (key === HARDEN) return HARDENED;
+      if (key === SESSION) return SESSION_UP;
       if (key === "machine start turnstone") {
         await gate;
         return "";

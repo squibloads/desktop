@@ -29,6 +29,7 @@ const CODES = [
   "POD_STOP_FAILED",
   "START_CANCELLED",
   "UNEXPECTED",
+  "USER_SESSION_FAILED",
 ];
 
 // README cells for codes the app never shows. The source pins below show what keeps each one silent, so these rows are checked as text.
