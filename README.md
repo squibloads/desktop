@@ -61,7 +61,7 @@ The Podman machine named `turnstone` need not exist: the app creates it on first
 **What happens on launch.** The loading screen, titled **Starting Local Turnstone**, shows these stages in order:
 
 1. **Starting the Podman machine.** If there is no `turnstone` machine, the app creates one first, and the stage reads **Creating the Podman machine (first run only; this can take several minutes)**: it checks that Podman is 6.1.4 or later, then runs `podman machine init turnstone --username user`, which downloads the machine image. It allows the create 15 minutes. A create that fails is removed (`podman machine rm --force turnstone`), so Retry starts clean. Quitting during the create ends it and removes the half-made machine, so the quit does not wait for it. If the `turnstone` machine is not running, the app starts it. Then it puts back and checks the machine's safety settings (below), which a new machine needs on its first start.
-2. **Starting Turnstone.** If the pod is not running, the app starts it. A pod that is already running is left alone. If there is no pod, this is a first run, and the app first makes sure the machine has the Turnstone image this release pins (see [Releases](#releases)): when it does not, the stage reads **Downloading Turnstone (first run only; this can take several minutes)** while the app pulls the image by its digest, never by tag. It allows the download 15 minutes, and quitting during it ends the download. Then it checks that the image carries the pinned digest; one that does not is removed and the start stops with `IMAGE_PULL_FAILED`. An interrupted download leaves nothing under the pinned digest, so Retry downloads again. The app does not create the pod yet, so a first run then stops at `POD_MISSING`, with the image in place.
+2. **Starting Turnstone.** If the pod is not running, the app starts it. A pod that is already running is left alone. If there is no pod, this is a first run, and the app first makes sure the machine has the Turnstone image this release pins (see [Releases](#releases)): when it does not, the stage reads **Downloading Turnstone (first run only; this can take several minutes)** while the app pulls the image by its digest, never by tag. It allows the download 15 minutes, and quitting during it ends the download. Then it checks that the image carries the pinned digest; one that does not is removed and the start stops with `IMAGE_PULL_FAILED`. An interrupted download leaves nothing under the pinned digest, so Retry downloads again. Next the app writes Turnstone's settings file, `/etc/turnstone/config.toml`, unless it is already there. The folder belongs to root, mode 0711, so the machine user cannot change it. A script run as root inside the machine makes this install's two secrets (`jwt_secret` and `mcp_token_encryption_key`) from the machine's own random source, so they never pass through the app, a command line or the log. The file belongs to the account the Turnstone server runs as, with mode 0600, so only machine root and the server can read it. An existing file is never replaced, so sign-ins survive; its owner and mode are put back. The app does not create the pod yet, so a first run then stops at `POD_MISSING`, with the image and the settings file in place.
 
    **Free space.** Before each download, the machine create and the image, the app checks that the drive holding Podman's machines (`containers\podman\machine` under `%XDG_DATA_HOME%` when that is set, as Podman does, otherwise under `%USERPROFILE%\.local\share`) has room: Turnstone needs 5 GB free. With less, or if the free space cannot be read, the start stops with `DISK_SPACE_LOW`.
 3. **Waiting for the console.** The app checks `/health` once a second for up to 2 minutes, until it reports `ok`.
@@ -187,7 +187,7 @@ To fix a wrong address, open Settings with `Ctrl+,` or from the tray menu. On ma
 
 ### Local mode errors
 
-If startup fails, the loading screen is replaced by an error page. It shows the error code as its title, a message, and a detail line with the raw error. The **Retry** button runs the startup again. The **Settings** button opens Settings.
+If startup fails, the loading screen is replaced by an error page. It shows the error code as its title, a message, and a detail line with Podman's error. The detail leaves out the command the app ran, and shows `[redacted]` in place of any value under a key that names a secret: `jwt_secret`, or any key containing `password`, `token`, `secret` or `api_key` (also `apikey` and `api-key`, as in `OPENAI_API_KEY` or `--api-key`). Only a value joined to its key by `=` or `:` is masked (`KEY=value`, `key = value`, `key: value`, `"key": value`); one after a plain space, as in `--api-key sk-live`, is not, so read a detail before you share it. The log is masked the same way. The **Retry** button runs the startup again. The **Settings** button opens Settings.
 
 | Code | Message on screen | What to check |
 |---|---|---|
@@ -202,6 +202,7 @@ If startup fails, the loading screen is replaced by an error page. It shows the 
 | `MACHINE_RESTART_FAILED` | The Turnstone machine's safety settings were put back, but the machine would not restart to apply them. | Run `podman machine stop turnstone`, then `podman machine start turnstone`, by hand and read the error. |
 | `MACHINE_NOT_HARDENED` | The Turnstone machine's safety settings are not holding, so Turnstone was not started. | The detail line names each gap. See *The machine's safety settings* under [Local mode](#local-mode). |
 | `POD_MISSING` | The Turnstone pod does not exist on the Podman machine. | The app's check is `podman --connection turnstone pod inspect turnstone`. It also fails if the `turnstone` connection is missing or unreachable. |
+| `CONFIG_WRITE_FAILED` | Turnstone could not create its settings file in its machine. | Read the detail line. The app runs a script as root through `podman machine ssh --username root turnstone` that creates `/etc/turnstone/config.toml` when it is missing. It fails when the machine user has no range in `/etc/subuid`, when the folder or file cannot be set up, when `/etc/turnstone` is a link or a folder that an account other than root owns or can write, or when a link or a folder sits at the file's path. It refuses these rather than follow or fix them. To look, run `podman machine ssh --username root turnstone ls -la /etc/turnstone`. Retry runs the script again and never replaces a file that is already there. |
 | `POD_START_FAILED` | The Turnstone pod would not start. | Run `podman --connection turnstone pod start turnstone` by hand and read its error. |
 | `HEALTH_TIMEOUT` | Turnstone started but did not become healthy before the timeout. | Open `http://127.0.0.1:8090/health` in a browser. The detail line shows the last status the app saw. |
 | `NODE_TIMEOUT` | Not shown. The Console opens anyway. The message is written to the log only. | If the Console shows no nodes, check the Turnstone pod's logs. |
@@ -245,6 +246,7 @@ npm run test:contract   # tests/contract only
 npm run test:renderer   # tests/renderer only (jsdom)
 npm run test:shuffle    # files and tests in random order; prints the seed
 npm run test:e2e        # Electron smoke tier: opens real app windows; needs the Electron binary (opt-in)
+npm run test:script     # scripts the app runs in the machine, as root in Linux; needs TURNSTONE_SCRIPT_SHELL (opt-in)
 npm run test:packaged   # after npm run package or make: checks the packaged build's fuses and dropped launch switches
 ```
 
@@ -252,6 +254,12 @@ Tests run in parallel across worker processes. Set `VITEST_MAX_WORKERS` to chang
 
 Tests live in `tests/unit` (one module under `src/main`), `tests/contract` (checks on static files and the test layout), and
 `tests/renderer` (each renderer page in jsdom). The rules for writing tests are in `tests/helpers/README.md`.
+
+`tests/script` runs the scripts the app sends into the Podman machine, such as the one that writes `config.toml`, as root in a real Linux shell, each case in its own folder under `/tmp`. `TURNSTONE_SCRIPT_SHELL` names that shell as a JSON array, the program first; the tier appends one shell command line. From Windows, use the Turnstone machine; on a Linux runner, `["sudo","sh","-c"]`:
+
+```bash
+TURNSTONE_SCRIPT_SHELL='["podman","machine","ssh","--username","root","turnstone"]' npm run test:script
+```
 
 **For developers: smoke-test overrides.** Two environment variables exist for the opt-in Electron smoke tests and are off by default. A packaged build ignores both: only an unpackaged run, such as `npm start` or the smoke tier, reads them. `TURNSTONE_PODMAN` replaces the `podman` command with a JSON array of strings: the executable first, then any arguments that go before the Podman arguments, for example `["C:\\node.exe","C:\\fake-podman.js"]`. `TURNSTONE_LOCAL_CONSOLE_URL` replaces the Local Console address with an `http://` URL on `127.0.0.1`, `localhost` or `[::1]`, for example `http://localhost:9191`; a URL with credentials or any other host is rejected. The console address keeps only the origin, so any path or query on the value is dropped. A malformed value is an error that names the variable, never a silent fallback: an empty value counts as unset, and a bad value of either variable stops the app at start with that message.
 

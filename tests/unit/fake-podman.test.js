@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const FAKE_PODMAN = fileURLToPath(new URL("../helpers/fake-podman.js", import.meta.url));
+const { configCommand } = require("../../src/main/turnstone-config.js");
 
 let dir;
 let statePath;
@@ -121,6 +122,23 @@ describe("fake-podman known calls", () => {
     const result = callPodman(["machine", "ssh", "--username", "root", "turnstone", "check"], { hardening: "fails" });
 
     expect(result.status).toBe(1);
+  });
+
+  // Failure: every e2e first run fails at the config step, or the fake answers the config script with a hardening
+  // report, so a first run never reaches the missing pod.
+  it("answers the config script as root with a written file by default", () => {
+    const result = callPodman(["machine", "ssh", "--username", "root", "turnstone", configCommand()]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("config=created\nend=ok\n");
+  });
+
+  // Failure: no e2e test can show a kept file, or the app refusing a script that failed or could not run.
+  it("answers the config script with kept or failed when config says so, and exits 1 when it is fails", () => {
+    const argv = ["machine", "ssh", "--username", "root", "turnstone", configCommand()];
+    expect(callPodman(argv, { config: "kept" }).stdout).toBe("config=kept\nend=ok\n");
+    expect(callPodman(argv, { config: "failed" }).stdout).toBe("config=failed\nend=ok\n");
+    expect(callPodman(argv, { config: "fails" }).status).toBe(1);
   });
 
   // Failure: the restart after a rewritten wsl.conf has no stop to call, so the machine is never restarted in a test.

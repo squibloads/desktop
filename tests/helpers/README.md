@@ -76,6 +76,11 @@ tier fails it.
 - `e2e-setup.js` runs before the e2e files. It fails the run when the Electron
   binary is missing, so the smoke tier can never pass by skipping.
 - `run-e2e.mjs` sets `TURNSTONE_E2E=1` and runs `vitest run --project e2e`.
+- `root-shell.js` exports `runAsRoot(script)`, `rootShell()` and `facts(stdout)` for the
+  script tier. `runAsRoot` sends the script as base64 in one argument to the shell
+  `TURNSTONE_SCRIPT_SHELL` names, as the app sends its own; a missing or malformed value
+  throws, so the tier can never pass by skipping. `facts` reads `key=value` lines. A
+  script test prints hashes and lengths of any secret it checks, never the value.
 - `check-packaged-build.mjs` (`npm run test:packaged`) checks the build that
   `electron-forge package` or `make` left in Forge's output folder (`out/`), on the OS
   that built it. The release workflow runs it before each OS's upload, so a failure

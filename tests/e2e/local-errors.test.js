@@ -15,6 +15,8 @@ const PINNED = require("../../src/main/turnstone-image.js").pinnedImageRef();
 const IMAGE_EXISTS = `--connection turnstone image exists ${PINNED}`;
 const PULL = `--connection turnstone pull ${PINNED}`;
 const IMAGE_DIGESTS = `--connection turnstone image inspect ${PINNED} --format {{json .RepoDigests}}`;
+// The config script, run as root on a first run.
+const CONFIG = `machine ssh --username root turnstone ${require("../../src/main/turnstone-config.js").configCommand()}`;
 
 // Starts a console to learn a free port, then stops it. The console stays down until a
 // test starts it again, so the health poller never sees it come up during the error.
@@ -92,9 +94,30 @@ describe("local start errors", () => {
     });
 
     const errorPage = await app.findPage(urlEndsWith("local-error.html"), { description: "local error page" });
-    // Creating the pod is #1681; until then a first run stops here, with the image in place.
+    // Creating the pod is #1681; until then a first run stops here, with the image and config.toml in place.
     await waitForText(errorPage, "#error-title", "POD_MISSING");
-    expect(app.readPodmanLog().slice(-3)).toEqual([IMAGE_EXISTS, PULL, IMAGE_DIGESTS]);
+    expect(app.readPodmanLog().slice(-4)).toEqual([IMAGE_EXISTS, PULL, IMAGE_DIGESTS, CONFIG]);
+  });
+
+  // Failure: a settings file that could not be written shows a generic error or a missing pod, and Retry never runs
+  // the script again.
+  it("shows CONFIG_WRITE_FAILED when the settings file cannot be written, and Retry runs the script again", async () => {
+    const { port } = await reservedConsole();
+    const app = await launchApp({
+      settings: { mode: "local" },
+      podmanState: { machine: "running", pod: "missing", config: "failed" },
+      consolePort: port,
+    });
+
+    const errorPage = await app.findPage(urlEndsWith("local-error.html"), { description: "local error page" });
+    await waitForText(errorPage, "#error-title", "CONFIG_WRITE_FAILED");
+    await waitForText(errorPage, "#error-message", "Turnstone could not create its settings file in its machine.");
+    expect(app.readPodmanLog().slice(-1)).toEqual([CONFIG]);
+
+    await app.setPodmanState({ config: "created" });
+    await errorPage.click("#btn-retry");
+    await waitForText(errorPage, "#error-title", "POD_MISSING");
+    expect(app.readPodmanLog().filter((line) => line === CONFIG)).toEqual([CONFIG, CONFIG]);
   });
 
   // Failure: a failed download shows a generic "unable to connect" page, and the user cannot tell the image is missing.

@@ -1,4 +1,4 @@
-// Stands in for the podman binary. It implements only the fourteen calls local-runtime.js makes,
+// Stands in for the podman binary. It implements only the fifteen calls local-runtime.js makes,
 // each matched as its exact argv, and keeps the machine and pod state in a JSON file so a test
 // can change them while the app is running.
 //
@@ -15,6 +15,9 @@
 //            is given is not run: machine-hardening.test.js and a real machine cover what it does.
 // failStart makes `machine start` and `pod start` exit 1; failStop does the same for `pod stop`.
 // failInit makes `machine init` exit 1 after leaving a half-made machine, as an interrupted create can.
+// config:    "created" (the default when absent) | "kept" | "failed" | "fails". The config script run as root
+//            answers that the file was written, was already there, could not be set up, or exits 1. It is matched
+//            as the exact command the app sends and is not run: tests/script runs it in a real shell.
 // podmanVersion is what `version` reports, "6.1.4" when absent.
 // image:     "present" (the default when absent) | "missing". failPull makes `pull` exit 1 and leaves it
 //            missing; wrongDigest makes the image's digests leave out the pinned one.
@@ -30,9 +33,9 @@ const MACHINE = "turnstone";
 const POD = "turnstone";
 const CONNECTION = "turnstone";
 
-// The fourteen calls, as the argv local-runtime.js passes them. Matched element by element, so the same
+// The fifteen calls, as the argv local-runtime.js passes them. Matched element by element, so the same
 // words split differently are not one of these calls. The machine check is this prefix and then
-// exactly one argument, the encoded script.
+// exactly one argument, the encoded script; the config script is the same prefix and its exact command.
 const PINNED = require("../../src/main/turnstone-image.js").pinnedImageRef();
 // The linux/amd64 manifest inside the pinned index, as a real pull lists it beside the index digest.
 const PLATFORM = "ghcr.io/turnstonelabs/turnstone@sha256:48a7730e76096cba73d648c0f447090596dfd3721d06fc9ca2a35dcce5aaa752";
@@ -50,6 +53,12 @@ const MACHINE_CHECK = ["machine", "ssh", "--username", "root", MACHINE];
 const HARDENING_REPORTS = {
   ok: "wslconf=ok\nsudo=refused\nend=ok\n",
   gap: "wslconf=ok\nsudo=allowed\nend=ok\n",
+};
+const CONFIG_WRITE = [...MACHINE_CHECK, require("../../src/main/turnstone-config.js").configCommand()];
+const CONFIG_REPORTS = {
+  created: "config=created\nend=ok\n",
+  kept: "config=kept\nend=ok\n",
+  failed: "config=failed\nend=ok\n",
 };
 const POD_INSPECT = ["--connection", CONNECTION, "pod", "inspect", POD, "--format", "{{.State}}"];
 const POD_START = ["--connection", CONNECTION, "pod", "start", POD];
@@ -134,6 +143,11 @@ if (sameArgv(args, IMAGE_EXISTS)) {
   state.machine = "stopped";
   save();
   console.log(`Machine "${MACHINE}" stopped successfully`);
+} else if (sameArgv(args, CONFIG_WRITE)) {
+  const config = state.config ?? "created";
+  if (config === "fails") fail("Error: ssh: connect to host localhost: Connection refused");
+  if (!(config in CONFIG_REPORTS)) fail(`fake-podman: unknown config state "${config}"`);
+  process.stdout.write(CONFIG_REPORTS[config]);
 } else if (args.length === MACHINE_CHECK.length + 1 && sameArgv(args.slice(0, -1), MACHINE_CHECK)) {
   const hardening = state.hardening ?? "ok";
   if (hardening === "fails") fail("Error: ssh: connect to host localhost: Connection refused");
