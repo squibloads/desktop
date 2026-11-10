@@ -578,6 +578,20 @@ describe("LocalRuntime user session", () => {
     expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_START, SESSION, POD_STATE]);
   });
 
+  // Failure: a start that answers activating is followed by plain checks, which carry no start line, so a session that
+  // then fails is reported as never started again (CodeRabbit, PR 46).
+  it("says the session was started again when it fails after the wait that followed the start", async () => {
+    const answers = [FAILED, FAILED];
+    const { rt, calls } = make(
+      { ...running, [SESSION]: () => answers.shift(), [SESSION_START]: report("activating", "no", "start=ok\n") },
+      { sessionTimeoutMs: 10 },
+    );
+    const err = await rt.start().catch((e) => e);
+    expect(err.code).toBe("USER_SESSION_FAILED");
+    expect(err.detail).toBe("user@1000.service is failed, also after starting it again. No other WSL distribution is running.");
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_START, SESSION]);
+  });
+
   // Failure: a session that stays failed meets the cryptic "connect failed" at the pod, or an error that does not say
   // which other distribution to close, or that tells the user to close Turnstone's own.
   it("reports USER_SESSION_FAILED naming the other distributions when starting it again does not help", async () => {

@@ -594,9 +594,12 @@ class LocalRuntime {
    * that does not come up stops the start, naming the other running distributions.
    */
   async _ensureUserSession() {
+    // Kept here, not read from the last report: the wait after a start reads plain checks, which carry no start line.
+    let started = false;
     let report = await this._waitUserSession(await this._sessionReport());
     if (sessionReady(report)) return;
     if (sessionDown(report)) {
+      started = true;
       report = await this._waitUserSession(await this._sessionReport({ start: true }));
       if (sessionReady(report)) return;
     }
@@ -611,7 +614,7 @@ class LocalRuntime {
       "USER_SESSION_FAILED",
       sessionFailureDetail({
         report,
-        started: report.start !== null,
+        started,
         waitedMs: this.sessionTimeoutMs,
         others,
         listError,
