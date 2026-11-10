@@ -588,16 +588,16 @@ class LocalRuntime {
   /**
    * #1690: every pod call goes through the rootless API in the machine user's session, which fails when another WSL
    * distribution already runs a session for the same UID (#1686). A session on its way up is waited for. One that is
-   * down is restarted once, which brings it up in place once the other distribution has stopped; a Retry restarts it
-   * again. One that is running without its socket, or still starting at the deadline, is never restarted, since that
-   * would end whatever it runs. A session that does not come up stops the start, naming the other running
-   * distributions.
+   * down is started again once, which brings it up in place once the other distribution has stopped; a Retry starts it
+   * again. That call is a systemctl start, which leaves the session alone if it came up after it was found down. One
+   * that is running without its socket, or still starting at the deadline, is reported, not started again. A session
+   * that does not come up stops the start, naming the other running distributions.
    */
   async _ensureUserSession() {
     let report = await this._waitUserSession(await this._sessionReport());
     if (sessionReady(report)) return;
     if (sessionDown(report)) {
-      report = await this._waitUserSession(await this._sessionReport({ restart: true }));
+      report = await this._waitUserSession(await this._sessionReport({ start: true }));
       if (sessionReady(report)) return;
     }
     let others = null;
@@ -611,7 +611,7 @@ class LocalRuntime {
       "USER_SESSION_FAILED",
       sessionFailureDetail({
         report,
-        restarted: report.restart !== null,
+        started: report.start !== null,
         waitedMs: this.sessionTimeoutMs,
         others,
         listError,
@@ -632,15 +632,15 @@ class LocalRuntime {
 
   // One run of the session script, as root. A report without its end line was cut short, so it is a failure, never a
   // session that is up.
-  async _sessionReport({ restart = false } = {}) {
+  async _sessionReport({ start = false } = {}) {
     let out;
     try {
-      out = await this.run(["machine", "ssh", "--username", "root", MACHINE, sessionCommand({ restart })]);
+      out = await this.run(["machine", "ssh", "--username", "root", MACHINE, sessionCommand({ start })]);
     } catch (err) {
       if (err && err.code === "ENOENT") throw this._wrap(err);
       throw new LocalRuntimeError(
         "USER_SESSION_FAILED",
-        `the session could not be ${restart ? "restarted" : "checked"}: ${withoutCommandLine(err)}`,
+        `the session could not be ${start ? "started" : "checked"}: ${withoutCommandLine(err)}`,
       );
     }
     this._checkCancelled();

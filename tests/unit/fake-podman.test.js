@@ -151,19 +151,19 @@ describe("fake-podman known calls", () => {
     expect(result.stdout).toBe("uid=1000\nsession=active\nsocket=yes\nend=ok\n");
   });
 
-  // Failure: no e2e test can show a failed session, or a restart that does or does not bring it back.
-  it("answers a failed session, and a restart that brings it up or leaves it failed", () => {
+  // Failure: no e2e test can show a failed session, or a start that does or does not bring it back.
+  it("answers a failed session, and a start that brings it up or leaves it failed", () => {
     const check = ["machine", "ssh", "--username", "root", "turnstone", sessionCommand()];
-    const restart = ["machine", "ssh", "--username", "root", "turnstone", sessionCommand({ restart: true })];
+    const start = ["machine", "ssh", "--username", "root", "turnstone", sessionCommand({ start: true })];
     expect(callPodman(check, { session: "failed" }).stdout).toBe("uid=1000\nsession=failed\nsocket=no\nend=ok\n");
 
-    expect(callPodman(restart, { session: "failed", sessionRestart: "fails" }).stdout).toBe(
-      "uid=1000\nrestart=failed\nsession=failed\nsocket=no\nend=ok\n",
+    expect(callPodman(start, { session: "failed", sessionStart: "fails" }).stdout).toBe(
+      "uid=1000\nstart=failed\nsession=failed\nsocket=no\nend=ok\n",
     );
     expect(savedState().session).toBe("failed");
 
-    expect(callPodman(restart, { session: "failed" }).stdout).toBe(
-      "uid=1000\nrestart=ok\nsession=active\nsocket=yes\nend=ok\n",
+    expect(callPodman(start, { session: "failed" }).stdout).toBe(
+      "uid=1000\nstart=ok\nsession=active\nsocket=yes\nend=ok\n",
     );
     expect(savedState().session).toBe("active");
   });
