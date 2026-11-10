@@ -1,4 +1,4 @@
-// Stands in for the podman binary. It implements only the fifteen calls local-runtime.js makes,
+// Stands in for the podman binary. It implements only the seventeen calls local-runtime.js makes,
 // each matched as its exact argv, and keeps the machine and pod state in a JSON file so a test
 // can change them while the app is running.
 //
@@ -18,6 +18,11 @@
 // config:    "created" (the default when absent) | "kept" | "failed" | "fails". The config script run as root
 //            answers that the file was written, was already there, could not be set up, or exits 1. It is matched
 //            as the exact command the app sends and is not run: tests/script runs it in a real shell.
+// session:   "active" (the default when absent) | "failed". The user session check run as root answers a session
+//            that is up with its Podman socket, or one that failed. sessionStart: "ok" (the default when absent) |
+//            "fails": the check with a start first brings a failed session up and saves it as active, or leaves it
+//            failed. Both are matched as the exact commands the app sends and are not run: tests/script runs them in a
+//            real shell.
 // podmanVersion is what `version` reports, "6.1.4" when absent.
 // image:     "present" (the default when absent) | "missing". failPull makes `pull` exit 1 and leaves it
 //            missing; wrongDigest makes the image's digests leave out the pinned one.
@@ -33,9 +38,10 @@ const MACHINE = "turnstone";
 const POD = "turnstone";
 const CONNECTION = "turnstone";
 
-// The fifteen calls, as the argv local-runtime.js passes them. Matched element by element, so the same
+// The seventeen calls, as the argv local-runtime.js passes them. Matched element by element, so the same
 // words split differently are not one of these calls. The machine check is this prefix and then
-// exactly one argument, the encoded script; the config script is the same prefix and its exact command.
+// exactly one argument, the encoded script; the config script and the two session scripts are the same prefix and
+// their exact commands, matched first.
 const PINNED = require("../../src/main/turnstone-image.js").pinnedImageRef();
 // The linux/amd64 manifest inside the pinned index, as a real pull lists it beside the index digest.
 const PLATFORM = "ghcr.io/turnstonelabs/turnstone@sha256:48a7730e76096cba73d648c0f447090596dfd3721d06fc9ca2a35dcce5aaa752";
@@ -59,6 +65,13 @@ const CONFIG_REPORTS = {
   created: "config=created\nend=ok\n",
   kept: "config=kept\nend=ok\n",
   failed: "config=failed\nend=ok\n",
+};
+const { sessionCommand } = require("../../src/main/user-session.js");
+const SESSION_CHECK = [...MACHINE_CHECK, sessionCommand()];
+const SESSION_START = [...MACHINE_CHECK, sessionCommand({ start: true })];
+const SESSION_REPORTS = {
+  active: "uid=1000\nsession=active\nsocket=yes\nend=ok\n",
+  failed: "uid=1000\nsession=failed\nsocket=no\nend=ok\n",
 };
 const POD_INSPECT = ["--connection", CONNECTION, "pod", "inspect", POD, "--format", "{{.State}}"];
 const POD_START = ["--connection", CONNECTION, "pod", "start", POD];
@@ -148,6 +161,15 @@ if (sameArgv(args, IMAGE_EXISTS)) {
   if (config === "fails") fail("Error: ssh: connect to host localhost: Connection refused");
   if (!(config in CONFIG_REPORTS)) fail(`fake-podman: unknown config state "${config}"`);
   process.stdout.write(CONFIG_REPORTS[config]);
+} else if (sameArgv(args, SESSION_CHECK)) {
+  const session = state.session ?? "active";
+  if (!(session in SESSION_REPORTS)) fail(`fake-podman: unknown session state "${session}"`);
+  process.stdout.write(SESSION_REPORTS[session]);
+} else if (sameArgv(args, SESSION_START)) {
+  const works = (state.sessionStart ?? "ok") !== "fails";
+  state.session = works ? "active" : "failed";
+  save();
+  process.stdout.write(SESSION_REPORTS[state.session].replace("uid=1000\n", `uid=1000\nstart=${works ? "ok" : "failed"}\n`));
 } else if (args.length === MACHINE_CHECK.length + 1 && sameArgv(args.slice(0, -1), MACHINE_CHECK)) {
   const hardening = state.hardening ?? "ok";
   if (hardening === "fails") fail("Error: ssh: connect to host localhost: Connection refused");

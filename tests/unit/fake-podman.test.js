@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const FAKE_PODMAN = fileURLToPath(new URL("../helpers/fake-podman.js", import.meta.url));
 const { configCommand } = require("../../src/main/turnstone-config.js");
+const { sessionCommand } = require("../../src/main/user-session.js");
 
 let dir;
 let statePath;
@@ -139,6 +140,32 @@ describe("fake-podman known calls", () => {
     expect(callPodman(argv, { config: "kept" }).stdout).toBe("config=kept\nend=ok\n");
     expect(callPodman(argv, { config: "failed" }).stdout).toBe("config=failed\nend=ok\n");
     expect(callPodman(argv, { config: "fails" }).status).toBe(1);
+  });
+
+  // Failure: every e2e start fails at the session step, or the fake answers the session check with a hardening report,
+  // so no start reaches the pod.
+  it("answers the user session check as root with a session that is up by default", () => {
+    const result = callPodman(["machine", "ssh", "--username", "root", "turnstone", sessionCommand()]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("uid=1000\nsession=active\nsocket=yes\nend=ok\n");
+  });
+
+  // Failure: no e2e test can show a failed session, or a start that does or does not bring it back.
+  it("answers a failed session, and a start that brings it up or leaves it failed", () => {
+    const check = ["machine", "ssh", "--username", "root", "turnstone", sessionCommand()];
+    const start = ["machine", "ssh", "--username", "root", "turnstone", sessionCommand({ start: true })];
+    expect(callPodman(check, { session: "failed" }).stdout).toBe("uid=1000\nsession=failed\nsocket=no\nend=ok\n");
+
+    expect(callPodman(start, { session: "failed", sessionStart: "fails" }).stdout).toBe(
+      "uid=1000\nstart=failed\nsession=failed\nsocket=no\nend=ok\n",
+    );
+    expect(savedState().session).toBe("failed");
+
+    expect(callPodman(start, { session: "failed" }).stdout).toBe(
+      "uid=1000\nstart=ok\nsession=active\nsocket=yes\nend=ok\n",
+    );
+    expect(savedState().session).toBe("active");
   });
 
   // Failure: the restart after a rewritten wsl.conf has no stop to call, so the machine is never restarted in a test.

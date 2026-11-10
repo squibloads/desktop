@@ -6,12 +6,24 @@ const { TURNSTONE_IMAGE, pinnedImageRef } = require("./turnstone-image.js");
 const { freeDiskBytes: readFreeDiskBytes, podmanDataDir } = require("./disk-space.js");
 const { redactSecrets } = require("./redact-secrets.js");
 const { configCommand, parseConfigReport } = require("./turnstone-config.js");
+const {
+  sessionCommand,
+  parseSessionReport,
+  sessionReady,
+  sessionChanging,
+  sessionDown,
+  parseDistroList,
+  otherDistros,
+  sessionFailureDetail,
+} = require("./user-session.js");
 
 const MACHINE = "turnstone";
 const POD = "turnstone";
 // Podman's default connection can point at another machine (turnstone-root
 // exists), so pod commands name this connection explicitly.
 const PODMAN_CONNECTION = "turnstone";
+// The WSL distribution Podman runs the machine in, which a list of the running distributions leaves out.
+const MACHINE_DISTRO = `podman-${MACHINE}`;
 
 // A fresh machine on WSL 2.9 and later could not run a container under older Podman, over the pids cgroup; 6.1.4 fixed
 // it (Phase 2 Analysis). Only a create checks it: a machine that already exists was made by a Podman that worked.
@@ -47,6 +59,7 @@ const USER_MESSAGES = {
     "The Turnstone machine's safety settings are not holding, so Turnstone was not started.",
   POD_MISSING: "The Turnstone pod does not exist on the Podman machine.",
   CONFIG_WRITE_FAILED: "Turnstone could not create its settings file in its machine.",
+  USER_SESSION_FAILED: "The Turnstone machine's user session would not start, so the pod cannot run.",
   POD_START_FAILED: "The Turnstone pod would not start.",
   POD_STOP_FAILED: "The Turnstone pod would not stop cleanly.",
   START_CANCELLED: "Startup was cancelled because Turnstone is quitting.",
@@ -169,6 +182,27 @@ function compareVersions(a, b) {
 }
 
 /**
+ * The WSL distributions running now, by name. WSL_UTF8=1 asks wsl.exe for UTF-8 instead of its UTF-16LE default;
+ * parseDistroList reads either.
+ */
+function runningWslDistros() {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "wsl.exe",
+      ["--list", "--running", "--quiet"],
+      { windowsHide: true, timeout: 15000, encoding: "buffer", env: { ...process.env, WSL_UTF8: "1" } },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(parseDistroList(stdout));
+      },
+    );
+  });
+}
+
+/**
  * Drives the local Podman machine and pod, and creates the machine on first run. Pod lifecycle is stop-then-start
  * only: `pod restart`, or restarting a single container, kills conmon and
  * strands the pod. A failed read is an error, never a default.
@@ -189,6 +223,10 @@ class LocalRuntime {
     onProgress = null,
     freeDiskBytes = readFreeDiskBytes,
     diskPath = podmanDataDir(),
+    // Longer than a start of the session's unit can take (45 s on the machine image).
+    sessionTimeoutMs = 60000,
+    sessionIntervalMs = 1000,
+    listDistros = runningWslDistros,
   } = {}) {
     this.run = run;
     this.fetchHealth = fetchHealth;
@@ -200,6 +238,9 @@ class LocalRuntime {
     this.onProgress = onProgress;
     this.freeDiskBytes = freeDiskBytes;
     this.diskPath = diskPath;
+    this.sessionTimeoutMs = sessionTimeoutMs;
+    this.sessionIntervalMs = sessionIntervalMs;
+    this.listDistros = listDistros;
     // True once a pod call has succeeded past the machine check, so quit can
     // stop a pod this session started without touching one it never saw.
     this.started = false;
@@ -253,6 +294,7 @@ class LocalRuntime {
       this._checkCancelled();
     }
     await this._hardenMachine();
+    await this._ensureUserSession();
     this._progress("pod");
     let state;
     try {
@@ -539,6 +581,75 @@ class LocalRuntime {
     const report = parseMachineReport(out);
     if (!report.complete) {
       throw new LocalRuntimeError("MACHINE_CHECK_FAILED", "the check stopped before it finished");
+    }
+    return report;
+  }
+
+  /**
+   * #1690: every pod call goes through the rootless API in the machine user's session, which fails when another WSL
+   * distribution already runs a session for the same UID (#1686). A session on its way up is waited for. One that is
+   * down is started again once, which brings it up in place once the other distribution has stopped; a Retry starts it
+   * again. That call is a systemctl start, which leaves the session alone if it came up after it was found down. One
+   * that is running without its socket, or still starting at the deadline, is reported, not started again. A session
+   * that does not come up stops the start, naming the other running distributions.
+   */
+  async _ensureUserSession() {
+    // Kept here, not read from the last report: the wait after a start reads plain checks, which carry no start line.
+    let started = false;
+    let report = await this._waitUserSession(await this._sessionReport());
+    if (sessionReady(report)) return;
+    if (sessionDown(report)) {
+      started = true;
+      report = await this._waitUserSession(await this._sessionReport({ start: true }));
+      if (sessionReady(report)) return;
+    }
+    let others = null;
+    let listError = null;
+    try {
+      others = otherDistros(await this.listDistros(), MACHINE_DISTRO);
+    } catch (err) {
+      listError = (err && err.message) || String(err);
+    }
+    throw new LocalRuntimeError(
+      "USER_SESSION_FAILED",
+      sessionFailureDetail({
+        report,
+        started,
+        waitedMs: this.sessionTimeoutMs,
+        others,
+        listError,
+      }),
+    );
+  }
+
+  // Reads again while the session is on its way somewhere, until it settles or the deadline passes.
+  async _waitUserSession(report) {
+    const deadline = Date.now() + this.sessionTimeoutMs;
+    while (sessionChanging(report) && Date.now() < deadline) {
+      await this.sleep(this.sessionIntervalMs);
+      this._checkCancelled();
+      report = await this._sessionReport();
+    }
+    return report;
+  }
+
+  // One run of the session script, as root. A report without its end line was cut short, so it is a failure, never a
+  // session that is up.
+  async _sessionReport({ start = false } = {}) {
+    let out;
+    try {
+      out = await this.run(["machine", "ssh", "--username", "root", MACHINE, sessionCommand({ start })]);
+    } catch (err) {
+      if (err && err.code === "ENOENT") throw this._wrap(err);
+      throw new LocalRuntimeError(
+        "USER_SESSION_FAILED",
+        `the session could not be ${start ? "started" : "checked"}: ${withoutCommandLine(err)}`,
+      );
+    }
+    this._checkCancelled();
+    const report = parseSessionReport(out);
+    if (!report.complete) {
+      throw new LocalRuntimeError("USER_SESSION_FAILED", "the session check stopped before it finished");
     }
     return report;
   }
