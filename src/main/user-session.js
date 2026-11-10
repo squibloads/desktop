@@ -2,7 +2,8 @@
 // every pod call reaches it over ssh at /run/user/<uid>/podman/podman.sock. All WSL 2 distributions share one cgroup
 // tree, so when another one already runs a session for the same UID (another Podman machine, whose user is also UID
 // 1000, or a distribution with a newer systemd), the second session to start fails with "Failed to spawn executor:
-// Device or resource busy" and the API never comes up (#1686). Once the other has stopped, a restart fixes it in place.
+// Device or resource busy" and the API never comes up (#1686). Once the other has stopped, starting it again fixes it in
+// place.
 //
 // No electron or child_process here, so the rules run under plain Node in the unit tier. local-runtime.js runs the
 // script inside the machine as root, reads its report with parseSessionReport, and lists the running distributions
@@ -19,7 +20,7 @@ const SAFE_NAME = /^[a-z_][a-z0-9_-]*$/;
 
 // systemd states on the way somewhere, which are waited out rather than acted on.
 const CHANGING = new Set(["activating", "deactivating", "reloading", "refreshing"]);
-// States in which nothing of the session is running, so a restart cannot end anything that is.
+// States in which nothing of the session is running, the only ones it is started again from.
 const DOWN = new Set(["failed", "inactive"]);
 
 function checked(value, pattern, what) {
@@ -31,12 +32,16 @@ function checked(value, pattern, what) {
 
 /**
  * The script run as root inside the machine. It reports the session's state and whether Podman's socket is there, and
- * judges nothing. With restart, it first restarts the session once and waits for systemd's answer, which the session
- * unit's own start timeout bounds (45 s on the machine image). systemctl is-active exits non-zero for every state but
- * active, so its output is kept whatever its exit. The last line says it finished, so a report cut short is never read
- * as a session that is up. The options exist for tests/script; the app always uses the defaults.
+ * judges nothing. With start, it first starts the session once and waits for systemd's answer, which the session unit's
+ * own start timeout bounds (45 s on the machine image). It is a start, never a restart: the session was found down by an
+ * earlier call, and may have come up since. systemd leaves an active unit alone on start and joins one that is
+ * activating, so the decision is made by systemd at the moment of the call, and a running session is never stopped
+ * (CodeRabbit, PR 46). On a failed or inactive unit, start does what restart would. systemctl is-active exits non-zero
+ * for every state but active, so its output is kept whatever its exit. The last line says it finished, so a report cut
+ * short is never read as a session that is up. The account and folder options exist for tests/script; the app always
+ * uses the defaults.
  */
-function sessionScript({ restart = false, user = MACHINE_USER, runDir = RUN_DIR } = {}) {
+function sessionScript({ start = false, user = MACHINE_USER, runDir = RUN_DIR } = {}) {
   checked(user, SAFE_NAME, "account");
   checked(runDir, SAFE_PATH, "folder");
   return [
@@ -45,8 +50,8 @@ function sessionScript({ restart = false, user = MACHINE_USER, runDir = RUN_DIR 
     `u=$(id -u '${user}' 2> /dev/null) || u=""`,
     "case \"$u\" in ''|*[!0-9]*) echo session=nouser; echo end=ok; exit 0 ;; esac",
     'echo "uid=$u"',
-    ...(restart
-      ? ['if systemctl restart "user@$u.service" > /dev/null 2>&1; then echo restart=ok; else echo restart=failed; fi']
+    ...(start
+      ? ['if systemctl start "user@$u.service" > /dev/null 2>&1; then echo start=ok; else echo start=failed; fi']
       : []),
     's=$(systemctl is-active "user@$u.service" 2> /dev/null) || :',
     'echo "session=${s:-unknown}"',
@@ -63,7 +68,7 @@ function sessionCommand(options) {
 
 /** The script's report. Unknown lines, such as a login banner, are ignored. */
 function parseSessionReport(text) {
-  const report = { complete: false, uid: null, session: null, socket: null, restart: null };
+  const report = { complete: false, uid: null, session: null, socket: null, start: null };
   for (const raw of String(text).split("\n")) {
     const line = raw.replace(/\r$/, "");
     const eq = line.indexOf("=");
@@ -71,7 +76,7 @@ function parseSessionReport(text) {
     const key = line.slice(0, eq);
     const value = line.slice(eq + 1);
     if (key === "end") report.complete = value === "ok";
-    else if (key === "uid" || key === "session" || key === "socket" || key === "restart") report[key] = value;
+    else if (key === "uid" || key === "session" || key === "socket" || key === "start") report[key] = value;
   }
   return report;
 }
@@ -86,7 +91,7 @@ function sessionChanging(report) {
   return CHANGING.has(report.session) || (report.session === "active" && report.socket !== "yes");
 }
 
-/** Not running at all, the only case a restart is for: restarting a running session would end the pod running in it. */
+/** Not running at all, the only case a second start is for: anything else is waited on or reported. */
 function sessionDown(report) {
   return DOWN.has(report.session);
 }
@@ -112,13 +117,13 @@ function otherDistros(names, own) {
 }
 
 // What the session's state means, in one clause.
-function describeSession(report, restarted, waitedMs) {
+function describeSession(report, started, waitedMs) {
   const unit = report.uid ? `user@${report.uid}.service` : "the machine user's session";
   const seconds = Math.round((waitedMs ?? 0) / 1000);
   if (report.session === "nouser") return `the machine has no account named ${MACHINE_USER}, so it has no user session`;
   if (report.session === "active") return `${unit} is running, but its Podman socket did not appear within ${seconds} s`;
   if (CHANGING.has(report.session)) return `${unit} was still ${report.session} after ${seconds} s`;
-  return `${unit} is ${report.session ?? "unknown"}${restarted ? ", also after a restart" : ""}`;
+  return `${unit} is ${report.session ?? "unknown"}${started ? ", also after starting it again" : ""}`;
 }
 
 // What the running distributions say about the cause, in one or two sentences.
@@ -136,8 +141,8 @@ function describeDistros(others, listError) {
  * The error detail for a session that did not come up: its state, then the other running distributions, which are the
  * usual cause and the one the user can act on. With none running it says so, so the user does not go looking for one.
  */
-function sessionFailureDetail({ report, restarted = false, waitedMs, others = null, listError = null }) {
-  return `${describeSession(report, restarted, waitedMs)}. ${describeDistros(others, listError)}`;
+function sessionFailureDetail({ report, started = false, waitedMs, others = null, listError = null }) {
+  return `${describeSession(report, started, waitedMs)}. ${describeDistros(others, listError)}`;
 }
 
 module.exports = {

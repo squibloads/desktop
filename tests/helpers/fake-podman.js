@@ -19,8 +19,8 @@
 //            answers that the file was written, was already there, could not be set up, or exits 1. It is matched
 //            as the exact command the app sends and is not run: tests/script runs it in a real shell.
 // session:   "active" (the default when absent) | "failed". The user session check run as root answers a session
-//            that is up with its Podman socket, or one that failed. sessionRestart: "ok" (the default when absent) |
-//            "fails": the check with a restart first brings a failed session up and saves it as active, or leaves it
+//            that is up with its Podman socket, or one that failed. sessionStart: "ok" (the default when absent) |
+//            "fails": the check with a start first brings a failed session up and saves it as active, or leaves it
 //            failed. Both are matched as the exact commands the app sends and are not run: tests/script runs them in a
 //            real shell.
 // podmanVersion is what `version` reports, "6.1.4" when absent.
@@ -68,7 +68,7 @@ const CONFIG_REPORTS = {
 };
 const { sessionCommand } = require("../../src/main/user-session.js");
 const SESSION_CHECK = [...MACHINE_CHECK, sessionCommand()];
-const SESSION_RESTART = [...MACHINE_CHECK, sessionCommand({ restart: true })];
+const SESSION_START = [...MACHINE_CHECK, sessionCommand({ start: true })];
 const SESSION_REPORTS = {
   active: "uid=1000\nsession=active\nsocket=yes\nend=ok\n",
   failed: "uid=1000\nsession=failed\nsocket=no\nend=ok\n",
@@ -165,11 +165,11 @@ if (sameArgv(args, IMAGE_EXISTS)) {
   const session = state.session ?? "active";
   if (!(session in SESSION_REPORTS)) fail(`fake-podman: unknown session state "${session}"`);
   process.stdout.write(SESSION_REPORTS[session]);
-} else if (sameArgv(args, SESSION_RESTART)) {
-  const works = (state.sessionRestart ?? "ok") !== "fails";
+} else if (sameArgv(args, SESSION_START)) {
+  const works = (state.sessionStart ?? "ok") !== "fails";
   state.session = works ? "active" : "failed";
   save();
-  process.stdout.write(SESSION_REPORTS[state.session].replace("uid=1000\n", `uid=1000\nrestart=${works ? "ok" : "failed"}\n`));
+  process.stdout.write(SESSION_REPORTS[state.session].replace("uid=1000\n", `uid=1000\nstart=${works ? "ok" : "failed"}\n`));
 } else if (args.length === MACHINE_CHECK.length + 1 && sameArgv(args.slice(0, -1), MACHINE_CHECK)) {
   const hardening = state.hardening ?? "ok";
   if (hardening === "fails") fail("Error: ssh: connect to host localhost: Connection refused");

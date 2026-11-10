@@ -43,10 +43,10 @@ const READY = { status: "ok", nodes: 1 };
 // The machine check, run as root inside the machine, and what a machine holding every ADR-05 setting answers.
 const HARDEN = `machine ssh --username root turnstone ${machineCheckCommand()}`;
 const HARDENED = "wslconf=ok\nsudo=refused\nend=ok\n";
-// The user session check, run as root after the machine check, the same with one restart first, and what the check
+// The user session check, run as root after the machine check, the same with one start first, and what the check
 // answers when the session is up with its Podman socket (#1690).
 const SESSION = `machine ssh --username root turnstone ${sessionCommand()}`;
-const SESSION_RESTART = `machine ssh --username root turnstone ${sessionCommand({ restart: true })}`;
+const SESSION_START = `machine ssh --username root turnstone ${sessionCommand({ start: true })}`;
 const SESSION_UP = "uid=1000\nsession=active\nsocket=yes\nend=ok\n";
 // The config script, run as root inside the machine on a first run, and what it answers when it writes config.toml.
 const CONFIG = `machine ssh --username root turnstone ${configCommand()}`;
@@ -519,8 +519,8 @@ describe("LocalRuntime user session", () => {
   // and the rootless API every pod call goes through never comes up.
   const report = (session, socket, extra = "") => `uid=1000\n${extra}session=${session}\nsocket=${socket}\nend=ok\n`;
   const FAILED = report("failed", "no");
-  const RESTART_FAILED = report("failed", "no", "restart=failed\n");
-  const RESTART_OK = report("active", "yes", "restart=ok\n");
+  const START_FAILED = report("failed", "no", "start=failed\n");
+  const START_OK = report("active", "yes", "start=ok\n");
   const running = { [MACHINE_LIST]: machines(true), [POD_STATE]: "Running" };
 
   // Failure: the pod calls run before the session is known to be up, and meet "ssh: rejected: connect failed".
@@ -531,9 +531,9 @@ describe("LocalRuntime user session", () => {
     expect(listDistros).not.toHaveBeenCalled();
   });
 
-  // Failure: a session still starting, as it is just after a machine start, is restarted, which ends it, or refused; or
+  // Failure: a session still starting, as it is just after a machine start, is treated as down, or refused; or
   // the reads come back to back with no pause.
-  it("waits while the session is activating, pausing between reads, then goes on without a restart", async () => {
+  it("waits while the session is activating, pausing between reads, then goes on without starting it again", async () => {
     const answers = [report("activating", "no"), report("activating", "no"), SESSION_UP];
     const sleep = vi.fn(async () => {});
     const { rt, calls } = make({ ...running, [SESSION]: () => answers.shift() }, { sessionTimeoutMs: 10, sleep });
@@ -553,97 +553,97 @@ describe("LocalRuntime user session", () => {
 
   // Failure: a session that failed at boot stays failed after the other distribution has stopped, so the user has to
   // restart the machine by hand.
-  it("restarts a failed session once, and goes on when it comes up", async () => {
-    const { rt, calls, listDistros } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: RESTART_OK });
+  it("starts a failed session again, once, and goes on when it comes up", async () => {
+    const { rt, calls, listDistros } = make({ ...running, [SESSION]: FAILED, [SESSION_START]: START_OK });
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART, POD_STATE]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_START, POD_STATE]);
     expect(listDistros).not.toHaveBeenCalled();
   });
 
-  // Failure: a session that never started is left down, because only "failed" is restarted.
-  it("restarts a session that is not running at all", async () => {
-    const { rt, calls } = make({ ...running, [SESSION]: report("inactive", "no"), [SESSION_RESTART]: RESTART_OK });
+  // Failure: a session that never started is left down, because only "failed" is started again.
+  it("starts a session that is not running at all", async () => {
+    const { rt, calls } = make({ ...running, [SESSION]: report("inactive", "no"), [SESSION_START]: START_OK });
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART, POD_STATE]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_START, POD_STATE]);
   });
 
-  // Failure: a restart that worked is refused because its socket came up a moment after it.
-  it("waits for the socket after a restart that worked", async () => {
+  // Failure: a start that worked is refused because its socket came up a moment after it.
+  it("waits for the socket after a start that worked", async () => {
     const answers = [FAILED, SESSION_UP];
     const { rt, calls } = make(
-      { ...running, [SESSION]: () => answers.shift(), [SESSION_RESTART]: report("active", "no", "restart=ok\n") },
+      { ...running, [SESSION]: () => answers.shift(), [SESSION_START]: report("active", "no", "start=ok\n") },
       { sessionTimeoutMs: 10 },
     );
     await rt.start();
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART, SESSION, POD_STATE]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_START, SESSION, POD_STATE]);
   });
 
   // Failure: a session that stays failed meets the cryptic "connect failed" at the pod, or an error that does not say
   // which other distribution to close, or that tells the user to close Turnstone's own.
-  it("reports USER_SESSION_FAILED naming the other distributions when the restart does not help", async () => {
+  it("reports USER_SESSION_FAILED naming the other distributions when starting it again does not help", async () => {
     const listDistros = vi.fn(async () => ["podman-turnstone", "podman-machine-default"]);
-    const { rt, calls } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: RESTART_FAILED }, { listDistros });
+    const { rt, calls } = make({ ...running, [SESSION]: FAILED, [SESSION_START]: START_FAILED }, { listDistros });
     const err = await rt.start().catch((e) => e);
     expect(err).toBeInstanceOf(LocalRuntimeError);
     expect(err.code).toBe("USER_SESSION_FAILED");
     expect(err.detail).toBe(
-      "user@1000.service is failed, also after a restart. Other WSL distributions are running: podman-machine-default. " +
+      "user@1000.service is failed, also after starting it again. Other WSL distributions are running: podman-machine-default. " +
         "Another Podman machine, or a distribution with a newer systemd, can hold the session this machine needs: stop " +
         "the one you do not need, for example with `wsl --terminate podman-machine-default`, then press Retry.",
     );
-    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_RESTART]);
+    expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION, SESSION_START]);
     expect(rt.started).toBe(false);
   });
 
-  // Failure: Retry after the other distribution stopped meets the same error, because the one restart was spent on the
+  // Failure: Retry after the other distribution stopped meets the same error, because the one start was spent on the
   // first start.
-  it("restarts again on Retry, and starts once the other distribution has stopped", async () => {
-    let restart = RESTART_FAILED;
+  it("starts the session again on Retry, and goes on once the other distribution has stopped", async () => {
+    let start = START_FAILED;
     const listDistros = vi.fn(async () => ["podman-turnstone", "Ubuntu-26.04"]);
     const { rt, calls } = make(
-      { ...running, [SESSION]: FAILED, [SESSION_RESTART]: () => restart },
+      { ...running, [SESSION]: FAILED, [SESSION_START]: () => start },
       { listDistros },
     );
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("USER_SESSION_FAILED");
     expect(err.detail).toContain("Other WSL distributions are running: Ubuntu-26.04.");
     // The user closes Ubuntu-26.04 and presses Retry.
-    restart = RESTART_OK;
+    start = START_OK;
     await rt.start();
     expect(calls).toEqual([
       MACHINE_LIST,
       HARDEN,
       SESSION,
-      SESSION_RESTART,
+      SESSION_START,
       MACHINE_LIST,
       HARDEN,
       SESSION,
-      SESSION_RESTART,
+      SESSION_START,
       POD_STATE,
     ]);
   });
 
-  // Failure: a session still starting at the deadline is restarted, which ends whatever it had started.
-  it("reports a session still activating at the deadline without restarting it", async () => {
+  // Failure: a session still starting at the deadline is treated as down and started again.
+  it("reports a session still activating at the deadline without starting it again", async () => {
     const { rt, calls } = make({ ...running, [SESSION]: report("activating", "no") });
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("USER_SESSION_FAILED");
     expect(err.detail).toMatch(/^user@1000\.service was still activating after \d+ s\. No other WSL distribution is running\.$/);
-    expect(calls).not.toContain(SESSION_RESTART);
+    expect(calls).not.toContain(SESSION_START);
     expect(calls).not.toContain(POD_STATE);
   });
 
-  // Failure: a running session whose socket never appears is restarted, which would end a pod running in it.
-  it("reports a running session whose socket never appears without restarting it", async () => {
+  // Failure: a running session whose socket never appears is treated as down and started again.
+  it("reports a running session whose socket never appears without starting it again", async () => {
     const { rt, calls } = make({ ...running, [SESSION]: report("active", "no") });
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("USER_SESSION_FAILED");
     expect(err.detail).toMatch(/^user@1000\.service is running, but its Podman socket did not appear within \d+ s\./);
-    expect(calls).not.toContain(SESSION_RESTART);
+    expect(calls).not.toContain(SESSION_START);
   });
 
-  // Failure: a machine without its user is restarted, which cannot help, before the user is told.
-  it("never restarts a machine with no user account", async () => {
+  // Failure: a machine without its user gets a session start, which cannot help, before the user is told.
+  it("never starts a session on a machine with no user account", async () => {
     const { rt, calls } = make({ ...running, [SESSION]: "session=nouser\nend=ok\n" });
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("USER_SESSION_FAILED");
@@ -656,16 +656,16 @@ describe("LocalRuntime user session", () => {
     const listDistros = vi.fn(async () => {
       throw new Error("spawn wsl.exe ENOENT");
     });
-    const { rt } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: RESTART_FAILED }, { listDistros });
+    const { rt } = make({ ...running, [SESSION]: FAILED, [SESSION_START]: START_FAILED }, { listDistros });
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("USER_SESSION_FAILED");
     expect(err.detail).toBe(
-      "user@1000.service is failed, also after a restart. The running WSL distributions could not be listed: " +
+      "user@1000.service is failed, also after starting it again. The running WSL distributions could not be listed: " +
         "spawn wsl.exe ENOENT.",
     );
   });
 
-  // Failure: a check that could not run is read as a failed session and restarted, or shows the encoded command line.
+  // Failure: a check that could not run is read as a failed session and started again, or shows the encoded command line.
   it("reports USER_SESSION_FAILED with Podman's error, not the command line, when the check cannot run", async () => {
     const failure = new Error(`Command failed: podman ${SESSION}\nError: ssh: handshake failed`);
     const { rt, calls } = make({ ...running, [SESSION]: failure });
@@ -675,17 +675,17 @@ describe("LocalRuntime user session", () => {
     expect(calls).toEqual([MACHINE_LIST, HARDEN, SESSION]);
   });
 
-  // Failure: a restart that could not run is reported as a session that stayed failed, hiding Podman's error.
-  it("reports USER_SESSION_FAILED with Podman's error when the restart cannot run", async () => {
-    const failure = new Error(`Command failed: podman ${SESSION_RESTART}\nError: ssh: handshake failed`);
-    const { rt } = make({ ...running, [SESSION]: FAILED, [SESSION_RESTART]: failure });
+  // Failure: a start that could not run is reported as a session that stayed failed, hiding Podman's error.
+  it("reports USER_SESSION_FAILED with Podman's error when the start cannot run", async () => {
+    const failure = new Error(`Command failed: podman ${SESSION_START}\nError: ssh: handshake failed`);
+    const { rt } = make({ ...running, [SESSION]: FAILED, [SESSION_START]: failure });
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("USER_SESSION_FAILED");
-    expect(err.detail).toBe("the session could not be restarted: Error: ssh: handshake failed");
+    expect(err.detail).toBe("the session could not be started: Error: ssh: handshake failed");
   });
 
-  // Failure: a report cut short reads as a session that is up, or is restarted on no evidence.
-  it("reports USER_SESSION_FAILED when the report has no end line, and does not restart", async () => {
+  // Failure: a report cut short reads as a session that is up, or is started again on no evidence.
+  it("reports USER_SESSION_FAILED when the report has no end line, and does not start it again", async () => {
     const { rt, calls } = make({ ...running, [SESSION]: "uid=1000\nsession=failed\n" });
     const err = await rt.start().catch((e) => e);
     expect(err.code).toBe("USER_SESSION_FAILED");
@@ -700,7 +700,7 @@ describe("LocalRuntime user session", () => {
     await expect(rt.start()).rejects.toMatchObject({ code: "PODMAN_NOT_FOUND" });
   });
 
-  // Failure: a quit during the wait is held until the session deadline, or a restart or pod call still goes out.
+  // Failure: a quit during the wait is held until the session deadline, or a start or pod call still goes out.
   it("stop() during the wait cancels the start", async () => {
     let rt;
     let stopping;

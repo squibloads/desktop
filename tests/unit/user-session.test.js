@@ -15,16 +15,16 @@ const {
 describe("sessionCommand", () => {
   // Failure: the command carries a quote, a space-split script or a line break, and Windows argument quoting or the
   // machine's shell changes it on the way (POC #1499).
-  it("is one line of base64 and a pipe, for the check and for the restart", () => {
-    for (const restart of [false, true]) {
-      expect(sessionCommand({ restart })).toMatch(/^printf %s [A-Za-z0-9+/=]+ \| base64 -d \| sh$/);
+  it("is one line of base64 and a pipe, for the check and for the start", () => {
+    for (const start of [false, true]) {
+      expect(sessionCommand({ start })).toMatch(/^printf %s [A-Za-z0-9+/=]+ \| base64 -d \| sh$/);
     }
   });
 
   // Failure: the encoded script is not the one the tests read, so a reviewed script is not what reaches the machine,
   // or the options the script tier passes are dropped.
   it("decodes to sessionScript() for the options it is given", () => {
-    for (const options of [undefined, { restart: true }, { user: "nobody", runDir: "/tmp/t1/run" }]) {
+    for (const options of [undefined, { start: true }, { user: "nobody", runDir: "/tmp/t1/run" }]) {
       const encoded = sessionCommand(options).split(" ")[2];
       expect(Buffer.from(encoded, "base64").toString("utf8")).toBe(sessionScript(options));
     }
@@ -32,11 +32,20 @@ describe("sessionCommand", () => {
 });
 
 describe("sessionScript", () => {
-  // Failure: the check restarts the session, so checking a healthy machine ends the pod running in it; or a restart
-  // runs twice and a second failure counts against systemd's start limit.
-  it("restarts the session only when asked, and then once", () => {
-    expect(sessionScript()).not.toMatch(/systemctl restart/);
-    expect(sessionScript({ restart: true }).match(/systemctl restart/g)).toHaveLength(1);
+  // Failure: the check starts the session on its own; or a start runs twice and a second failure counts against
+  // systemd's start limit.
+  it("starts the session only when asked, and then once", () => {
+    expect(sessionScript()).not.toMatch(/systemctl start/);
+    expect(sessionScript({ start: true }).match(/systemctl start "user@\$u\.service"/g)).toHaveLength(1);
+  });
+
+  // Failure: the session found down comes up between that check and this call, and a restart stops it, ending whatever
+  // it started in the meantime (CodeRabbit, PR 46). systemctl start leaves an active unit alone, so systemd itself makes
+  // the decision at the moment of the call.
+  it("never restarts the session, in either form", () => {
+    for (const options of [undefined, { start: true }]) {
+      expect(sessionScript(options)).not.toMatch(/restart|try-restart|reload-or-restart|stop/);
+    }
   });
 
   // Failure: the script reads the session or the socket of another account than the one the pod runs under, or a path
@@ -52,13 +61,13 @@ describe("sessionScript", () => {
   // Failure: a carriage return reaches the machine's shell and breaks every line it ends (POC #1499).
   it("has no carriage return", () => {
     expect(sessionScript()).not.toContain("\r");
-    expect(sessionScript({ restart: true })).not.toContain("\r");
+    expect(sessionScript({ start: true })).not.toContain("\r");
   });
 
   // Failure: a script cut short reads as a session that is up, because the failure it never reached is not reported.
   it("ends by reporting that it finished", () => {
     expect(sessionScript().trimEnd().endsWith("echo end=ok")).toBe(true);
-    expect(sessionScript({ restart: true }).trimEnd().endsWith("echo end=ok")).toBe(true);
+    expect(sessionScript({ start: true }).trimEnd().endsWith("echo end=ok")).toBe(true);
   });
 
   // Failure: a path or an account name with a quote or a shell character is pasted into a root script, and runs as code.
@@ -78,23 +87,23 @@ describe("parseSessionReport", () => {
       uid: "1000",
       session: "active",
       socket: "yes",
-      restart: null,
+      start: null,
     });
     expect(parseSessionReport("uid=1000\nsession=active\nsocket=yes\n").complete).toBe(false);
-    expect(parseSessionReport("")).toEqual({ complete: false, uid: null, session: null, socket: null, restart: null });
+    expect(parseSessionReport("")).toEqual({ complete: false, uid: null, session: null, socket: null, start: null });
   });
 
   // Failure: a login banner or a carriage return from the ssh session breaks the parse, and a working session is
   // refused.
-  it("ignores lines it does not know, strips carriage returns and reads the restart", () => {
+  it("ignores lines it does not know, strips carriage returns and reads the start", () => {
     expect(
-      parseSessionReport("Welcome to the machine\r\nuid=1000\r\nrestart=failed\r\nsession=failed\r\nsocket=no\r\nend=ok\r\n"),
-    ).toEqual({ complete: true, uid: "1000", session: "failed", socket: "no", restart: "failed" });
+      parseSessionReport("Welcome to the machine\r\nuid=1000\r\nstart=failed\r\nsession=failed\r\nsocket=no\r\nend=ok\r\n"),
+    ).toEqual({ complete: true, uid: "1000", session: "failed", socket: "no", start: "failed" });
   });
 });
 
 describe("session states", () => {
-  // Failure: a session still starting is restarted, which ends it, or read as failed; a failed one is waited on until
+  // Failure: a session still starting is read as failed; a failed one is waited on until
   // the timeout; or a session with no socket is called ready and the first pod call meets "connect failed".
   it.each([
     ["active", "yes", { ready: true, changing: false, down: false }],
@@ -109,7 +118,7 @@ describe("session states", () => {
     ["unknown", "no", { ready: false, changing: false, down: false }],
     ["maintenance", "no", { ready: false, changing: false, down: false }],
   ])("session=%s socket=%s", (session, socket, expected) => {
-    const report = { complete: true, uid: "1000", session, socket, restart: null };
+    const report = { complete: true, uid: "1000", session, socket, start: null };
     expect({
       ready: sessionReady(report),
       changing: sessionChanging(report),
@@ -156,14 +165,14 @@ describe("otherDistros", () => {
 });
 
 describe("sessionFailureDetail", () => {
-  const failed = { complete: true, uid: "1000", session: "failed", socket: "no", restart: "failed" };
+  const failed = { complete: true, uid: "1000", session: "failed", socket: "no", start: "failed" };
 
   // Failure: the user is told the session failed but not which other distribution to close, so they cannot act on it.
   it("names the other running distributions and says how to stop one", () => {
     expect(
-      sessionFailureDetail({ report: failed, restarted: true, others: ["podman-machine-default", "Ubuntu-26.04"] }),
+      sessionFailureDetail({ report: failed, started: true, others: ["podman-machine-default", "Ubuntu-26.04"] }),
     ).toBe(
-      "user@1000.service is failed, also after a restart. Other WSL distributions are running: podman-machine-default, " +
+      "user@1000.service is failed, also after starting it again. Other WSL distributions are running: podman-machine-default, " +
         "Ubuntu-26.04. Another Podman machine, or a distribution with a newer systemd, can hold the session this machine " +
         "needs: stop the one you do not need, for example with `wsl --terminate podman-machine-default`, then press Retry.",
     );
@@ -171,22 +180,22 @@ describe("sessionFailureDetail", () => {
 
   // Failure: with nothing else running, the detail still blames another distribution and sends the user looking for one.
   it("says when no other distribution is running", () => {
-    expect(sessionFailureDetail({ report: failed, restarted: true, others: [] })).toBe(
-      "user@1000.service is failed, also after a restart. No other WSL distribution is running.",
+    expect(sessionFailureDetail({ report: failed, started: true, others: [] })).toBe(
+      "user@1000.service is failed, also after starting it again. No other WSL distribution is running.",
     );
   });
 
   // Failure: a list that could not be read is shown as "nothing else is running", which may be false.
   it("says when the running distributions could not be listed", () => {
-    expect(sessionFailureDetail({ report: failed, restarted: true, listError: "spawn wsl.exe ENOENT" })).toBe(
-      "user@1000.service is failed, also after a restart. The running WSL distributions could not be listed: " +
+    expect(sessionFailureDetail({ report: failed, started: true, listError: "spawn wsl.exe ENOENT" })).toBe(
+      "user@1000.service is failed, also after starting it again. The running WSL distributions could not be listed: " +
         "spawn wsl.exe ENOENT.",
     );
   });
 
-  // Failure: a session still starting at the deadline is reported as failed, or as restarted when it never was.
+  // Failure: a session still starting at the deadline is reported as failed, or as started again when it never was.
   it("says how long a session that never finished starting was waited on", () => {
-    const report = { complete: true, uid: "1000", session: "activating", socket: "no", restart: null };
+    const report = { complete: true, uid: "1000", session: "activating", socket: "no", start: null };
     expect(sessionFailureDetail({ report, waitedMs: 60000, others: [] })).toBe(
       "user@1000.service was still activating after 60 s. No other WSL distribution is running.",
     );
@@ -194,24 +203,24 @@ describe("sessionFailureDetail", () => {
 
   // Failure: a running session whose socket never appeared is reported as failed, so the user hunts for a collision.
   it("says when the session runs but its Podman socket never appeared", () => {
-    const report = { complete: true, uid: "1000", session: "active", socket: "no", restart: null };
+    const report = { complete: true, uid: "1000", session: "active", socket: "no", start: null };
     expect(sessionFailureDetail({ report, waitedMs: 60000, others: [] })).toBe(
       "user@1000.service is running, but its Podman socket did not appear within 60 s. " +
         "No other WSL distribution is running.",
     );
   });
 
-  // Failure: a machine without its user is reported as a session to restart.
+  // Failure: a machine without its user is reported as a session to start again.
   it("says when the machine has no user account", () => {
-    const report = { complete: true, uid: null, session: "nouser", socket: null, restart: null };
+    const report = { complete: true, uid: null, session: "nouser", socket: null, start: null };
     expect(sessionFailureDetail({ report, others: [] })).toBe(
       "the machine has no account named user, so it has no user session. No other WSL distribution is running.",
     );
   });
 
-  // Failure: a session in a state the rules do not know is described as restarted.
-  it("names any other state as systemd gave it, without claiming a restart", () => {
-    const report = { complete: true, uid: "1000", session: "maintenance", socket: "no", restart: null };
+  // Failure: a session in a state the rules do not know is described as started again.
+  it("names any other state as systemd gave it, without claiming a second start", () => {
+    const report = { complete: true, uid: "1000", session: "maintenance", socket: "no", start: null };
     expect(sessionFailureDetail({ report, others: [] })).toBe(
       "user@1000.service is maintenance. No other WSL distribution is running.",
     );

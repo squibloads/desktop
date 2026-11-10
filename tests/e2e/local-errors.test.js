@@ -17,10 +17,10 @@ const PULL = `--connection turnstone pull ${PINNED}`;
 const IMAGE_DIGESTS = `--connection turnstone image inspect ${PINNED} --format {{json .RepoDigests}}`;
 // The config script, run as root on a first run.
 const CONFIG = `machine ssh --username root turnstone ${require("../../src/main/turnstone-config.js").configCommand()}`;
-// The user session check and the same with one restart first, run as root after the machine check.
+// The user session check and the same with one start first, run as root after the machine check.
 const { sessionCommand } = require("../../src/main/user-session.js");
 const SESSION = `machine ssh --username root turnstone ${sessionCommand()}`;
-const SESSION_RESTART = `machine ssh --username root turnstone ${sessionCommand({ restart: true })}`;
+const SESSION_START = `machine ssh --username root turnstone ${sessionCommand({ start: true })}`;
 
 // Starts a console to learn a free port, then stops it. The console stays down until a
 // test starts it again, so the health poller never sees it come up during the error.
@@ -125,12 +125,12 @@ describe("local start errors", () => {
   });
 
   // Failure: a machine whose user session is held by another WSL distribution shows "connect failed" at the pod, or
-  // Retry after that distribution stopped never restarts the session.
-  it("shows USER_SESSION_FAILED when the session will not come up, and Retry restarts it again", async () => {
+  // Retry after that distribution stopped never starts the session again.
+  it("shows USER_SESSION_FAILED when the session will not come up, and Retry starts it again", async () => {
     const { port } = await reservedConsole();
     const app = await launchApp({
       settings: { mode: "local" },
-      podmanState: { machine: "running", pod: "missing", session: "failed", sessionRestart: "fails" },
+      podmanState: { machine: "running", pod: "missing", session: "failed", sessionStart: "fails" },
       consolePort: port,
     });
 
@@ -138,14 +138,14 @@ describe("local start errors", () => {
     await waitForText(errorPage, "#error-title", "USER_SESSION_FAILED");
     await waitForText(errorPage, "#error-message", "The Turnstone machine's user session would not start, so the pod cannot run.");
     // The rest of the detail names this PC's running WSL distributions, so only its start is pinned.
-    expect(await errorPage.textContent("#error-detail")).toMatch(/^user@1000\.service is failed, also after a restart\. /);
-    expect(app.readPodmanLog().slice(-2)).toEqual([SESSION, SESSION_RESTART]);
+    expect(await errorPage.textContent("#error-detail")).toMatch(/^user@1000\.service is failed, also after starting it again\. /);
+    expect(app.readPodmanLog().slice(-2)).toEqual([SESSION, SESSION_START]);
 
     // The other distribution is closed, then Retry. The pod is missing, so the start goes on to stop there.
-    await app.setPodmanState({ sessionRestart: "ok" });
+    await app.setPodmanState({ sessionStart: "ok" });
     await errorPage.click("#btn-retry");
     await waitForText(errorPage, "#error-title", "POD_MISSING");
-    expect(app.readPodmanLog().filter((line) => line === SESSION_RESTART)).toEqual([SESSION_RESTART, SESSION_RESTART]);
+    expect(app.readPodmanLog().filter((line) => line === SESSION_START)).toEqual([SESSION_START, SESSION_START]);
   });
 
   // Failure: a failed download shows a generic "unable to connect" page, and the user cannot tell the image is missing.
